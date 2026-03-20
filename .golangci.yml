@@ -12,7 +12,7 @@ linters:
     - misspell
     - gosec
 
-linters-settings:
+settings:
   lll:
     line-length: 200
   gosec:

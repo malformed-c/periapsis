@@ -35,7 +35,7 @@ jobs:
         run: go mod tidy
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.57.2
+          version: latest
           args: --timeout=15m
           skip-cache: true
 

@@ -37,7 +37,7 @@ jobs:
           restore-keys: ${{ runner.os }}-go-
       - name: Tidy
         run: go mod tidy
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
           args: --timeout=15m

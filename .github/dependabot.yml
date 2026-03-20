@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      all-deps:
+        patterns:
+          - "*"
+    ignore:
+      # k8s deps must stay in sync with perigeos go.mod
+      - dependency-name: "k8s.io/*"
+      - dependency-name: "sigs.k8s.io/*"

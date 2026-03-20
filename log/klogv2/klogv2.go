@@ -26,7 +26,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/malformed-c/periapsis/log"
 	"k8s.io/klog/v2"
 )
 

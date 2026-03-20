@@ -18,8 +18,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
-	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/malformed-c/periapsis/errdefs"
+	"github.com/malformed-c/periapsis/log"
 )
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error

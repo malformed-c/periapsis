@@ -1,7 +1,7 @@
 package node
 
 import (
-	"github.com/virtual-kubelet/virtual-kubelet/internal/queue"
+	"github.com/malformed-c/periapsis/internal/queue"
 )
 
 // These are exportable definitions of the queue package:

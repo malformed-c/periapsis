@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/virtual-kubelet/virtual-kubelet/internal/kubernetes/portforward"
+	"github.com/malformed-c/periapsis/internal/kubernetes/portforward"
 	"k8s.io/apimachinery/pkg/types"
 )
 

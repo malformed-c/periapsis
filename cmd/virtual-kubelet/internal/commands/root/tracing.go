@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
-	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/malformed-c/periapsis/errdefs"
+	"github.com/malformed-c/periapsis/log"
 	octrace "go.opencensus.io/trace"
 	"go.opencensus.io/zpages"
 )

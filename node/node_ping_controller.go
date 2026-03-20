@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/virtual-kubelet/virtual-kubelet/internal/lock"
-	"github.com/virtual-kubelet/virtual-kubelet/log"
-	"github.com/virtual-kubelet/virtual-kubelet/trace"
+	"github.com/malformed-c/periapsis/internal/lock"
+	"github.com/malformed-c/periapsis/log"
+	"github.com/malformed-c/periapsis/trace"
 	"golang.org/x/sync/singleflight"
 	"k8s.io/apimachinery/pkg/util/wait"
 )

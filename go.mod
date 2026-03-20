@@ -1,4 +1,4 @@
-module github.com/virtual-kubelet/virtual-kubelet
+module github.com/malformed-c/periapsis
 
 go 1.20
 

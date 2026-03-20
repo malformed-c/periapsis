@@ -17,7 +17,7 @@ package trace
 import (
 	"context"
 
-	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/malformed-c/periapsis/log"
 )
 
 type nopTracer struct{}

@@ -1,0 +1,147 @@
+# Constellation agent DaemonSet.
+# Runs on primary nodes (nodeSelector: perigeos.io/primary: "true").
+# hostNetwork + privileged so the agent can install BPF programs and own the
+# host datapath; volumes give it access to the kernel module list, BPF FS,
+# iptables lock, cgroup hierarchy, and the CNI directories.
+#
+# The install-cni init container copies the cilium-cni binary from the image
+# to the host's /opt/cni/bin before the agent starts.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: constellation-agent
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: constellation-agent
+    app.kubernetes.io/part-of: constellation
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: constellation-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: constellation-agent
+        app.kubernetes.io/part-of: constellation
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: constellation-agent
+      nodeSelector:
+        perigeos.io/primary: "true"
+      tolerations:
+      - operator: Exists
+      priorityClassName: system-node-critical
+      initContainers:
+      - name: install-cni
+        image: ghcr.io/malformed-c/constellation-agent:main
+        imagePullPolicy: Always
+        command: ["sh", "-c", "cp /opt/cni/bin/cilium-cni /host-cni-bin/.cilium-cni.tmp && mv /host-cni-bin/.cilium-cni.tmp /host-cni-bin/cilium-cni"]
+        volumeMounts:
+        - name: cni-path
+          mountPath: /host-cni-bin
+      containers:
+      - name: agent
+        image: ghcr.io/malformed-c/constellation-agent:main
+        imagePullPolicy: Always
+        command: ["/usr/bin/cilium-agent"]
+        args:
+        - --managed-nodes-selector=perigeos.io/host
+        - --routing-mode=tunnel
+        - --kube-proxy-replacement=true
+        - --ipam=cluster-pool
+        - --enable-ipv6=false
+        - --enable-bpf-masquerade=true
+        - --bpf-lb-sock-hostns-only=true
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: "127.0.0.1"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "6443"
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: PATH
+          value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        securityContext:
+          privileged: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            host: 127.0.0.1
+            port: 9879
+            scheme: HTTP
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 10
+        readinessProbe:
+          exec:
+            command: ["test", "-S", "/var/run/cilium/cilium.sock"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        # Host API filesystems must come first (MountAPIVFS=no).
+        # /sys before /sys/fs/bpf so the submount isn't covered.
+        - name: host-proc
+          mountPath: /proc
+        - name: host-sys
+          mountPath: /sys
+        - name: host-dev
+          mountPath: /dev
+        - name: cilium-run
+          mountPath: /var/run/cilium
+        - name: cni-path
+          mountPath: /opt/cni/bin
+        - name: cni-conf-dir
+          mountPath: /etc/cni/net.d/constellation
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: xtables-lock
+          mountPath: /run/xtables.lock
+        - name: host-netns
+          mountPath: /var/run/netns
+          mountPropagation: HostToContainer
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      volumes:
+      - name: cilium-run
+        hostPath:
+          path: /var/run/cilium
+          type: DirectoryOrCreate
+      - name: cni-path
+        hostPath:
+          path: /opt/cni/bin
+          type: DirectoryOrCreate
+      - name: cni-conf-dir
+        hostPath:
+          path: /etc/cni/net.d/constellation
+          type: DirectoryOrCreate
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: xtables-lock
+        hostPath:
+          path: /run/xtables.lock
+          type: FileOrCreate
+      - name: host-proc
+        hostPath:
+          path: /proc
+      - name: host-sys
+        hostPath:
+          path: /sys
+      - name: host-dev
+        hostPath:
+          path: /dev
+      - name: host-netns
+        hostPath:
+          path: /var/run/netns
+          type: DirectoryOrCreate

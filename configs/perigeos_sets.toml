@@ -1,0 +1,24 @@
+[global]
+PerigeosPort = 12260 # Start counting Pawns ports from this
+
+# Less manual repetition
+DefaultCPU = "100%"
+DefaultMemory = "512M"
+
+# Generates: worker-00, worker-01
+[pawn_sets.worker]
+count = 30
+cpu = "500m"
+memory = "512Mi"
+io_read_bandwidth_max = "1M"
+io_write_bandwidth_max = "1M"
+
+
+[pawn_sets.worker.labels]
+"node-role.kubernetes.io/pawn" = "pawn" # Will be default later
+"kubernetes.io/os" = "linux"            # Will be set automatically later
+"kubernetes.io/arch" = "amd64"          # Will be set automatically later
+
+[pawn_sets.worker.taints]
+"node.perigeos.io/type" = "pawn:NoSchedule" # Will be default later
+

@@ -1,0 +1,221 @@
+package provider_test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/malformed-c/periapsis/internal/provider"
+	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/node/api"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+// ─── Mock Runtime ─────────────────────────────────────────────────────────────
+
+type mockRuntime struct {
+	machines []pruntime.PodMetadata
+	stopped  []string
+}
+
+func (m *mockRuntime) RunMachine(_ context.Context, _ string, _ pruntime.PodConfig) error {
+	return nil
+}
+func (m *mockRuntime) StopMachine(_ context.Context, uid, containerName string) error {
+	m.stopped = append(m.stopped, uid+"/"+containerName)
+	return nil
+}
+func (m *mockRuntime) MachineStatus(_ context.Context, _, _ string) (pruntime.MachineState, error) {
+	return pruntime.StateRunning, nil
+}
+func (m *mockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (pruntime.MachineState, error) {
+	return pruntime.StateExited, nil
+}
+func (m *mockRuntime) ListManagedMachines(_ context.Context) ([]pruntime.PodMetadata, error) {
+	return m.machines, nil
+}
+func (m *mockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.ContainerLogOpts) (io.ReadCloser, error) {
+	return io.NopCloser(nil), nil
+}
+func (m *mockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
+	return nil
+}
+func (m *mockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+	return nil
+}
+func (m *mockRuntime) InitPawnSlice(_ context.Context, _ pruntime.PawnSliceConfig) error {
+	return nil
+}
+func (m *mockRuntime) CheckMachined(_ context.Context) error {
+	return nil
+}
+
+// ─── Mock Network ─────────────────────────────────────────────────────────────
+
+type mockNetwork struct {
+	tornDown []string
+}
+
+func (m *mockNetwork) Setup(_ context.Context, podUID, _, _, _ string) (string, string, error) {
+	return "/var/run/netns/" + podUID, "10.88.0.2", nil
+}
+func (m *mockNetwork) Teardown(_ context.Context, podUID, _, _ string) error {
+	m.tornDown = append(m.tornDown, podUID)
+	return nil
+}
+
+// ─── Mock Pod Lister ──────────────────────────────────────────────────────────
+
+type mockPodLister struct {
+	pods []*corev1.Pod
+}
+
+func (m *mockPodLister) List(_ labels.Selector) ([]*corev1.Pod, error) {
+	return m.pods, nil
+}
+func (m *mockPodLister) Get(name string) (*corev1.Pod, error) {
+	for _, p := range m.pods {
+		if p.Name == name {
+			return p, nil
+		}
+	}
+	return nil, nil
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) *provider.TestReconciler {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return provider.NewReconcilerForTest(rt, nm, lister, logger)
+}
+
+func makePod(name, namespace, uid string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			UID:       types.UID(uid),
+		},
+	}
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "orphan-uid", Name: "orphan", Namespace: "default", ContainerName: "main"},
+		},
+	}
+	nm := &mockNetwork{}
+	r := newTestReconciler(rt, nm, &mockPodLister{})
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 1 || rt.stopped[0] != "orphan-uid/main" {
+		t.Errorf("expected [orphan-uid/main] stopped, got %v", rt.stopped)
+	}
+	if len(nm.tornDown) != 1 || nm.tornDown[0] != "orphan-uid" {
+		t.Errorf("expected network teardown for orphan-uid, got %v", nm.tornDown)
+	}
+}
+
+func TestReconciler_InFlightMachineIsSkipped(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "inflight-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
+		},
+	}
+	nm := &mockNetwork{}
+	r := newTestReconciler(rt, nm, &mockPodLister{})
+	r.MarkInFlight("inflight-uid")
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 0 {
+		t.Errorf("in-flight machine should not be stopped, got %v", rt.stopped)
+	}
+}
+
+func TestReconciler_KnownPodIsSkipped(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "known-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
+		},
+	}
+	nm := &mockNetwork{}
+	r := newTestReconciler(rt, nm, &mockPodLister{})
+	r.MarkHasPod("known-uid")
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 0 {
+		t.Errorf("known pod should not be stopped, got %v", rt.stopped)
+	}
+}
+
+func TestReconciler_K8sPodListerMatchSkips(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "k8s-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
+		},
+	}
+	nm := &mockNetwork{}
+	lister := &mockPodLister{
+		pods: []*corev1.Pod{makePod("mypod", "default", "k8s-uid")},
+	}
+	r := newTestReconciler(rt, nm, lister)
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 0 {
+		t.Errorf("pod in K8s lister should not be stopped, got %v", rt.stopped)
+	}
+}
+
+func TestReconciler_MultipleOrphans(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "uid-1", ContainerName: "app"},
+			{UID: "uid-2", ContainerName: "sidecar"},
+			{UID: "uid-3", ContainerName: "app"},
+		},
+	}
+	nm := &mockNetwork{}
+	r := newTestReconciler(rt, nm, &mockPodLister{})
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 3 {
+		t.Errorf("expected 3 stopped, got %d: %v", len(rt.stopped), rt.stopped)
+	}
+}
+
+func TestReconciler_MixedOrphanAndKnown(t *testing.T) {
+	rt := &mockRuntime{
+		machines: []pruntime.PodMetadata{
+			{UID: "orphan-1", ContainerName: "main"},
+			{UID: "known-1", ContainerName: "main"},
+			{UID: "orphan-2", ContainerName: "sidecar"},
+		},
+	}
+	nm := &mockNetwork{}
+	r := newTestReconciler(rt, nm, &mockPodLister{})
+	r.MarkHasPod("known-1")
+
+	r.RunOnce(context.Background())
+
+	if len(rt.stopped) != 2 {
+		t.Errorf("expected 2 orphans stopped, got %d: %v", len(rt.stopped), rt.stopped)
+	}
+	for _, s := range rt.stopped {
+		if s == "known-1/main" {
+			t.Error("known-1 should not have been stopped")
+		}
+	}
+}

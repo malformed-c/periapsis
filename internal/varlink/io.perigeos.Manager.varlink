@@ -1,0 +1,116 @@
+# io.perigeos.Manager
+#
+# Perigeos management interface. Exposed on a Unix socket
+# (/run/perigeos.sock by default) and optionally on TCP for remote access.
+
+interface io.perigeos.Manager
+
+# Daemon status and host resource overview.
+method Status() -> (
+  hostname: string,
+  version: string,
+  uptime_secs: int,
+  pawn_count: int,
+  pod_count: int,
+  kernel: string,
+  os: string,
+  arch: string,
+  go_version: string,
+  mem_total_mib: int,
+  mem_used_mib: int,
+  cpu_cores: int,
+  load_avg: string,
+  machines: int,
+  disk_dirs: int,
+  systemd_units: int,
+  perigeos_rss_mib: int,
+  lxc_veths: int,
+  netns_count: int
+)
+
+type PawnInfo (
+  name: string,
+  is_primary: bool,
+  port: int,
+  node_ip: string,
+  pod_count: int,
+  cpu_usage_ms: int,
+  memory_mib: int
+)
+
+# List all pawn nodes on this host.
+method Pawns() -> (pawns: []PawnInfo)
+
+type PodInfo (
+  name: string,
+  namespace: string,
+  uid: string,
+  pawn_name: string,
+  pod_ip: string,
+  phase: string,
+  containers: int
+)
+
+# List all pods across all pawns.
+method Pods() -> (pods: []PodInfo)
+
+type PawnTopInfo (
+  name: string,
+  is_primary: bool,
+  pod_count: int,
+  cpu_usage_ns: int,
+  memory_bytes: int,
+  memory_ws_bytes: int
+)
+
+# Per-pawn cgroup resource snapshot (for live monitoring).
+method Top() -> (
+  timestamp_ns: int,
+  load_avg: string,
+  mem_used_mib: int,
+  mem_total_mib: int,
+  pawns: []PawnTopInfo
+)
+
+type DoctorEntry (
+  uid: string,
+  name: string
+)
+
+type PawnDiagnosis (
+  name: string,
+  gambit_pods: int,
+  systemd_units: int,
+  disk_dirs: int,
+  ghost_pods: []DoctorEntry,
+  orphan_machines: []DoctorEntry,
+  stale_dirs: []string,
+  missing_dirs: []DoctorEntry
+)
+
+type DoctorSummary (
+  total_gambit: int,
+  total_systemd: int,
+  total_disk: int,
+  total_ghosts: int,
+  total_orphans: int,
+  total_stale_dirs: int,
+  lxc_veths: int,
+  netns_count: int
+)
+
+# Compare pod state across gambit, systemd and disk — report discrepancies.
+method Doctor() -> (
+  healthy: bool,
+  pawns: []PawnDiagnosis,
+  summary: DoctorSummary
+)
+
+# Version information.
+method Version() -> (
+  version: string,
+  go_version: string,
+  arch: string,
+  os: string,
+  git_commit: string
+)

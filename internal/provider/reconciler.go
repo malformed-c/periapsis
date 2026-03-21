@@ -1,0 +1,233 @@
+package provider
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/malformed-c/periapsis/internal/image"
+	"github.com/malformed-c/periapsis/internal/network"
+	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/volume"
+	v1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+)
+
+const (
+	reconcileInterval = 5 * time.Minute
+)
+
+// PodTracker is the subset of Gambit that the Reconciler needs to
+// avoid tearing down pods that are mid-creation or still registered.
+type PodTracker interface {
+	IsInFlight(uid string) bool
+	HasPod(uid string) bool
+	PodUIDs() map[string]string
+	EvictGhost(uid string)
+}
+
+// Reconciler performs periodic drift correction between systemd's actual state
+// and Kubernetes desired state. Its only job is to remove orphan machines —
+// machines running in systemd that have no corresponding pod in Kubernetes.
+//
+// The Reconciler never creates pods. The VK PodController is the sole authority
+// for pod creation. This eliminates the double-create race entirely.
+type Reconciler struct {
+	tracker   PodTracker
+	runtime   pruntime.Runtime
+	network   network.NetworkManager
+	image     *image.ImageManager
+	podLister v1.PodNamespaceLister
+	logger    *slog.Logger
+	baseDir   string
+	pawnName  string
+}
+
+func NewReconciler(
+	g *Gambit,
+	rt pruntime.Runtime,
+	nm network.NetworkManager,
+	im *image.ImageManager,
+	podLister v1.PodNamespaceLister,
+	logger *slog.Logger,
+) *Reconciler {
+	return &Reconciler{
+		tracker:   g,
+		runtime:   rt,
+		network:   nm,
+		image:     im,
+		podLister: podLister,
+		logger:    logger,
+		baseDir:   g.Config.BaseDir,
+		pawnName:  g.Config.Name,
+	}
+}
+
+// Run starts the reconciliation loop. It blocks until ctx is cancelled.
+func (r *Reconciler) Run(ctx context.Context) {
+	ticker := time.NewTicker(reconcileInterval)
+	defer ticker.Stop()
+
+	r.logger.Info("Reconciler started", "interval", reconcileInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			r.logger.Info("Reconciler stopped")
+			return
+		case <-ticker.C:
+			r.cleanOrphans(ctx)
+			r.cleanGhosts(ctx)
+		}
+	}
+}
+
+// RunOnce runs a single reconciliation pass. Used in tests and on startup.
+func (r *Reconciler) RunOnce(ctx context.Context) {
+	r.cleanOrphans(ctx)
+	r.cleanGhosts(ctx)
+}
+
+// cleanOrphans finds systemd machines that have no matching pod in Kubernetes
+// and tears them down. Machines that are in-flight (being created by Gambit)
+// or still visible in the K8s informer cache are skipped.
+func (r *Reconciler) cleanOrphans(ctx context.Context) {
+	r.logger.Info("Reconciler: scanning for orphan machines")
+
+	machines, err := r.runtime.ListManagedMachines(ctx)
+	if err != nil {
+		r.logger.Error("Reconciler: failed to list machines", "err", err)
+		return
+	}
+
+	for _, m := range machines {
+		// 1. Skip machines currently being created by Gambit (in-process guard).
+		if r.tracker.IsInFlight(m.UID) {
+			r.logger.Debug("Reconciler: skipping in-flight machine", "uid", m.UID)
+			continue
+		}
+
+		// No timestamp-based grace period needed: after a crash,
+		// HydrateFromRuntime repopulates g.pods from systemd metadata
+		// before the reconciler starts. The inFlight map handles the
+		// normal (non-crash) case above.
+
+		// 2. Skip if Gambit's in-memory state still knows about this pod.
+		if r.tracker.HasPod(m.UID) {
+			continue
+		}
+
+		// 3. Belt-and-suspenders: also check the K8s informer cache.
+		//    This covers the brief window after DeletePod removes it from g.pods
+		//    but before the informer cache reflects the deletion.
+		if r.podLister != nil {
+			pods, err := r.podLister.List(labels.Everything())
+			if err == nil {
+				found := false
+				for _, pod := range pods {
+					if string(pod.UID) == m.UID {
+						found = true
+						break
+					}
+				}
+				if found {
+					continue
+				}
+			}
+		}
+
+		r.logger.Warn("Reconciler: orphan machine found, cleaning up",
+			"uid", m.UID,
+			"name", m.Name,
+			"namespace", m.Namespace,
+			"container", m.ContainerName,
+		)
+
+		r.teardown(ctx, m)
+	}
+}
+
+// cleanGhosts removes pods from Gambit's in-memory map that Kubernetes
+// no longer knows about. These are pods where the VK PodController never
+// delivered a DeletePod call (e.g. informer event dropped under load).
+// Also tears down leftover network namespaces via CNI DEL.
+func (r *Reconciler) cleanGhosts(ctx context.Context) {
+	if r.podLister == nil {
+		return
+	}
+
+	gambitUIDs := r.tracker.PodUIDs()
+	if len(gambitUIDs) == 0 {
+		return
+	}
+
+	// Build set of UIDs that k8s still wants.
+	k8sUIDs := make(map[string]struct{})
+	pods, err := r.podLister.List(labels.Everything())
+	if err != nil {
+		r.logger.Error("Reconciler: failed to list k8s pods for ghost check", "err", err)
+		return
+	}
+	for _, pod := range pods {
+		k8sUIDs[string(pod.UID)] = struct{}{}
+	}
+
+	var evicted int
+	for uid, nsName := range gambitUIDs {
+		if r.tracker.IsInFlight(uid) {
+			continue
+		}
+		if _, ok := k8sUIDs[uid]; ok {
+			continue
+		}
+		r.logger.Warn("Reconciler: evicting ghost pod (in gambit but not in k8s)",
+			"uid", uid, "name", nsName)
+
+		// Tear down network namespace and CNI state.
+		// nsName is "namespace/name" from PodUIDs().
+		namespace, name := splitNsName(nsName)
+		if err := r.network.Teardown(ctx, uid, namespace, name); err != nil {
+			r.logger.Error("Reconciler: ghost network teardown failed",
+				"uid", uid, "err", err)
+		}
+
+		r.tracker.EvictGhost(uid)
+		evicted++
+	}
+
+	if evicted > 0 {
+		r.logger.Info("Reconciler: evicted ghost pods", "count", evicted)
+	}
+}
+
+// splitNsName splits "namespace/name" into its parts.
+func splitNsName(nsName string) (string, string) {
+	if i := strings.Index(nsName, "/"); i >= 0 {
+		return nsName[:i], nsName[i+1:]
+	}
+	return "", nsName
+}
+
+func (r *Reconciler) teardown(ctx context.Context, m pruntime.PodMetadata) {
+	if err := r.runtime.StopMachine(ctx, m.UID, m.ContainerName); err != nil {
+		r.logger.Error("Reconciler: failed to stop machine", "uid", m.UID, "container", m.ContainerName, "err", err)
+	}
+	if err := r.network.Teardown(ctx, m.UID, m.Namespace, m.Name); err != nil {
+		r.logger.Error("Reconciler: failed to teardown network", "uid", m.UID, "err", err)
+	}
+	if err := r.image.Unmount(m.UID + "-" + m.ContainerName); err != nil {
+		r.logger.Error("Reconciler: failed to unmount", "uid", m.UID, "container", m.ContainerName, "err", err)
+	}
+	// Clean up volumes and pod workspace directory.
+	volResolver := volume.NewResolver(r.baseDir, r.pawnName, m.UID, nil, nil, nil)
+	if err := volResolver.Cleanup(); err != nil {
+		r.logger.Warn("Reconciler: volume cleanup failed", "uid", m.UID, "err", err)
+	}
+	podDir := filepath.Join(r.baseDir, "pawns", r.pawnName, "pods", m.UID)
+	if err := os.RemoveAll(podDir); err != nil {
+		r.logger.Warn("Reconciler: failed to remove pod dir", "uid", m.UID, "err", err)
+	}
+}

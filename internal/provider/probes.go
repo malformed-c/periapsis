@@ -1,0 +1,250 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/node/api"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
+)
+
+// ProbeResult represents the outcome of a single probe execution.
+type ProbeResult int
+
+const (
+	ProbeSuccess ProbeResult = iota
+	ProbeFailure
+	ProbeUnknown
+)
+
+// ContainerProbeState tracks probe state for a single container.
+type ContainerProbeState struct {
+	// Startup probe
+	StartupPassed    bool
+	StartupFailCount int32
+
+	// Liveness probe
+	LiveFailCount int32
+
+	// Readiness
+	Ready          bool
+	ReadyFailCount int32
+
+	// Timing: keyed by "startup", "liveness", "readiness"
+	LastProbeTime map[string]time.Time
+}
+
+// ProbeRunner executes probes for containers.
+type ProbeRunner struct {
+	runtime  pruntime.Runtime
+	logger   *slog.Logger
+	recorder record.EventRecorder
+}
+
+// NewProbeRunner creates a new probe runner.
+func NewProbeRunner(rt pruntime.Runtime, logger *slog.Logger, recorder record.EventRecorder) *ProbeRunner {
+	return &ProbeRunner{runtime: rt, logger: logger, recorder: recorder}
+}
+
+// RunProbe executes a single probe against a container and returns the result.
+func (pr *ProbeRunner) RunProbe(ctx context.Context, pod *corev1.Pod, containerName string, probe *corev1.Probe, podIP string) ProbeResult {
+	if probe == nil {
+		return ProbeSuccess
+	}
+
+	timeout := time.Duration(probe.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 1 * time.Second
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var result ProbeResult
+	switch {
+	case probe.HTTPGet != nil:
+		result = pr.runHTTPGetProbe(probeCtx, podIP, probe.HTTPGet)
+	case probe.TCPSocket != nil:
+		result = pr.runTCPSocketProbe(probeCtx, podIP, probe.TCPSocket)
+	case probe.Exec != nil:
+		result = pr.runExecProbe(probeCtx, pod, containerName, probe.Exec)
+	default:
+		return ProbeUnknown
+	}
+	return result
+}
+
+// runHTTPGetProbe sends an HTTP GET to podIP:port+path.
+// Pod IPs are routable from the host via Cilium, so no nsenter needed.
+func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action *corev1.HTTPGetAction) ProbeResult {
+	scheme := "http"
+	if action.Scheme == corev1.URISchemeHTTPS {
+		scheme = "https"
+	}
+	port := action.Port.String()
+	path := action.Path
+	if path == "" {
+		path = "/"
+	}
+	url := fmt.Sprintf("%s://%s:%s%s", scheme, podIP, port, path)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ProbeFailure
+	}
+	for _, h := range action.HTTPHeaders {
+		req.Header.Set(h.Name, h.Value)
+	}
+	if action.Host != "" {
+		req.Host = action.Host
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ProbeFailure
+	}
+	defer resp.Body.Close()
+	// Drain body to allow connection reuse.
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return ProbeSuccess
+	}
+	return ProbeFailure
+}
+
+// runTCPSocketProbe opens a TCP connection to podIP:port.
+func (pr *ProbeRunner) runTCPSocketProbe(ctx context.Context, podIP string, action *corev1.TCPSocketAction) ProbeResult {
+	port := action.Port.String()
+	addr := net.JoinHostPort(podIP, port)
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return ProbeFailure
+	}
+	conn.Close()
+	return ProbeSuccess
+}
+
+// runExecProbe runs a command inside the container.
+// Exit code 0 = success, anything else = failure.
+func (pr *ProbeRunner) runExecProbe(ctx context.Context, pod *corev1.Pod, containerName string, action *corev1.ExecAction) ProbeResult {
+	err := pr.runtime.RunInContainer(ctx, string(pod.UID), containerName, action.Command, &noopAttachIO{})
+	if err != nil {
+		pr.logger.Warn("Exec probe failed",
+			"container", containerName,
+			"cmd", action.Command,
+			"err", err,
+		)
+		if pr.recorder != nil {
+			pr.recorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+				"Readiness probe failed: %v", err)
+		}
+		return ProbeFailure
+	}
+	return ProbeSuccess
+}
+
+// isDue returns true if enough time has passed since the last probe of this type.
+func isDue(state *ContainerProbeState, probeType string, periodSeconds int32) bool {
+	if periodSeconds <= 0 {
+		periodSeconds = 10 // k8s default
+	}
+	last, ok := state.LastProbeTime[probeType]
+	if !ok {
+		return true
+	}
+	return time.Since(last) >= time.Duration(periodSeconds)*time.Second
+}
+
+// markProbed records that a probe was just executed.
+func markProbed(state *ContainerProbeState, probeType string) {
+	if state.LastProbeTime == nil {
+		state.LastProbeTime = make(map[string]time.Time)
+	}
+	state.LastProbeTime[probeType] = time.Now()
+}
+
+// EvalStartup evaluates a startup probe result.
+// Returns true if the container should be restarted (failure threshold exceeded).
+func EvalStartup(state *ContainerProbeState, probe *corev1.Probe, result ProbeResult) (restart bool) {
+	if result == ProbeSuccess {
+		state.StartupPassed = true
+		state.StartupFailCount = 0
+		return false
+	}
+	state.StartupFailCount++
+	threshold := probe.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	return state.StartupFailCount >= threshold
+}
+
+// EvalLiveness evaluates a liveness probe result.
+// Returns true if the container should be restarted.
+func EvalLiveness(state *ContainerProbeState, probe *corev1.Probe, result ProbeResult) (restart bool) {
+	if result == ProbeSuccess {
+		state.LiveFailCount = 0
+		return false
+	}
+	state.LiveFailCount++
+	threshold := probe.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	return state.LiveFailCount >= threshold
+}
+
+// EvalReadiness evaluates a readiness probe result and updates state.Ready.
+func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result ProbeResult) {
+	if result == ProbeSuccess {
+		state.ReadyFailCount = 0
+		successThreshold := probe.SuccessThreshold
+		if successThreshold <= 0 {
+			successThreshold = 1
+		}
+		// We track consecutive successes implicitly: if ReadyFailCount is 0
+		// and we're here, it's a success. For simplicity, mark ready on first success
+		// (matches kubelet for default thresholds).
+		state.Ready = true
+		return
+	}
+	state.ReadyFailCount++
+	failThreshold := probe.FailureThreshold
+	if failThreshold <= 0 {
+		failThreshold = 3
+	}
+	if state.ReadyFailCount >= failThreshold {
+		state.Ready = false
+	}
+}
+
+// ─── noopAttachIO ────────────────────────────────────────────────────────────
+
+// noopAttachIO implements api.AttachIO for exec probes.
+// Discards all output, provides no input, and reports no TTY.
+type noopAttachIO struct{}
+
+func (n *noopAttachIO) Stdin() io.Reader          { return nil }
+func (n *noopAttachIO) Stdout() io.WriteCloser    { return discardWriteCloser{} }
+func (n *noopAttachIO) Stderr() io.WriteCloser    { return discardWriteCloser{} }
+func (n *noopAttachIO) TTY() bool                 { return false }
+func (n *noopAttachIO) Resize() <-chan api.TermSize { return nil }
+
+// discardWriteCloser writes to io.Discard and Close is a no-op.
+type discardWriteCloser struct{}
+
+func (discardWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardWriteCloser) Close() error                { return nil }
+
+// Ensure interface compliance.
+var _ api.AttachIO = (*noopAttachIO)(nil)

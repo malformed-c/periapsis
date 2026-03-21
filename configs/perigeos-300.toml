@@ -1,0 +1,16 @@
+[global]
+PerigeosPort = 12260
+
+DefaultCPU = "100%"
+DefaultMemory = "512M"
+
+primary = true
+
+[global.cni]
+
+[pawn_sets.compute]
+count = 300
+cpu = "100%"
+memory = "512M"
+io_read_bandwidth_max = "1M"
+io_write_bandwidth_max = "1M"

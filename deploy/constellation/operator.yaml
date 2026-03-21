@@ -1,0 +1,71 @@
+# Constellation operator — manages CRDs, CiliumNode IPAM, identity/endpoint GC.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: constellation-operator
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: constellation-operator
+    app.kubernetes.io/part-of: constellation
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: constellation-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: constellation-operator
+        app.kubernetes.io/part-of: constellation
+    spec:
+      hostNetwork: true
+      serviceAccountName: constellation-operator
+      # Tolerate everything — operator must run even on tainted nodes.
+      tolerations:
+      - operator: Exists
+      # Prefer the control-plane node but don't hard-require it.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+      priorityClassName: system-cluster-critical
+      containers:
+      - name: operator
+        image: ghcr.io/malformed-c/constellation-operator:main
+        imagePullPolicy: Always
+        command: ["/usr/bin/cilium-operator"]
+        args:
+        - --k8s-kubeconfig-path=/etc/rancher/k3s/k3s.yaml
+        - --ipam=cluster-pool
+        - --cluster-pool-ipv4-cidr=10.0.0.0/8
+        - --cluster-pool-ipv4-mask-size=20
+        - --enable-ipv6=false
+        - --unmanaged-pod-watcher-interval=0
+        volumeMounts:
+        - name: kubeconfig
+          mountPath: /etc/rancher/k3s
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            host: localhost
+            path: /healthz
+            port: 9234
+            scheme: HTTP
+          initialDelaySeconds: 120
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 25m
+            memory: 128Mi
+      volumes:
+      - name: kubeconfig
+        hostPath:
+          path: /etc/rancher/k3s
+          type: Directory

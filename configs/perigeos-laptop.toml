@@ -1,0 +1,19 @@
+[global]
+PerigeosPort = 12260
+
+DefaultCPU = "100%"
+DefaultMemory = "512M"
+
+primary = true
+
+# k3s server CA — used to sign pawn serving certs so the apiserver trusts them.
+# Must match the k3s cluster's CA.
+server_ca_path = "/etc/perigeos/server-ca.crt"
+server_ca_key_path = "/etc/perigeos/server-ca.key"
+
+[global.cni]
+
+[pawn_sets.laptop]
+count = 5
+cpu = "100%"
+memory = "512M"

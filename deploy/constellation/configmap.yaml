@@ -1,0 +1,11 @@
+# Constellation CNI — configuration.
+#
+# The agent discovers managed nodes dynamically via --managed-node-selector.
+# This ConfigMap is reserved for future operator-managed configuration.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: constellation-config
+  namespace: kube-system
+data: {}

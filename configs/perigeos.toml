@@ -1,0 +1,51 @@
+[global]
+PerigeosPort = 12260 # Start counting Pawns ports from this
+
+# Less manual repetition
+DefaultCPU = "100%"
+DefaultMemory = "512M"
+
+# Primary labels the real k8s node (os.Hostname()) as the host primary.
+# DaemonSets like constellation-agent target primary nodes.
+# For hosts without a kubelet, a primary VK node will be registered.
+primary = true
+
+# Constellation CNI (optional).
+# When present, perigeos uses libcni to call ADD/DEL on the constellation agent.
+# The agent/operator must be deployed separately (see deploy/constellation/).
+# Remove this section entirely to use the built-in veth bridge networking.
+#
+# [global.cni]
+# bin_dir   = "/opt/cni/bin"                 # default
+# conf_dir  = "/etc/cni/net.d/constellation" # default
+# debug     = false                          # default
+
+[global.cni]
+
+[pawns.pawn-01-compute]
+#port = 12261 # automatic assignment
+# node_ip = "10.89.0.1" # override advertised IP; useful when the control plane
+#                         runs inside a container (podman/kind) and cannot reach
+#                         the default outbound IP. Set to the host IP on the
+#                         container bridge (e.g. podman network inspect kind).
+# Resource Slicing:
+# This creates a parent slice: "perigeos-pawn-01-compute.slice"
+# All pods scheduled to this node will run INSIDE this slice.
+
+# Resources for the WHOLE Pawn, not just individual pods
+# 1 Core (Maps to CPUQuota=100%)
+cpu = "100%" # systemd CPUQuota=100% == resourses.limits.cpu
+
+# 512M (Maps to MemoryMax=512M)
+memory = "512M" # systemd MemoryMax= == resourses.limits.memory
+
+io_read_bandwidth_max = "1M"
+io_write_bandwidth_max = "1M"
+
+[pawns.pawn-01-compute.labels]
+"kubernetes.io/os" = "linux"   # Will be set automatically later
+"kubernetes.io/arch" = "amd64" # Will be set automatically later
+
+[pawns.pawn-01-compute.taints]
+"node.perigeos.io/type" = "pawn:NoSchedule" # Will be default later
+# mycustomtaint = ":NoSchedule"

@@ -1,6 +1,6 @@
 # ADR-0001: Fork virtual-kubelet as Periapsis
 
-**Status:** Accepted  
+**Status:** Implemented
 **Date:** 2026-03-20
 
 ## Context

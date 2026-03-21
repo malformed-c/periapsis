@@ -28,7 +28,7 @@ SyslogIdentifier=perigeos
 
 # Hardening — perigeos needs root for systemd-nspawn and D-Bus machine1
 # but we can still restrict some capabilities
-ProtectSystem=full
+ProtectSystem=no
 ProtectHome=yes
 NoNewPrivileges=no
 LimitNOFILE=1048576

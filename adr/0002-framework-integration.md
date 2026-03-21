@@ -1,6 +1,6 @@
 # ADR-0002: Evolve Periapsis from library to framework
 
-**Status:** Proposed  
+**Status:** In Progress (Phase 1 complete — single module merge)
 **Date:** 2026-03-20
 
 ## Context

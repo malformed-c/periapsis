@@ -127,7 +127,7 @@ func TestPodEventFilter(t *testing.T) {
 	pod.ObjectMeta.Name = "nginx"
 	pod.Spec = newPodSpec()
 
-	podC := tc.client.CoreV1().Pods(testNamespace)
+	podC := tc.client.CoreV1().Pods("default")
 
 	_, err := podC.Create(ctx, pod, metav1.CreateOptions{})
 	assert.NilError(t, err)

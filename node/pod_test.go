@@ -293,7 +293,7 @@ func TestPodStatusDelete(t *testing.T) {
 	if err != nil && !errors.IsNotFound(err) {
 		t.Fatalf("Get pod %v failed", key)
 	}
-	if newPod != nil && newPod.DeletionTimestamp == nil {
+	if err == nil && newPod.DeletionTimestamp == nil {
 		t.Fatalf("Pod %v delete failed", key)
 	}
 	t.Logf("pod delete success")

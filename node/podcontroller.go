@@ -23,7 +23,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/errdefs"
-	"github.com/malformed-c/periapsis/internal/manager"
 	"github.com/malformed-c/periapsis/internal/queue"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
@@ -71,8 +70,6 @@ type PodController struct {
 
 	client corev1client.PodsGetter
 
-	resourceManager *manager.ResourceManager
-
 	syncPodsFromKubernetes *queue.Queue
 
 	// deletePodsFromKubernetes is a queue on which pods are reconciled, and we check if pods are in API server after
@@ -93,6 +90,11 @@ type PodController struct {
 	// done is closed when Run returns
 	// Once done is closed `err` may be set to a non-nil value
 	done chan struct{}
+
+	// podSyncWorkers is stored for backpressure detection.
+	podSyncWorkers int
+	// lastBackpressureLog rate-limits backpressure warnings.
+	lastBackpressureLog time.Time
 
 	mu sync.Mutex
 	// err is set if there is an error while while running the pod controller.
@@ -192,17 +194,11 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 	if cfg.SyncPodStatusFromProviderRateLimiter == nil {
 		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultControllerRateLimiter()
 	}
-	rm, err := manager.NewResourceManager(cfg.PodInformer.Lister(), cfg.SecretInformer.Lister(), cfg.ConfigMapInformer.Lister(), cfg.ServiceInformer.Lister())
-	if err != nil {
-		return nil, pkgerrors.Wrap(err, "could not create resource manager")
-	}
-
 	pc := &PodController{
 		client:             cfg.PodClient,
 		podsInformer:       cfg.PodInformer,
 		podsLister:         cfg.PodInformer.Lister(),
 		provider: cfg.Provider,
-		resourceManager:    rm,
 		ready:              make(chan struct{}),
 		done:               make(chan struct{}),
 		recorder:           cfg.EventRecorder,
@@ -355,16 +351,20 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 	// If by any reason the provider fails to delete a dangling pod, it will stay in the provider and deletion won't be retried.
 	pc.deleteDanglingPods(ctx, podSyncWorkers)
 
-	log.G(ctx).Info("starting workers")
+	pc.podSyncWorkers = podSyncWorkers
+	deleteWorkers := max(2, podSyncWorkers/2)
+	statusWorkers := max(2, podSyncWorkers/2)
+
+	log.G(ctx).Info("starting workers", "sync", podSyncWorkers, "delete", deleteWorkers, "status", statusWorkers)
 	group := &wait.Group{}
 	group.StartWithContext(ctx, func(ctx context.Context) {
 		pc.syncPodsFromKubernetes.Run(ctx, podSyncWorkers)
 	})
 	group.StartWithContext(ctx, func(ctx context.Context) {
-		pc.deletePodsFromKubernetes.Run(ctx, podSyncWorkers)
+		pc.deletePodsFromKubernetes.Run(ctx, deleteWorkers)
 	})
 	group.StartWithContext(ctx, func(ctx context.Context) {
-		pc.syncPodStatusFromProvider.Run(ctx, podSyncWorkers)
+		pc.syncPodStatusFromProvider.Run(ctx, statusWorkers)
 	})
 	defer group.Wait()
 	log.G(ctx).Info("started workers")
@@ -415,6 +415,15 @@ func (pc *PodController) SyncPodStatusFromProviderQueueLen() int {
 func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key string) error {
 	ctx, span := trace.StartSpan(ctx, "syncPodFromKubernetesHandler")
 	defer span.End()
+
+	// Backpressure warning: log when queue depth exceeds 2x workers.
+	if depth := pc.syncPodsFromKubernetes.Len(); depth > pc.podSyncWorkers*2 {
+		now := time.Now()
+		if now.Sub(pc.lastBackpressureLog) > 10*time.Second {
+			pc.lastBackpressureLog = now
+			log.G(ctx).Warn("sync queue backpressure", "depth", depth, "workers", pc.podSyncWorkers)
+		}
+	}
 
 	// Add the current key as an attribute to the current span.
 	ctx = span.WithField(ctx, "key", key)

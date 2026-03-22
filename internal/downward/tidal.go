@@ -57,17 +57,11 @@ func (t *Tidal) ResolveEnv(pod *corev1.Pod, container *corev1.Container, podIP s
 		resolved = append(resolved, fmt.Sprintf("%s=%s", key, val))
 	}
 
+	// Container env is already fully resolved by PopulateEnvironmentVariables
+	// (ConfigMaps, Secrets, FieldRef, service env vars, $(var) expansion).
 	for _, env := range container.Env {
-		switch {
-		case env.Value != "":
+		if env.Value != "" {
 			set(env.Name, env.Value)
-
-		case env.ValueFrom != nil && env.ValueFrom.FieldRef != nil:
-			set(env.Name, t.resolveFieldPath(pod, env.ValueFrom.FieldRef.FieldPath, podIP))
-
-		default:
-			// ConfigMaps / Secrets — not supported yet
-			continue
 		}
 	}
 
@@ -95,30 +89,4 @@ func (t *Tidal) ResolveEnv(pod *corev1.Pod, container *corev1.Container, podIP s
 		}
 	}
 	return filtered
-}
-
-func (t *Tidal) resolveFieldPath(pod *corev1.Pod, path, podIP string) string {
-	switch path {
-	case "metadata.name":
-		return pod.Name
-	case "metadata.namespace":
-		return pod.Namespace
-	case "metadata.uid":
-		return string(pod.UID)
-	case "metadata.labels":
-		return "" // TODO: specific key lookup
-	case "metadata.annotations":
-		return ""
-	case "spec.nodeName":
-		return t.NodeName
-	case "spec.serviceAccountName":
-		return pod.Spec.ServiceAccountName
-	case "status.hostIP":
-		return t.NodeIP
-	case "status.podIP":
-		return podIP
-	case "status.podIPs":
-		return podIP // MVP: single stack
-	}
-	return ""
 }

@@ -37,7 +37,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+
+	"github.com/malformed-c/periapsis/internal/manager"
+	"github.com/malformed-c/periapsis/internal/podutils"
 )
 
 const (
@@ -74,6 +78,13 @@ const (
 	DefaultCreateConcurrency = 5
 )
 
+// volumeMount tracks a single mounted ConfigMap/Secret for a running pod.
+type volumeMount struct {
+	podUID  string
+	hostDir string         // host path where files were written
+	vol     *corev1.Volume // original volume spec (for Items filtering)
+}
+
 // Gambit is the periapsis provider. It implements the PodProvider interface
 // and orchestrates image pulling, overlayfs mounting, network setup,
 // and systemd-nspawn machine management for each pod.
@@ -86,12 +97,19 @@ type Gambit struct {
 	Tidal          *downward.Tidal
 	EventRecorder  record.EventRecorder
 
-	// Listers for configMap and secret volume resolution.
-	// Set via SetVolumeListers after construction.
+	// Listers for env population and volume resolution.
+	// Set via SetListers after construction.
 	cmLister     listersv1.ConfigMapLister
 	secretLister listersv1.SecretLister
+	svcLister    listersv1.ServiceLister
 	kubeClient   kubernetes.Interface
 	clusterDNS   string // ClusterIP of kube-dns, written to container resolv.conf
+
+	// volRefs indexes mounted ConfigMaps/Secrets by "kind:namespace/name"
+	// for O(1) lookup when an informer fires an update event.
+	volRefs    map[string][]volumeMount
+	// volRefsByPod maps podUID → list of volRef keys for cleanup on delete.
+	volRefsByPod map[string][]string
 
 	mu           sync.RWMutex
 	pods         map[string]*corev1.Pod                       // UID → Pod
@@ -178,17 +196,133 @@ func NewGambit(
 		restarts:     make(map[string]map[string]*containerRestartState),
 		probeStates:  make(map[string]map[string]*ContainerProbeState),
 		probeRunner:  NewProbeRunner(rt, logger, eRec),
+		volRefs:      make(map[string][]volumeMount),
+		volRefsByPod: make(map[string][]string),
 		createSem:    make(chan struct{}, createConcurrency(cfg)),
 		shutdownCh:   make(chan struct{}),
 		startTime:    time.Now(),
 	}
 }
 
-// SetVolumeListers provides the configMap and secret listers needed for
-// volume resolution. Called after construction once informers are synced.
-func (g *Gambit) SetVolumeListers(cmLister listersv1.ConfigMapLister, secretLister listersv1.SecretLister) {
+// SetListers provides the listers needed for env population and volume resolution.
+// Called after construction once informers are synced.
+func (g *Gambit) SetListers(cmLister listersv1.ConfigMapLister, secretLister listersv1.SecretLister, svcLister listersv1.ServiceLister) {
 	g.cmLister = cmLister
 	g.secretLister = secretLister
+	g.svcLister = svcLister
+}
+
+// SetInformers registers event handlers on ConfigMap and Secret informers
+// to refresh volume-mounted files in running pods when the underlying
+// objects are updated. Uses in-place file writes so inotify fires.
+func (g *Gambit) SetInformers(cmInformer, secretInformer cache.SharedIndexInformer) {
+	cmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(_, obj interface{}) {
+			cm := obj.(*corev1.ConfigMap)
+			g.refreshConfigMapVolumes(cm)
+		},
+	})
+	secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(_, obj interface{}) {
+			s := obj.(*corev1.Secret)
+			g.refreshSecretVolumes(s)
+		},
+	})
+}
+
+// refreshConfigMapVolumes rewrites ConfigMap volume files using the updated object directly.
+func (g *Gambit) refreshConfigMapVolumes(cm *corev1.ConfigMap) {
+	key := "configmap:" + cm.Namespace + "/" + cm.Name
+	g.mu.RLock()
+	mounts := make([]volumeMount, len(g.volRefs[key]))
+	copy(mounts, g.volRefs[key])
+	g.mu.RUnlock()
+
+	if len(mounts) == 0 {
+		return
+	}
+
+	g.Logger.Info("Refreshing volume", "kind", "configmap", "name", cm.Name, "pods", len(mounts))
+	for _, m := range mounts {
+		err := volume.RefreshConfigMapDirect(cm, m.vol, m.hostDir)
+		if err != nil {
+			g.Logger.Warn("Failed to refresh volume", "kind", "configmap", "name", cm.Name, "pod", m.podUID, "err", err)
+		}
+	}
+}
+
+// refreshSecretVolumes rewrites Secret volume files using the updated object directly.
+func (g *Gambit) refreshSecretVolumes(secret *corev1.Secret) {
+	key := "secret:" + secret.Namespace + "/" + secret.Name
+	g.mu.RLock()
+	mounts := make([]volumeMount, len(g.volRefs[key]))
+	copy(mounts, g.volRefs[key])
+	g.mu.RUnlock()
+
+	if len(mounts) == 0 {
+		return
+	}
+
+	g.Logger.Info("Refreshing volume", "kind", "secret", "name", secret.Name, "pods", len(mounts))
+	for _, m := range mounts {
+		err := volume.RefreshSecretDirect(secret, m.vol, m.hostDir)
+		if err != nil {
+			g.Logger.Warn("Failed to refresh volume", "kind", "secret", "name", secret.Name, "pod", m.podUID, "err", err)
+		}
+	}
+}
+
+// trackVolumeRefs scans a pod's volumes for ConfigMap and Secret types,
+// populating the volRefs reverse index for live refresh. Must be called
+// with g.mu held.
+func (g *Gambit) trackVolumeRefs(uid string, pod *corev1.Pod) {
+	var keys []string
+	for i := range pod.Spec.Volumes {
+		vol := &pod.Spec.Volumes[i]
+		var kind, name string
+		switch {
+		case vol.ConfigMap != nil:
+			kind = "configmap"
+			name = vol.ConfigMap.Name
+		case vol.Secret != nil:
+			kind = "secret"
+			name = vol.Secret.SecretName
+		default:
+			continue
+		}
+		key := kind + ":" + pod.Namespace + "/" + name
+		hostDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid, "volumes", kind, vol.Name)
+		g.volRefs[key] = append(g.volRefs[key], volumeMount{
+			podUID:  uid,
+			hostDir: hostDir,
+			vol:     vol,
+		})
+		keys = append(keys, key)
+	}
+	if len(keys) > 0 {
+		g.volRefsByPod[uid] = keys
+	}
+}
+
+// untrackVolumeRefs removes all volume reference entries for a pod.
+// Must be called with g.mu held.
+func (g *Gambit) untrackVolumeRefs(uid string) {
+	keys := g.volRefsByPod[uid]
+	for _, key := range keys {
+		mounts := g.volRefs[key]
+		filtered := mounts[:0]
+		for _, m := range mounts {
+			if m.podUID != uid {
+				filtered = append(filtered, m)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(g.volRefs, key)
+		} else {
+			g.volRefs[key] = filtered
+		}
+	}
+	delete(g.volRefsByPod, uid)
 }
 
 func (g *Gambit) SetKubeClient(client kubernetes.Interface) {
@@ -873,6 +1007,18 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		_ = os.RemoveAll(podDir)
 	})
 
+	// Populate environment variables now that podIP is known.
+	// This resolves ConfigMap/Secret envFrom, FieldRef (including status.podIP),
+	// service env vars, and $(var) expansion — all with the correct podIP.
+	pod.Status.PodIP = podIP
+	pod.Status.PodIPs = []corev1.PodIP{{IP: podIP}}
+	pod.Status.HostIP = resolveNodeIP(g.Config)
+	rm, _ := manager.NewResourceManager(nil, g.secretLister, g.cmLister, g.svcLister)
+	if err := podutils.PopulateEnvironmentVariables(ctx, pod, rm, g.EventRecorder); err != nil {
+		compensate()
+		return fmt.Errorf("env population: %w", err)
+	}
+
 	// Run init containers sequentially; each must exit 0 before the next starts.
 	for i := range pod.Spec.InitContainers {
 		ic := &pod.Spec.InitContainers[i]
@@ -1061,6 +1207,8 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	g.pods[uid] = pod
 	g.podIPs[uid] = podIP
 	g.podPhases[uid] = corev1.PodRunning
+	// Index volume-mounted ConfigMaps/Secrets for live refresh.
+	g.trackVolumeRefs(uid, pod)
 	g.mu.Unlock()
 
 	g.Logger.Info("Pod started successfully", "pod", pod.Name, "ip", podIP,
@@ -1368,6 +1516,7 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	g.mu.Lock()
+	g.untrackVolumeRefs(uid)
 	delete(g.pods, uid)
 	delete(g.podIPs, uid)
 	delete(g.podPhases, uid)

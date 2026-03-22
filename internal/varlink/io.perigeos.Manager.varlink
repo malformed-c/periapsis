@@ -35,7 +35,10 @@ type PawnInfo (
   node_ip: string,
   pod_count: int,
   cpu_usage_ms: int,
-  memory_mib: int
+  memory_mib: int,
+  sync_queue_depth: int,
+  delete_queue_depth: int,
+  status_queue_depth: int
 )
 
 # List all pawn nodes on this host.

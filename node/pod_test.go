@@ -45,7 +45,6 @@ type TestController struct {
 func newTestController() *TestController {
 	fk8s := fake.NewSimpleClientset()
 
-	rm := testutil.FakeResourceManager()
 	p := newMockProvider()
 	iFactory := kubeinformers.NewSharedInformerFactoryWithOptions(fk8s, 10*time.Minute)
 	podController, err := NewPodController(PodControllerConfig{
@@ -76,9 +75,6 @@ func newTestController() *TestController {
 	if err != nil {
 		panic(err)
 	}
-	// Override the resource manager in the contructor with our own.
-	podController.resourceManager = rm
-
 	return &TestController{
 		PodController: podController,
 		mock:          p,

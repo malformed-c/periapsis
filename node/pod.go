@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	pkgerrors "github.com/pkg/errors"
-	"github.com/malformed-c/periapsis/internal/podutils"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
 	corev1 "k8s.io/api/core/v1"
@@ -71,10 +70,6 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 
 	// We do this so we don't mutate the pod from the informer cache
 	pod = pod.DeepCopy()
-	if err := podutils.PopulateEnvironmentVariables(ctx, pod, pc.resourceManager, pc.recorder); err != nil {
-		span.SetStatus(err)
-		return err
-	}
 
 	// We have to use a  different pod that we pass to the provider than the one that gets used in handleProviderError
 	// because the provider  may manipulate the pod in a separate goroutine while we were doing work

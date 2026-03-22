@@ -56,6 +56,13 @@ func (m *managerIface) VarlinkDispatch(ctx context.Context, c varlink.Call, meth
 	}
 }
 
+// QueueProvider exposes work queue depths for a pawn's PodController.
+type QueueProvider interface {
+	SyncPodsFromKubernetesQueueLen() int
+	DeletePodsFromKubernetesQueueLen() int
+	SyncPodStatusFromProviderQueueLen() int
+}
+
 // Server exposes a Varlink socket for the apsis CLI and remote control.
 type Server struct {
 	socketPath string
@@ -68,6 +75,7 @@ type Server struct {
 
 	mu      sync.RWMutex
 	gambits []*provider.Gambit
+	queues  map[string]QueueProvider // pawn name → PodController
 
 	snapMu   sync.RWMutex
 	snapPods []PodInfo
@@ -99,6 +107,15 @@ func (s *Server) RegisterGambit(g *provider.Gambit) {
 	s.mu.Unlock()
 }
 
+func (s *Server) RegisterQueues(pawnName string, qp QueueProvider) {
+	s.mu.Lock()
+	if s.queues == nil {
+		s.queues = make(map[string]QueueProvider)
+	}
+	s.queues[pawnName] = qp
+	s.mu.Unlock()
+}
+
 func (s *Server) AllPodUIDs() map[string]struct{} {
 	s.mu.RLock()
 	gambits := s.gambits
@@ -127,8 +144,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.varlinkSrv = svc
 
-	if err := os.Chmod(filepath.Dir(s.socketPath), 0755); err != nil {
-		s.logger.Warn("Could not chmod socket dir", "err", err)
+	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0755); err != nil {
+		s.logger.Warn("Could not create socket dir", "err", err)
 	}
 
 	// TCP + mTLS — optional remote access for Apogeos operator.
@@ -318,6 +335,7 @@ func (s *Server) buildStatus() map[string]any {
 func (s *Server) buildPawns() map[string]any {
 	s.mu.RLock()
 	gambits := s.gambits
+	queues := s.queues
 	s.mu.RUnlock()
 	pawns := make([]any, 0, len(gambits))
 	for _, g := range gambits {
@@ -330,6 +348,11 @@ func (s *Server) buildPawns() map[string]any {
 		}
 		if usage, _, err := pawstats.ReadSliceMemory(g.Config.Name); err == nil {
 			info.MemoryMiB = int64(usage / (1024 * 1024))
+		}
+		if qp, ok := queues[g.Config.Name]; ok {
+			info.SyncQueueDepth = qp.SyncPodsFromKubernetesQueueLen()
+			info.DeleteQueueDepth = qp.DeletePodsFromKubernetesQueueLen()
+			info.StatusQueueDepth = qp.SyncPodStatusFromProviderQueueLen()
 		}
 		pawns = append(pawns, toMap(info))
 	}

@@ -482,6 +482,120 @@ func labelsToString(m map[string]string) string {
 }
 
 
+// RefreshConfigMapDirect rewrites a previously-materialised ConfigMap volume in-place
+// using the provided ConfigMap object directly (not from the lister cache).
+// Files are truncated+written (same inode) so inotify IN_MODIFY propagates
+// through the bind mount into the container. New keys are created; stale keys
+// are removed.
+func RefreshConfigMapDirect(cm *corev1.ConfigMap, vol *corev1.Volume, hostDir string) error {
+	keyToPath := make(map[string]string)
+	if len(vol.ConfigMap.Items) > 0 {
+		for _, item := range vol.ConfigMap.Items {
+			keyToPath[item.Key] = item.Path
+		}
+	} else {
+		for k := range cm.Data {
+			keyToPath[k] = k
+		}
+		for k := range cm.BinaryData {
+			keyToPath[k] = k
+		}
+	}
+
+	// Write current keys (truncate existing files to preserve inode).
+	written := make(map[string]bool, len(keyToPath))
+	for key, path := range keyToPath {
+		dest := filepath.Join(hostDir, path)
+		written[dest] = true
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		var data []byte
+		if s, ok := cm.Data[key]; ok {
+			data = []byte(s)
+		} else if b, ok := cm.BinaryData[key]; ok {
+			data = b
+		}
+		if err := truncateWrite(dest, data, 0o644); err != nil {
+			return fmt.Errorf("refresh configMap key %s: %w", key, err)
+		}
+	}
+
+	return removeStaleFiles(hostDir, written)
+}
+
+// RefreshSecretDirect rewrites a previously-materialised Secret volume in-place
+// using the provided Secret object directly (not from the lister cache).
+func RefreshSecretDirect(secret *corev1.Secret, vol *corev1.Volume, hostDir string) error {
+	keyToPath := make(map[string]string)
+	if len(vol.Secret.Items) > 0 {
+		for _, item := range vol.Secret.Items {
+			keyToPath[item.Key] = item.Path
+		}
+	} else {
+		for k := range secret.Data {
+			keyToPath[k] = k
+		}
+	}
+
+	written := make(map[string]bool, len(keyToPath))
+	for key, path := range keyToPath {
+		dest := filepath.Join(hostDir, path)
+		written[dest] = true
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		if err := truncateWrite(dest, secret.Data[key], 0o600); err != nil {
+			return fmt.Errorf("refresh secret key %s: %w", key, err)
+		}
+	}
+
+	return removeStaleFiles(hostDir, written)
+}
+
+// truncateWrite opens an existing file with O_TRUNC to preserve the inode
+// (so inotify fires IN_MODIFY through bind mounts), or creates it if new.
+func truncateWrite(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
+// removeStaleFiles walks hostDir and removes any files not in the keep set.
+func removeStaleFiles(hostDir string, keep map[string]bool) error {
+	entries, err := os.ReadDir(hostDir)
+	if err != nil {
+		return nil // dir may not exist yet
+	}
+	for _, e := range entries {
+		path := filepath.Join(hostDir, e.Name())
+		if e.IsDir() {
+			if err := removeStaleFiles(path, keep); err != nil {
+				return err
+			}
+			sub, _ := os.ReadDir(path)
+			if len(sub) == 0 {
+				os.Remove(path)
+			}
+			continue
+		}
+		if !keep[path] {
+			_ = os.Truncate(path, 0)
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove stale key %s: %w", e.Name(), err)
+			}
+		}
+	}
+	return nil
+}
+
 func ensurePath(path string, t *corev1.HostPathType) error {
 	if t == nil || *t == corev1.HostPathUnset || *t == corev1.HostPathDirectory || *t == corev1.HostPathFile {
 		// Must already exist — don't create.

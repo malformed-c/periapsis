@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
+	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/control"
 	"github.com/malformed-c/periapsis/internal/image"
@@ -42,6 +43,20 @@ import (
 	"k8s.io/klog/v2"
 	"golang.org/x/time/rate"
 )
+
+// perigeosRetryFunc is a custom retry policy for the pod sync queue.
+// NotFound errors are permanent (pod deleted from apiserver).
+// Transient errors (image pull, CNI timeout) use linear backoff up to 30s.
+func perigeosRetryFunc(_ context.Context, key string, timesTried int, _ time.Time, err error) (*time.Duration, error) {
+	if errdefs.IsNotFound(err) {
+		return nil, fmt.Errorf("not retrying %q: %w", key, err)
+	}
+	if timesTried < 60 {
+		delay := time.Duration(min(timesTried*5, 30)) * time.Second
+		return &delay, nil
+	}
+	return nil, fmt.Errorf("maximum retries (%d) reached for %q: %w", timesTried, key, err)
+}
 
 func main() {
 	logger := slog.New(tint.NewHandler(os.Stdout, &tint.Options{
@@ -416,7 +431,8 @@ func main() {
 				ConfigMapInformer: cmInformer,
 				SecretInformer:    secretInformer,
 				ServiceInformer:   svcInformer,
-				SyncPodsFromKubernetesRateLimiter:    fastLimiter,
+				SyncPodsFromKubernetesRateLimiter:     fastLimiter,
+				SyncPodsFromKubernetesShouldRetryFunc: perigeosRetryFunc,
 				DeletePodsFromKubernetesRateLimiter:   fastLimiter,
 				SyncPodStatusFromProviderRateLimiter:  fastLimiter,
 			})
@@ -424,6 +440,7 @@ func main() {
 				pawnLogger.Error("Error creating PodController", "err", err)
 				return
 			}
+			controlSrv.RegisterQueues(pawnName, podController)
 
 			localInformer.Start(ctx.Done())
 			pawnLogger.Info("Waiting for local informer caches to sync...")
@@ -437,11 +454,9 @@ func main() {
 			podLister := localInformer.Core().V1().Pods().Lister().Pods(corev1.NamespaceAll)
 			reconciler := provider.NewReconciler(g, rt, nm, im, podLister, pawnLogger.With("component", "reconciler"))
 
-			// Wire volume listers so configMap/secret volumes can be resolved.
-			g.SetVolumeListers(
-				cmInformer.Lister(),
-				secretInformer.Lister(),
-			)
+			// Wire listers for env population and volume resolution.
+			g.SetListers(cmInformer.Lister(), secretInformer.Lister(), svcInformer.Lister())
+			g.SetInformers(cmInformer.Informer(), secretInformer.Informer())
 			g.SetKubeClient(kubeClient)
 			if clusterDNS != "" {
 				g.SetClusterDNS(clusterDNS)
@@ -467,7 +482,7 @@ func main() {
 			wg.Go(func() {
 				pawnLogger.Info("Starting PodController")
 
-				if err := podController.Run(ctx, pawnCount); err != nil {
+				if err := podController.Run(ctx, max(5, pawnCfg.CreateConcurrency)); err != nil {
 					pawnLogger.Error("PodController exited", "err", err)
 				}
 			})

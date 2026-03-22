@@ -58,45 +58,16 @@ func TestTidal_StaticEnv(t *testing.T) {
 func TestTidal_FieldRefResolution(t *testing.T) {
 	tidal := downward.NewTidal("node-1", "192.168.1.1")
 	pod := newPod("mypod", "default", "abc")
+	// Env values are pre-resolved by PopulateEnvironmentVariables.
 	container := &corev1.Container{
 		Name: "main",
 		Env: []corev1.EnvVar{
-			{
-				Name: "POD_NAME",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
-				},
-			},
-			{
-				Name: "POD_NS",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
-				},
-			},
-			{
-				Name: "POD_UID",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"},
-				},
-			},
-			{
-				Name: "NODE_NAME",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
-				},
-			},
-			{
-				Name: "POD_IP",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
-				},
-			},
-			{
-				Name: "HOST_IP",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
-				},
-			},
+			{Name: "POD_NAME", Value: "mypod"},
+			{Name: "POD_NS", Value: "default"},
+			{Name: "POD_UID", Value: "test-uid-abc"},
+			{Name: "NODE_NAME", Value: "node-1"},
+			{Name: "POD_IP", Value: "10.88.0.2"},
+			{Name: "HOST_IP", Value: "192.168.1.1"},
 		},
 	}
 

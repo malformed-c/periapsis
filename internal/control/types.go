@@ -27,13 +27,16 @@ type StatusResponse struct {
 
 // PawnInfo in GET /v1/pawns
 type PawnInfo struct {
-	Name       string `json:"name"`
-	IsPrimary  bool   `json:"is_primary"`
-	Port       int    `json:"port"`
-	NodeIP     string `json:"node_ip"`
-	PodCount   int    `json:"pod_count"`
-	CPUUsageMs int64  `json:"cpu_usage_ms"`
-	MemoryMiB  int64  `json:"memory_mib"`
+	Name             string `json:"name"`
+	IsPrimary        bool   `json:"is_primary"`
+	Port             int    `json:"port"`
+	NodeIP           string `json:"node_ip"`
+	PodCount         int    `json:"pod_count"`
+	CPUUsageMs       int64  `json:"cpu_usage_ms"`
+	MemoryMiB        int64  `json:"memory_mib"`
+	SyncQueueDepth   int    `json:"sync_queue_depth"`
+	DeleteQueueDepth int    `json:"delete_queue_depth"`
+	StatusQueueDepth int    `json:"status_queue_depth"`
 }
 
 type PawnsResponse struct {

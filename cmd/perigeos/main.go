@@ -38,7 +38,9 @@ import (
 	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -400,6 +402,12 @@ func main() {
 				}),
 			)
 
+			// High-throughput rate limiter: 500 items/sec burst 1000, with
+			// exponential backoff only on failures (1ms base, 30s max).
+			fastLimiter := workqueue.NewMaxOfRateLimiter(
+				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
+				workqueue.NewItemExponentialFailureRateLimiter(1*time.Millisecond, 30*time.Second),
+			)
 			podController, err := node.NewPodController(node.PodControllerConfig{
 				PodClient:         kubeClient.CoreV1(),
 				Provider:          g,
@@ -408,6 +416,9 @@ func main() {
 				ConfigMapInformer: cmInformer,
 				SecretInformer:    secretInformer,
 				ServiceInformer:   svcInformer,
+				SyncPodsFromKubernetesRateLimiter:    fastLimiter,
+				DeletePodsFromKubernetesRateLimiter:   fastLimiter,
+				SyncPodStatusFromProviderRateLimiter:  fastLimiter,
 			})
 			if err != nil {
 				pawnLogger.Error("Error creating PodController", "err", err)
@@ -456,7 +467,7 @@ func main() {
 			wg.Go(func() {
 				pawnLogger.Info("Starting PodController")
 
-				if err := podController.Run(ctx, 1); err != nil {
+				if err := podController.Run(ctx, pawnCount); err != nil {
 					pawnLogger.Error("PodController exited", "err", err)
 				}
 			})

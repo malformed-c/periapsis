@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/malformed-c/periapsis/internal/provider"
+	"github.com/malformed-c/periapsis/node"
 	"github.com/malformed-c/periapsis/internal/pki"
 	"github.com/malformed-c/periapsis/node/api"
 )
@@ -19,12 +19,12 @@ type PawnServer struct {
 	port     int
 	pawnName string
 
-	provider   *provider.Gambit
+	provider   *node.Gambit
 	httpServer *http.Server
 	listener   net.Listener
 }
 
-func NewPawnServer(g *provider.Gambit, caPath, caKeyPath string) (*PawnServer, error) {
+func NewPawnServer(g *node.Gambit, caPath, caKeyPath string) (*PawnServer, error) {
 	port     := g.Config.Port
 	pawnName := g.Config.Name
 

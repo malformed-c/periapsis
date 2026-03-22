@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
-	"github.com/malformed-c/periapsis/internal/provider"
+	"github.com/malformed-c/periapsis/node"
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/varlink/go/varlink"
@@ -74,7 +74,7 @@ type Server struct {
 	logger     *slog.Logger
 
 	mu      sync.RWMutex
-	gambits []*provider.Gambit
+	gambits []*node.Gambit
 	queues  map[string]QueueProvider // pawn name → PodController
 
 	snapMu   sync.RWMutex
@@ -101,7 +101,7 @@ func (s *Server) SetTCPListener(addr string, cert *tls.Certificate, caCert *x509
 	s.tlsCACert = caCert
 }
 
-func (s *Server) RegisterGambit(g *provider.Gambit) {
+func (s *Server) RegisterGambit(g *node.Gambit) {
 	s.mu.Lock()
 	s.gambits = append(s.gambits, g)
 	s.mu.Unlock()
@@ -529,7 +529,7 @@ func readLoadAvg() (string, error) {
 	return "", fmt.Errorf("unexpected loadavg format")
 }
 
-func countMachines(gambits []*provider.Gambit) int {
+func countMachines(gambits []*node.Gambit) int {
 	ctx := context.Background()
 	total := 0
 	for _, g := range gambits {
@@ -540,7 +540,7 @@ func countMachines(gambits []*provider.Gambit) int {
 	return total
 }
 
-func countDiskDirs(gambits []*provider.Gambit) int {
+func countDiskDirs(gambits []*node.Gambit) int {
 	total := 0
 	for _, g := range gambits {
 		total += len(scanDiskPods(g.Config.BaseDir, g.Config.Name))
@@ -548,7 +548,7 @@ func countDiskDirs(gambits []*provider.Gambit) int {
 	return total
 }
 
-func countSystemdUnits(gambits []*provider.Gambit) int {
+func countSystemdUnits(gambits []*node.Gambit) int {
 	ctx := context.Background()
 	seen := make(map[string]struct{})
 	for _, g := range gambits {
@@ -601,7 +601,7 @@ func countNetns() int {
 	return len(entries)
 }
 
-func (s *Server) diagnosePawn(ctx context.Context, g *provider.Gambit) PawnDiagnosis {
+func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis {
 	diag := PawnDiagnosis{Name: g.Config.Name}
 	gambitUIDs := g.PodUIDs()
 	diag.GambitPods = len(gambitUIDs)

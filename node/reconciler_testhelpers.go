@@ -1,4 +1,4 @@
-package provider
+package node
 
 import (
 	"log/slog"
@@ -37,7 +37,8 @@ func (m *mockTracker) EvictGhost(uid string) { delete(m.hasPod, uid) }
 // Exported so package provider_test can use it.
 type TestReconciler struct {
 	*Reconciler
-	tracker *mockTracker
+	tracker      *mockTracker
+	SyncRequests []string // records "namespace/name" entries from syncRequester calls
 }
 
 func (t *TestReconciler) MarkInFlight(uid string) { t.tracker.inFlight[uid] = true }
@@ -53,7 +54,7 @@ func NewReconcilerForTest(
 ) *TestReconciler {
 	tracker := newMockTracker()
 	im := image.NewImageManager("/tmp/apsis-test", "test-pawn", slog.Default())
-	return &TestReconciler{
+	tr := &TestReconciler{
 		Reconciler: &Reconciler{
 			tracker:   tracker,
 			runtime:   rt,
@@ -66,4 +67,8 @@ func NewReconcilerForTest(
 		},
 		tracker: tracker,
 	}
+	tr.Reconciler.syncRequester = func(namespace, name string) {
+		tr.SyncRequests = append(tr.SyncRequests, namespace+"/"+name)
+	}
+	return tr
 }

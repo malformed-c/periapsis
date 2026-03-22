@@ -1,4 +1,4 @@
-package provider
+package node
 
 import (
 	"context"
@@ -36,14 +36,15 @@ type PodTracker interface {
 // The Reconciler never creates pods. The VK PodController is the sole authority
 // for pod creation. This eliminates the double-create race entirely.
 type Reconciler struct {
-	tracker   PodTracker
-	runtime   pruntime.Runtime
-	network   network.NetworkManager
-	image     *image.ImageManager
-	podLister v1.PodNamespaceLister
-	logger    *slog.Logger
-	baseDir   string
-	pawnName  string
+	tracker       PodTracker
+	runtime       pruntime.Runtime
+	network       network.NetworkManager
+	image         *image.ImageManager
+	podLister     v1.PodNamespaceLister
+	logger        *slog.Logger
+	baseDir       string
+	pawnName      string
+	syncRequester func(namespace, name string) // forward reconciler callback
 }
 
 func NewReconciler(
@@ -55,14 +56,15 @@ func NewReconciler(
 	logger *slog.Logger,
 ) *Reconciler {
 	return &Reconciler{
-		tracker:   g,
-		runtime:   rt,
-		network:   nm,
-		image:     im,
-		podLister: podLister,
-		logger:    logger,
-		baseDir:   g.Config.BaseDir,
-		pawnName:  g.Config.Name,
+		tracker:       g,
+		runtime:       rt,
+		network:       nm,
+		image:         im,
+		podLister:     podLister,
+		logger:        logger,
+		baseDir:       g.Config.BaseDir,
+		pawnName:      g.Config.Name,
+		syncRequester: g.RequestSync,
 	}
 }
 
@@ -120,9 +122,10 @@ func (r *Reconciler) cleanOrphans(ctx context.Context) {
 			continue
 		}
 
-		// 3. Belt-and-suspenders: also check the K8s informer cache.
-		//    This covers the brief window after DeletePod removes it from g.pods
-		//    but before the informer cache reflects the deletion.
+		// 3. Check the K8s informer cache. If the pod still exists in K8s
+		//    but Gambit lost track of it, request a re-sync so the PodController
+		//    re-drives creation (forward reconciler). If K8s doesn't know about
+		//    it either, fall through to teardown.
 		if r.podLister != nil {
 			pods, err := r.podLister.List(labels.Everything())
 			if err == nil {
@@ -130,6 +133,11 @@ func (r *Reconciler) cleanOrphans(ctx context.Context) {
 				for _, pod := range pods {
 					if string(pod.UID) == m.UID {
 						found = true
+						r.logger.Info("Reconciler: machine exists in K8s but not in Gambit, requesting re-sync",
+							"uid", m.UID, "namespace", m.Namespace, "name", m.Name)
+						if r.syncRequester != nil {
+							r.syncRequester(m.Namespace, m.Name)
+						}
 						break
 					}
 				}

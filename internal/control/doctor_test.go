@@ -15,7 +15,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
-	"github.com/malformed-c/periapsis/internal/provider"
+	"github.com/malformed-c/periapsis/node"
 	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	"k8s.io/client-go/tools/record"
@@ -77,7 +77,7 @@ func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
 // populated by calling HydrateFromRuntime — use this to seed in-memory state.
-func newDoctorTestGambit(t *testing.T, pawnName string, machines []pruntime.PodMetadata) (*provider.Gambit, *doctorMockRuntime) {
+func newDoctorTestGambit(t *testing.T, pawnName string, machines []pruntime.PodMetadata) (*node.Gambit, *doctorMockRuntime) {
 	t.Helper()
 	baseDir := t.TempDir()
 	cfg := config.PawnConfig{
@@ -89,11 +89,11 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []pruntime.PodM
 	nm := &doctorMockNetwork{}
 	im := image.NewImageManager(baseDir, pawnName, logger)
 	rec := record.NewFakeRecorder(100)
-	return provider.NewGambit(cfg, im, nm, rt, logger, rec), rt
+	return node.NewGambit(cfg, im, nm, rt, logger, rec), rt
 }
 
 // makeDiskPodDir creates the on-disk directory for a pod UID under the gambit's BaseDir.
-func makeDiskPodDir(t *testing.T, g *provider.Gambit, uid string) {
+func makeDiskPodDir(t *testing.T, g *node.Gambit, uid string) {
 	t.Helper()
 	dir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -102,10 +102,10 @@ func makeDiskPodDir(t *testing.T, g *provider.Gambit, uid string) {
 }
 
 // newDoctorServer creates a control Server wired up to a single gambit.
-func newDoctorServer(g *provider.Gambit) *Server {
+func newDoctorServer(g *node.Gambit) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	s := &Server{logger: logger}
-	s.gambits = []*provider.Gambit{g}
+	s.gambits = []*node.Gambit{g}
 	return s
 }
 
@@ -547,7 +547,7 @@ func TestDoctorFuzz(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		im := image.NewImageManager(baseDir, pawnName, logger)
 		rec := record.NewFakeRecorder(100)
-		g := provider.NewGambit(cfg, im, nm, rt, logger, rec)
+		g := node.NewGambit(cfg, im, nm, rt, logger, rec)
 
 		if err := g.HydrateFromRuntime(context.Background()); err != nil {
 			t.Fatalf("iter %d: HydrateFromRuntime: %v", iter, err)
@@ -567,7 +567,7 @@ func TestDoctorFuzz(t *testing.T) {
 		// Build a throwaway server and run doctor.
 		s := &Server{
 			logger:  logger,
-			gambits: []*provider.Gambit{g},
+			gambits: []*node.Gambit{g},
 		}
 		resp := callDoctor(t, s)
 

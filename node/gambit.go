@@ -1,4 +1,4 @@
-package provider
+package node
 
 import (
 	"bufio"
@@ -128,6 +128,12 @@ type Gambit struct {
 	// the syncProviderWrapper's 5-second polling loop.
 	podNotify func(*corev1.Pod)
 
+	// syncRequester is the forward reconciler callback. When set, Gambit
+	// (via BatchWatcher or Reconciler) can request the PodController re-sync
+	// a pod from the K8s side. The sync handler's podsEffectivelyEqual
+	// check prevents infinite loops.
+	syncRequester func(namespace, name string)
+
 	shuttingDown atomic.Bool
 	shutdownCh   chan struct{} // closed when Shutdown() is called
 
@@ -228,6 +234,20 @@ func (g *Gambit) SetInformers(cmInformer, secretInformer cache.SharedIndexInform
 			g.refreshSecretVolumes(s)
 		},
 	})
+}
+
+// SetSyncRequester registers the forward reconciler callback. The provider
+// calls fn(namespace, name) to request the PodController re-sync a pod.
+func (g *Gambit) SetSyncRequester(fn func(namespace, name string)) {
+	g.syncRequester = fn
+}
+
+// RequestSync asks the PodController to re-evaluate a pod from the K8s side.
+// Safe to call from any goroutine. No-op if SetSyncRequester was never called.
+func (g *Gambit) RequestSync(namespace, name string) {
+	if g.syncRequester != nil {
+		g.syncRequester(namespace, name)
+	}
 }
 
 // refreshConfigMapVolumes rewrites ConfigMap volume files using the updated object directly.

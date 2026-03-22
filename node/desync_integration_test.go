@@ -1,4 +1,4 @@
-package provider_test
+package node
 
 import (
 	"context"
@@ -18,7 +18,6 @@ import (
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
-	"github.com/malformed-c/periapsis/internal/provider"
 	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	rtsd "github.com/malformed-c/periapsis/internal/runtime/systemd"
 	corev1 "k8s.io/api/core/v1"
@@ -54,7 +53,7 @@ type testHarness struct {
 	pawnName string
 	baseDir  string
 	rt       *rtsd.SystemdRuntime
-	gambit   *provider.Gambit
+	gambit   *Gambit
 	im       *image.ImageManager
 	conn     *dbus.Conn
 }
@@ -87,7 +86,7 @@ func newHarness(t *testing.T) *testHarness {
 	}
 	nm := &stubNetwork{}
 	rec := record.NewFakeRecorder(100)
-	g := provider.NewGambit(cfg, im, nm, rt, logger, rec)
+	g := NewGambit(cfg, im, nm, rt, logger, rec)
 
 	return &testHarness{
 		t:        t,
@@ -450,7 +449,7 @@ func TestIntegration_ReconcilerCleansOrphans(t *testing.T) {
 	}
 
 	// Run reconciler — should clean the orphan immediately (no grace period).
-	tr := provider.NewReconcilerForTest(h.rt, &stubNetwork{}, nil,
+	tr := NewReconcilerForTest(h.rt, &stubNetwork{}, nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	tr.RunOnce(context.Background())
 

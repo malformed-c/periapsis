@@ -1,4 +1,4 @@
-package provider_test
+package node
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malformed-c/periapsis/internal/provider"
 	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
@@ -89,9 +88,9 @@ func (m *mockPodLister) Get(name string) (*corev1.Pod, error) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) *provider.TestReconciler {
+func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) *TestReconciler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return provider.NewReconcilerForTest(rt, nm, lister, logger)
+	return NewReconcilerForTest(rt, nm, lister, logger)
 }
 
 func makePod(name, namespace, uid string) *corev1.Pod {
@@ -175,6 +174,11 @@ func TestReconciler_K8sPodListerMatchSkips(t *testing.T) {
 
 	if len(rt.stopped) != 0 {
 		t.Errorf("pod in K8s lister should not be stopped, got %v", rt.stopped)
+	}
+	// Forward reconciler: should have requested re-sync for the pod that
+	// exists in K8s but isn't tracked by Gambit.
+	if len(r.SyncRequests) != 1 || r.SyncRequests[0] != "default/mypod" {
+		t.Errorf("expected sync request for default/mypod, got %v", r.SyncRequests)
 	}
 }
 

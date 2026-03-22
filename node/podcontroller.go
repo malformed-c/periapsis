@@ -38,8 +38,8 @@ import (
 )
 
 // PodProvider defines the interface used by the PodController to manage pod
-// lifecycle on the node. Providers must support async status notifications
-// via NotifyPods — the legacy sync polling wrapper has been removed (ADR-0002).
+// lifecycle on the node. Gambit is the sole production implementation; the
+// interface is retained as a testing seam for PodController unit tests.
 type PodProvider interface {
 	CreatePod(ctx context.Context, pod *corev1.Pod) error
 	UpdatePod(ctx context.Context, pod *corev1.Pod) error
@@ -394,6 +394,17 @@ func (pc *PodController) Err() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	return pc.err
+}
+
+// RequestSync enqueues a pod for re-evaluation by the sync loop.
+// This is the forward reconciler hook: the provider calls it when it detects
+// drift (e.g. a ghost pod, a crashed container that needs re-sync against
+// the current K8s spec). The sync handler's podsEffectivelyEqual check
+// prevents infinite loops when no actual spec change exists.
+func (pc *PodController) RequestSync(namespace, name string) {
+	key := namespace + "/" + name
+	ctx := context.Background()
+	pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 }
 
 // SyncPodsFromKubernetesQueueLen returns the length of the SyncPodsFromKubernetes queue

@@ -23,7 +23,6 @@ import (
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
-	"github.com/malformed-c/periapsis/internal/provider"
 	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
@@ -325,7 +324,7 @@ func main() {
 
 	var (
 		serversMu  sync.Mutex
-		allGambits []*provider.Gambit
+		allGambits []*node.Gambit
 		gambitsMu  sync.Mutex
 	)
 
@@ -375,7 +374,7 @@ func main() {
 				corev1.EventSource{Host: pawnName, Component: "Perigeos"},
 			)
 
-			g := provider.NewGambit(pawnCfg, im, nm, rt, pawnLogger, eventRecorder)
+			g := node.NewGambit(pawnCfg, im, nm, rt, pawnLogger, eventRecorder)
 			controlSrv.RegisterGambit(g)
 
 			if err := g.HydrateFromRuntime(ctx); err != nil {
@@ -388,7 +387,7 @@ func main() {
 
 			// Start the batch watcher — single goroutine per pawn that monitors
 			// all containers and handles restarts + probes.
-			bw := provider.StartBatchWatcher(g)
+			bw := node.StartBatchWatcher(g)
 			wg.Go(func() { <-ctx.Done(); bw.Stop() })
 
 				nodeController, err := node.NewNodeController(
@@ -452,11 +451,12 @@ func main() {
 			pawnLogger.Info("Local caches synced")
 
 			podLister := localInformer.Core().V1().Pods().Lister().Pods(corev1.NamespaceAll)
-			reconciler := provider.NewReconciler(g, rt, nm, im, podLister, pawnLogger.With("component", "reconciler"))
+			reconciler := node.NewReconciler(g, rt, nm, im, podLister, pawnLogger.With("component", "reconciler"))
 
 			// Wire listers for env population and volume resolution.
 			g.SetListers(cmInformer.Lister(), secretInformer.Lister(), svcInformer.Lister())
 			g.SetInformers(cmInformer.Informer(), secretInformer.Informer())
+			g.SetSyncRequester(podController.RequestSync)
 			g.SetKubeClient(kubeClient)
 			if clusterDNS != "" {
 				g.SetClusterDNS(clusterDNS)

@@ -4,6 +4,8 @@
 *.so
 *.dylib
 bin/
+/apsis
+/perigeos
 
 # Certificates
 *.pem

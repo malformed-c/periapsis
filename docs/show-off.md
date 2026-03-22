@@ -1,7 +1,7 @@
-# Perigeos at Scale: 2000 Pods, 30 Virtual Nodes, Single Host
+# Perigeos at Scale: 3000 Pods, 30 Virtual Nodes, Single Host
 
 One box. 28 cores, 48 GB RAM. 30 virtual Kubernetes nodes running as a single
-perigeos process. 2000 pods, all Running, all Ready.
+perigeos process. 3000 pods, all Running, all Ready.
 
 No Docker. No containerd. Just systemd-nspawn and a Linux kernel.
 
@@ -30,53 +30,29 @@ compute-01   Ready    pawn                    perigeos://dev   systemd://260-1-a
 compute-29   Ready    pawn                    perigeos://dev   systemd://260-1-arch
 ```
 
-## Rollout: 0 to 2000 in under 6 minutes
-
-Using stepped rollout (50 pods per step) via the `apsis` CLI:
-
-```
-$ apsis rollout --deployment scale-test --replicas 2000 --step 50 --timeout 180s
-Deployment:  default/scale-test
-Current:     0 replica(s)
-Target:      2000 replica(s)
-
-── Step 1/40: scaling 0 → 50 ──
-  ready=0 updated=0 available=0 perigeos=0 / 50 desired
-  ready=50 updated=50 available=50 perigeos=50 / 50 desired
-  ✓ 50/50 replicas ready
-...
-── Step 40/40: scaling 1950 → 2000 ──
-  ready=2000 updated=2000 available=2000 perigeos=2000 / 2000 desired
-  ✓ 2000/2000 replicas ready
-
-✓ Rollout complete: default/scale-test is at 2000 replica(s).
-```
-
-Sustained throughput: ~5.5 pods/second across 30 pawns.
-
-## All 2000 Running
+## All 3000 Running
 
 ```
 $ kubectl get deployment scale-test
 NAME         READY       UP-TO-DATE   AVAILABLE   AGE
-scale-test   2000/2000   2000         2000        72m
+scale-test   3000/3000   3000         3000        102m
 
 $ kubectl get pods --field-selector=status.phase=Running --no-headers | wc -l
-2001
+3001
 ```
 
 ## Even Distribution
 
-~67 pods per pawn, balanced by the kube-scheduler across all 30 virtual nodes:
+100 pods per pawn, balanced by the kube-scheduler across all 30 virtual nodes:
 
 ```
 $ kubectl get pods -o wide --no-headers | awk '{print $7}' | sort | uniq -c | sort -rn
-     68 compute-01
-     67 compute-29
-     67 compute-28
-     67 compute-27
-     ...
-     66 compute-04
+    101 compute-01
+    100 compute-29
+    100 compute-28
+    100 compute-27
+    ...
+    100 compute-00
 ```
 
 ## Pod Operations Work
@@ -88,7 +64,7 @@ $ kubectl exec scale-test-7d48c89997-225b5 -- ps aux
 PID   USER     TIME  COMMAND
     1 root      0:00 /bin/sh -c while true; do sleep 3600; done
     2 root      0:00 sleep 3600
-    4 root      0:00 ps aux
+    6 root      0:00 ps aux
 ```
 
 ### Networking
@@ -97,11 +73,11 @@ Each pod gets a unique IP via Constellation CNI:
 
 ```
 $ kubectl get pods -l app=scale-test -o wide --no-headers | head -5
-scale-test-7d48c89997-225b5   1/1   Running   0   7m   10.0.126.247   compute-07
-scale-test-7d48c89997-24dnb   1/1   Running   0  12m   10.0.190.57    compute-11
-scale-test-7d48c89997-24xwj   1/1   Running   0   9m   10.0.254.67    compute-15
-scale-test-7d48c89997-25cb5   1/1   Running   0   9m   10.1.213.204   compute-29
-scale-test-7d48c89997-25mtg   1/1   Running   0  11m   10.0.102.143   compute-06
+scale-test-7d48c89997-225b5   1/1   Running   0   38m   10.0.126.247   compute-07
+scale-test-7d48c89997-24d5j   1/1   Running   0   18m   10.1.21.95     compute-17
+scale-test-7d48c89997-24dnb   1/1   Running   0   42m   10.0.190.57    compute-11
+scale-test-7d48c89997-24ll5   1/1   Running   0   20m   10.1.42.101    compute-18
+scale-test-7d48c89997-24xwj   1/1   Running   0   39m   10.0.254.67    compute-15
 ```
 
 ### Pod-to-pod connectivity
@@ -109,15 +85,15 @@ scale-test-7d48c89997-25mtg   1/1   Running   0  11m   10.0.102.143   compute-06
 Cross-pawn ping — pod on compute-07 reaching pod on compute-27, sub-millisecond:
 
 ```
-$ kubectl exec scale-test-7d48c89997-225b5 -- ping -c 3 10.0.221.45
-PING 10.0.221.45 (10.0.221.45): 56 data bytes
-64 bytes from 10.0.221.45: seq=0 ttl=63 time=0.083 ms
-64 bytes from 10.0.221.45: seq=1 ttl=63 time=0.082 ms
-64 bytes from 10.0.221.45: seq=2 ttl=63 time=0.115 ms
+$ kubectl exec scale-test-7d48c89997-225b5 -- ping -c 3 10.1.180.167
+PING 10.1.180.167 (10.1.180.167): 56 data bytes
+64 bytes from 10.1.180.167: seq=0 ttl=63 time=0.081 ms
+64 bytes from 10.1.180.167: seq=1 ttl=63 time=0.075 ms
+64 bytes from 10.1.180.167: seq=2 ttl=63 time=0.140 ms
 
---- 10.0.221.45 ping statistics ---
+--- 10.1.180.167 ping statistics ---
 3 packets transmitted, 3 packets received, 0% packet loss
-round-trip min/avg/max = 0.082/0.093/0.115 ms
+round-trip min/avg/max = 0.075/0.098/0.140 ms
 ```
 
 ## Runtime Status
@@ -126,21 +102,22 @@ round-trip min/avg/max = 0.082/0.093/0.115 ms
 $ apsis status
 Hostname:    engix99
 Version:     dev
-Uptime:      20m26s
+Uptime:      50m46s
 Pawns:       30
-Pods:        2013
+Pods:        3013
 Kernel:      6.19.9-arch1-1
 Arch:        linux/amd64
-Memory:      18362 / 48004 MiB
+Go:          go1.26.1-X:nodwarf5
+Memory:      25931 / 48004 MiB
 CPU cores:   28
-Load avg:    9.37 15.83 12.14
+Load avg:    8.23 10.59 14.85
 
-Machines:    2013
-Disk dirs:   2013
-Units:       2013
-RSS:         263 MiB
-LXC veths:   2016
-Netns:       2015
+Machines:    3013
+Disk dirs:   3013
+Units:       3013
+RSS:         351 MiB
+LXC veths:   3016
+Netns:       3015
 ```
 
 ## Health Check: All Sources Agree
@@ -151,16 +128,16 @@ gambit (in-memory), systemd (running units), and disk (overlay dirs). All match.
 ```
 $ apsis doctor
 Status:  HEALTHY
-Sources: gambit=2013  systemd=2013  disk=2013
-Network: lxc_veths=2016  netns=2015
+Sources: gambit=3013  systemd=3013  disk=3013
+Network: lxc_veths=3016  netns=3015
 
 ── compute-00 ──
-  gambit=67  systemd=67  disk=67  OK
+  gambit=100  systemd=100  disk=100  OK
 ── compute-01 ──
-  gambit=68  systemd=68  disk=68  OK
+  gambit=101  systemd=101  disk=101  OK
 ...
 ── compute-29 ──
-  gambit=67  systemd=67  disk=67  OK
+  gambit=100  systemd=100  disk=100  OK
 ```
 
 ## Resource Usage
@@ -169,9 +146,9 @@ Network: lxc_veths=2016  netns=2015
 
 ```
 $ ps -p $(pgrep -x perigeos) -o rss,vsz,pcpu,pmem --no-headers
-278824 6753216 22.9 0.5
+377128 6822940 33.8 0.7
 
-RSS: 263 MiB for 2000+ pods — ~130 KB per pod.
+RSS: 351 MiB for 3000+ pods — ~117 KB per pod.
 ```
 
 ### Cgroups
@@ -180,15 +157,14 @@ RSS: 263 MiB for 2000+ pods — ~130 KB per pod.
 $ systemctl status perigeos.slice
 ● perigeos.slice
      Active: active
-     Tasks: 6160
-     Memory: 4.1G (peak: 4.3G)
-     CPU: 6min 56s
+     Tasks: 9160
+     Memory: 6.2G (peak: 6.3G)
+     CPU: 19min 44s
 
 $ systemctl status perigeos-compute-00.slice
 ● perigeos-compute-00.slice — Perigeos Pawn: compute-00
-     Tasks: 201
-     Memory: 137.2M (max: 488.2M, available: 351M, peak: 143.8M)
-     CPU: 11.760s
+     Tasks: 300
+     Memory: ~207 MiB (100 pods)
 ```
 
 ### System
@@ -196,24 +172,23 @@ $ systemctl status perigeos-compute-00.slice
 ```
 $ free -h
               total   used   available
-Mem:           46Gi   17Gi      28Gi
+Mem:           46Gi   25Gi      21Gi
 Swap:          11Gi     0B      11Gi
 
-Host memory with 2000 pods: 17 GB used, 28 GB available.
+Host memory with 3000 pods: 25 GB used, 21 GB available.
 ```
 
 ## The Numbers
 
 | Metric | Value |
 |--------|-------|
-| Pods | 2000, all Running, all Ready |
+| Pods | 3000, all Running, all Ready |
 | Virtual Nodes | 30 (compute-00 through compute-29) |
-| Distribution | ~67 pods per pawn |
-| Rollout speed | ~5.5 pods/sec sustained |
-| Perigeos RSS | 263 MiB (~130 KB per pod) |
-| Total slice memory | 4.1 GB for all containers |
-| Per-pawn memory | ~137 MiB (67 pods) |
-| Host memory free | 28 GB of 48 GB |
+| Distribution | 100 pods per pawn |
+| Perigeos RSS | 351 MiB (~117 KB per pod) |
+| Total slice memory | 6.2 GB for all containers |
+| Per-pawn memory | ~207 MiB (100 pods) |
+| Host memory free | 21 GB of 48 GB |
 | Container runtime | systemd-nspawn (no Docker, no containerd) |
 | CNI | Constellation (eBPF, per-pod netns) |
 | System | 28-core Xeon E5-2690 v4, Arch Linux, kernel 6.19.9 |

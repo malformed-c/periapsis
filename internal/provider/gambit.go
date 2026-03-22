@@ -1426,8 +1426,32 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 		return &targetPod.Status, nil
 	}
 
-	// Query each container individually and compute aggregate pod phase.
-	containerStatuses := make([]corev1.ContainerStatus, 0, len(targetPod.Spec.Containers))
+	// Use the BatchWatcher's cached stateMap if available, otherwise fall
+	// back to per-container D-Bus queries.
+	var stateLookup func(uid, containerName string) pruntime.MachineState
+	if g.batchWatcher != nil {
+		stateLookup = g.batchWatcher.ContainerState
+	} else {
+		stateLookup = func(uid, containerName string) pruntime.MachineState {
+			state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
+			if err != nil {
+				return pruntime.StateUnknown
+			}
+			return state
+		}
+	}
+
+	return g.buildPodStatus(targetPod, stateLookup), nil
+}
+
+// buildPodStatus constructs a PodStatus from the pod spec and a state lookup
+// function. Used by both GetPodStatus (on-demand) and the BatchWatcher
+// coalescer (push on change). The stateLookup func returns the current
+// container state given (uid, containerName).
+func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, containerName string) pruntime.MachineState) *corev1.PodStatus {
+	uid := string(pod.UID)
+
+	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
 	podPhase := corev1.PodRunning
 	allReady := true
 
@@ -1435,16 +1459,13 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 	podRestarts := g.restarts[uid]
 	g.mu.RUnlock()
 
-	policy := targetPod.Spec.RestartPolicy
+	policy := pod.Spec.RestartPolicy
 	if policy == "" {
 		policy = corev1.RestartPolicyAlways
 	}
 
-	for _, c := range targetPod.Spec.Containers {
-		state, err := g.Runtime.MachineStatus(ctx, uid, c.Name)
-		if err != nil {
-			state = pruntime.StateUnknown
-		}
+	for _, c := range pod.Spec.Containers {
+		state := stateLookup(uid, c.Name)
 
 		var restartCount int32
 		if rs, ok := podRestarts[c.Name]; ok {
@@ -1470,8 +1491,6 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
 		case pruntime.StateFailed:
-			// If the watcher will restart this container, report CrashLoopBackOff
-			// instead of a terminal state — keeps the pod in Running phase.
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				podPhase = corev1.PodRunning
 				cs.State = corev1.ContainerState{
@@ -1518,13 +1537,13 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 		Phase:     podPhase,
 		HostIP:    resolveNodeIP(g.Config),
 		PodIP:     ip,
-		StartTime: targetPod.Status.StartTime,
+		StartTime: pod.Status.StartTime,
 		Conditions: []corev1.PodCondition{{
 			Type:   corev1.PodReady,
 			Status: readyCondition,
 		}},
 		ContainerStatuses: containerStatuses,
-	}, nil
+	}
 }
 
 func (g *Gambit) GetPods(_ context.Context) ([]*corev1.Pod, error) {

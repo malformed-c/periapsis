@@ -14,11 +14,31 @@ import (
 // BatchWatcher replaces per-pod watcher goroutines with a single goroutine
 // per pawn that calls ListManagedMachines once per cycle (1 D-Bus call),
 // diffs against expected state, and handles restart policy + probes.
+//
+// It also acts as the status coalescer: each cycle it compares the current
+// container state map against the previous one and pushes status updates
+// (via notifyPodStatus) only for pods whose observable state actually changed.
+// This eliminates the need for the 5s poll-all-pods loop — status updates
+// are O(changed_pods) instead of O(all_pods).
 type BatchWatcher struct {
 	gambit *Gambit
 	logger *slog.Logger
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// prevStateMap holds the stateMap from the previous poll cycle.
+	// Used by the coalescer to detect container state transitions.
+	prevStateMap map[string]pruntime.MachineState
+
+	// prevReady tracks the last-known Ready state per container.
+	// Readiness changes (probe pass/fail) don't change the machine state
+	// but do affect the pod's Ready condition, so they need separate tracking.
+	prevReady map[string]bool // key: uid/containerName
+
+	// stateCache holds the latest stateMap for external consumers
+	// (e.g. GetPodStatus) to read without per-container D-Bus calls.
+	stateCacheMu sync.RWMutex
+	stateCache   map[string]pruntime.MachineState
 
 	// restarting tracks containers currently in a restart goroutine
 	// to prevent double-restarts between poll cycles.
@@ -30,14 +50,30 @@ type BatchWatcher struct {
 func StartBatchWatcher(g *Gambit) *BatchWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	bw := &BatchWatcher{
-		gambit:     g,
-		logger:     g.Logger.With("component", "batchwatcher"),
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		restarting: make(map[string]bool),
+		gambit:       g,
+		logger:       g.Logger.With("component", "batchwatcher"),
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		prevStateMap: make(map[string]pruntime.MachineState),
+		prevReady:    make(map[string]bool),
+		stateCache:   make(map[string]pruntime.MachineState),
+		restarting:   make(map[string]bool),
 	}
 	go bw.run(ctx)
 	return bw
+}
+
+// ContainerState returns the cached state for a container from the most recent
+// poll cycle. Returns StateUnknown if no cache entry exists yet.
+func (bw *BatchWatcher) ContainerState(uid, containerName string) pruntime.MachineState {
+	key := uid + "/" + containerName
+	bw.stateCacheMu.RLock()
+	state, ok := bw.stateCache[key]
+	bw.stateCacheMu.RUnlock()
+	if !ok {
+		return pruntime.StateUnknown
+	}
+	return state
 }
 
 // Stop cancels the batch watcher and waits for it to exit.
@@ -77,6 +113,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		stateMap[m.UID+"/"+m.ContainerName] = m.State
 	}
 
+	// Publish to cache so GetPodStatus can read without per-container D-Bus calls.
+	bw.stateCacheMu.Lock()
+	bw.stateCache = stateMap
+	bw.stateCacheMu.Unlock()
+
 	// Snapshot pods under read lock.
 	bw.gambit.mu.RLock()
 	type podEntry struct {
@@ -91,6 +132,9 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	}
 	bw.gambit.mu.RUnlock()
 
+	// Track which pods have state changes for the coalescer.
+	changedPods := make(map[string]bool)
+
 	for _, e := range entries {
 		// Skip pods still being created (Pending) — no machine yet.
 		if e.phase == corev1.PodPending {
@@ -104,7 +148,61 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			continue
 		}
 
+		// Detect container state changes for the coalescer.
+		for _, c := range e.pod.Spec.Containers {
+			key := e.uid + "/" + c.Name
+			cur := stateMap[key]
+			if prev, ok := bw.prevStateMap[key]; !ok || prev != cur {
+				changedPods[e.uid] = true
+			}
+			// Check readiness changes (probe transitions don't change machine state).
+			if cur == pruntime.StateRunning {
+				ready := bw.gambit.isContainerReady(e.uid, c.Name)
+				if prev, ok := bw.prevReady[key]; !ok || prev != ready {
+					changedPods[e.uid] = true
+					bw.prevReady[key] = ready
+				}
+			}
+		}
+
 		bw.checkPod(ctx, e.uid, e.pod, e.podIP, stateMap)
+	}
+
+	// Coalescer: push status updates only for pods with actual changes.
+	// The downstream enqueuePodStatusUpdate has cmp.Equal dedup as a safety net.
+	stateLookup := func(uid, containerName string) pruntime.MachineState {
+		if s, ok := stateMap[uid+"/"+containerName]; ok {
+			return s
+		}
+		return pruntime.StateUnknown
+	}
+	for _, e := range entries {
+		if !changedPods[e.uid] {
+			continue
+		}
+		if e.phase == corev1.PodPending || e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
+			continue
+		}
+		status := bw.gambit.buildPodStatus(e.pod, stateLookup)
+		updated := e.pod.DeepCopy()
+		status.DeepCopyInto(&updated.Status)
+		bw.gambit.notifyPodStatus(updated)
+	}
+
+	// Rotate state maps for next cycle.
+	bw.prevStateMap = stateMap
+
+	// Clean up prevReady for pods no longer tracked.
+	activeKeys := make(map[string]bool, len(entries)*2)
+	for _, e := range entries {
+		for _, c := range e.pod.Spec.Containers {
+			activeKeys[e.uid+"/"+c.Name] = true
+		}
+	}
+	for k := range bw.prevReady {
+		if !activeKeys[k] {
+			delete(bw.prevReady, k)
+		}
 	}
 }
 

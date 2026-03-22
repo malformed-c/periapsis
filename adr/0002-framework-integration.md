@@ -1,6 +1,6 @@
 # ADR-0002: Evolve Periapsis from library to framework
 
-**Status:** In Progress (Phase 1 complete — single module merge)
+**Status:** In Progress (Phase 3 — LoggingProvider removed, dispatch helpers route to Gambit directly)
 **Date:** 2026-03-20
 
 ## Context

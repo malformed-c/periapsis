@@ -24,6 +24,7 @@ import (
 	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/manager"
+	"github.com/malformed-c/periapsis/internal/provider"
 	"github.com/malformed-c/periapsis/internal/queue"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
@@ -98,6 +99,12 @@ type PodEventFilterFunc func(context.Context, *corev1.Pod) bool
 // PodController is the controller implementation for Pod resources.
 type PodController struct {
 	provider PodLifecycleHandler
+	// gambit holds a direct reference to the Gambit provider when the concrete
+	// type is *provider.Gambit. This allows gradual inlining of provider methods
+	// into the sync loop (ADR-0002 Phase 3) without breaking the interface-based
+	// test infrastructure. When non-nil, dispatch points may bypass the interface
+	// and call Gambit methods or access its fields directly.
+	gambit *provider.Gambit
 
 	// podsInformer is an informer for Pod resources.
 	podsInformer corev1informers.PodInformer
@@ -239,12 +246,16 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		client:             cfg.PodClient,
 		podsInformer:       cfg.PodInformer,
 		podsLister:         cfg.PodInformer.Lister(),
-		provider:           cfg.Provider,
+		provider: cfg.Provider,
 		resourceManager:    rm,
 		ready:              make(chan struct{}),
 		done:               make(chan struct{}),
 		recorder:           cfg.EventRecorder,
 		podEventFilterFunc: cfg.PodEventFilterFunc,
+	}
+
+	if g, ok := cfg.Provider.(*provider.Gambit); ok {
+		pc.gambit = g
 	}
 
 	pc.syncPodsFromKubernetes = queue.New(cfg.SyncPodsFromKubernetesRateLimiter, "syncPodsFromKubernetes", pc.syncPodFromKubernetesHandler, cfg.SyncPodsFromKubernetesShouldRetryFunc)
@@ -285,7 +296,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 	if p, ok := pc.provider.(asyncProvider); ok {
 		provider = p
 	} else {
-		wrapped := &syncProviderWrapper{PodLifecycleHandler: pc.provider, l: pc.podsLister}
+		wrapped := &syncProviderWrapper{PodLifecycleHandler: pc.provider, gambit: pc.gambit, l: pc.podsLister}
 		runProvider = wrapped.run
 		provider = wrapped
 		log.G(ctx).Debug("Wrapped non-async provider with async")
@@ -496,7 +507,7 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 			return err
 		}
 
-		pod, err = pc.provider.GetPod(ctx, namespace, name)
+		pod, err = pc.getPod(ctx, namespace, name)
 		if err != nil && !errdefs.IsNotFound(err) {
 			err = pkgerrors.Wrapf(err, "failed to fetch pod with key %q from provider", key)
 			span.SetStatus(err)
@@ -581,7 +592,7 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	// a dropped watch event left the pod in a stale terminal phase in etcd
 	// without the provider ever running it. In that case drive creation anyway.
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-		if existing, _ := pc.provider.GetPod(ctx, pod.Namespace, pod.Name); existing != nil {
+		if existing, _ := pc.getPod(ctx, pod.Namespace, pod.Name); existing != nil {
 			log.G(ctx).Warnf("skipping sync of pod %q in %q phase", loggablePodName(pod), pod.Status.Phase)
 			return nil
 		}
@@ -603,7 +614,7 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 	defer span.End()
 
 	// Grab the list of pods known to the provider.
-	pps, err := pc.provider.GetPods(ctx)
+	pps, err := pc.getPods(ctx)
 	if err != nil {
 		err := pkgerrors.Wrap(err, "failed to fetch the list of pods from the provider")
 		span.SetStatus(err)
@@ -652,7 +663,7 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 			// Add the pod's attributes to the current span.
 			ctx = addPodAttributes(ctx, span, pod)
 			// Actually delete the pod.
-			if err := pc.provider.DeletePod(ctx, pod.DeepCopy()); err != nil && !errdefs.IsNotFound(err) {
+			if err := pc.deleteDanglingPod(ctx, pod); err != nil && !errdefs.IsNotFound(err) {
 				span.SetStatus(err)
 				log.G(ctx).Errorf("failed to delete pod %q in provider", loggablePodName(pod))
 			} else {

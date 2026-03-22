@@ -105,6 +105,11 @@ type Gambit struct {
 	probeRunner  *ProbeRunner
 	createSem    chan struct{}                                 // limits concurrent pod creation sagas
 
+	// podNotify is the callback registered by NotifyPods. When set, Gambit
+	// pushes pod status changes to the PodController instead of relying on
+	// the syncProviderWrapper's 5-second polling loop.
+	podNotify func(*corev1.Pod)
+
 	shuttingDown atomic.Bool
 	shutdownCh   chan struct{} // closed when Shutdown() is called
 
@@ -541,10 +546,14 @@ func (g *Gambit) BuildNode() *corev1.Node {
 	// All nodes carry the host topology label so the constellation agent
 	// can discover all nodes sharing a physical host via label selector.
 	// Primary nodes get the primary role; regular pawns get the pawn role.
-	labels := make(map[string]string, len(g.Config.Labels)+3)
+	labels := make(map[string]string, len(g.Config.Labels)+7)
 	maps.Copy(labels, g.Config.Labels)
 	labels["perigeos.io/host"] = hostName
 	labels["kubernetes.io/hostname"] = pawnName
+	labels["kubernetes.io/os"] = "linux"
+	labels["kubernetes.io/arch"] = runtime.GOARCH
+	labels["beta.kubernetes.io/os"] = "linux"
+	labels["beta.kubernetes.io/arch"] = runtime.GOARCH
 	if g.Config.IsPrimary {
 		labels["perigeos.io/primary"] = "true"
 		labels["node-role.kubernetes.io/primary"] = ""
@@ -629,6 +638,13 @@ func (g *Gambit) DrainPods(ctx context.Context) {
 	}
 }
 
+// NotifyPods registers a callback for asynchronous pod status updates.
+// When set, the BatchWatcher pushes status changes directly to the
+// PodController instead of relying on the 5-second polling loop.
+func (g *Gambit) NotifyPods(_ context.Context, cb func(*corev1.Pod)) {
+	g.podNotify = cb
+}
+
 func (g *Gambit) Ping(context.Context) error {
 	if g.shuttingDown.Load() {
 		return fmt.Errorf("pawn %s is shutting down", g.Config.Name)
@@ -669,6 +685,14 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 			}
 		}
 	}()
+}
+
+// notifyPodStatus pushes an updated pod to the PodController if a callback
+// is registered. Safe to call when podNotify is nil (no-op).
+func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
+	if g.podNotify != nil {
+		g.podNotify(pod)
+	}
 }
 
 // ─── Pod Lifecycle ───────────────────────────────────────────────────────────
@@ -1043,6 +1067,14 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		"containers", len(pod.Spec.Containers))
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
 
+	// Push Running status to PodController immediately instead of waiting
+	// for the next poll cycle.
+	if status, err := g.GetPodStatus(context.Background(), pod.Namespace, pod.Name); err == nil {
+		updated := pod.DeepCopy()
+		status.DeepCopyInto(&updated.Status)
+		g.notifyPodStatus(updated)
+	}
+
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
 		Pod:   pod,
 		PodIP: podIP,
@@ -1079,7 +1111,8 @@ func (g *Gambit) waitForMachine(ctx context.Context, uid string, timeout time.Du
 	return nil
 }
 
-// markPodFailed records a pod as Failed in the internal maps.
+// markPodFailed records a pod as Failed in the internal maps and pushes
+// the terminal status to the PodController.
 func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	failedPod := pod.DeepCopy()
 	failedPod.Status.Phase = corev1.PodFailed
@@ -1089,6 +1122,7 @@ func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	g.pods[uid] = failedPod
 	g.podPhases[uid] = corev1.PodFailed
 	g.mu.Unlock()
+	g.notifyPodStatus(failedPod)
 }
 
 // initRestartState initializes CrashLoopBackOff tracking for a newly created pod.

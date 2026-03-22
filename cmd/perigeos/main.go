@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 
@@ -33,7 +32,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -132,12 +130,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	dynamicClient, err := dynamic.NewForConfig(kubeConfig)
-	if err != nil {
-		logger.Error("Failed to create dynamic kubernetes client", "err", err)
-		os.Exit(1)
-	}
-
 	serverVersion, err := kubeClient.Discovery().ServerVersion()
 	if err != nil {
 		klog.Fatalf("Failed to connect to Kubernetes API server: %v", err)
@@ -159,6 +151,14 @@ func main() {
 	cmInformer := globalInformerFactory.Core().V1().ConfigMaps()
 	secretInformer := globalInformerFactory.Core().V1().Secrets()
 	svcInformer := globalInformerFactory.Core().V1().Services()
+	// Force registration of the underlying shared informers before Start().
+	// Without this, the informer backing store is created lazily on first
+	// Lister()/Informer() call — which happens inside pawn goroutines,
+	// after Start() has already been called. Informers registered after
+	// Start() are never started, leading to empty caches.
+	cmInformer.Informer()
+	secretInformer.Informer()
+	svcInformer.Informer()
 	globalInformerFactory.Start(ctx.Done())
 
 	logger.Info("Waiting for global informer caches to sync...")
@@ -182,15 +182,20 @@ func main() {
 
 	// --- Auto-detect API server address for pod env injection ---
 	// Pods need KUBERNETES_SERVICE_HOST/PORT to use in-cluster auth.
-	// Parse from the rest config's Host field (e.g. "https://192.168.0.200:6443").
+	// Use the "kubernetes" service ClusterIP (what real kubelets inject).
+	// The kubeconfig Host (e.g. 127.0.0.1:6443) doesn't work from inside
+	// nspawn containers because localhost refers to the container, not the host.
 	var apiServerHost, apiServerPort string
-	if u, err := url.Parse(kubeConfig.Host); err == nil {
-		apiServerHost = u.Hostname()
-		apiServerPort = u.Port()
-		if apiServerPort == "" {
+	if svc, err := kubeClient.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{}); err == nil {
+		apiServerHost = svc.Spec.ClusterIP
+		if len(svc.Spec.Ports) > 0 {
+			apiServerPort = fmt.Sprintf("%d", svc.Spec.Ports[0].Port)
+		} else {
 			apiServerPort = "443"
 		}
 		logger.Info("API server address for pod injection", "host", apiServerHost, "port", apiServerPort)
+	} else {
+		logger.Warn("Could not auto-detect kubernetes service ClusterIP; in-cluster auth may not work in containers", "err", err)
 	}
 
 	// --- Clean up stale pawn slices from previous config ---
@@ -369,10 +374,8 @@ func main() {
 			bw := provider.StartBatchWatcher(g)
 			wg.Go(func() { <-ctx.Done(); bw.Stop() })
 
-			lp := provider.NewLoggingProvider(g, pawnLogger)
-
-			nodeController, err := node.NewNodeController(
-				lp,
+				nodeController, err := node.NewNodeController(
+				g,
 				g.BuildNode(),
 				kubeClient.CoreV1().Nodes(),
 				node.WithNodeEnableLeaseV1(
@@ -399,7 +402,7 @@ func main() {
 
 			podController, err := node.NewPodController(node.PodControllerConfig{
 				PodClient:         kubeClient.CoreV1(),
-				Provider:          lp,
+				Provider:          g,
 				EventRecorder:     eventRecorder,
 				PodInformer:       localInformer.Core().V1().Pods(),
 				ConfigMapInformer: cmInformer,
@@ -436,13 +439,9 @@ func main() {
 				g.SetAPIServer(apiServerHost, apiServerPort)
 			}
 
-			// Create CiliumNode for this pawn so the constellation operator
-			// allocates a per-pawn /24 CIDR for IPAM. Only when CNI is active.
-			if sharedNM != nil {
-				if err := network.EnsureCiliumNode(ctx, dynamicClient, pawnLogger, pawnName, g.NodeIP()); err != nil {
-					pawnLogger.Warn("Could not create CiliumNode (IPAM will use primary CIDR)", "err", err)
-				}
-			}
+			// CiliumNode creation for pawns is handled by the constellation
+			// agent's node watcher — when it discovers a new managed k8s Node,
+			// it creates the CiliumNode so the operator allocates a CIDR.
 
 			// Start NodeController — registers the node and keeps lease alive.
 			wg.Go(func() {
@@ -557,12 +556,9 @@ func main() {
 		}
 	}
 
-	// Clean up CiliumNode CRDs for pawns that had CNI active.
-	if sharedNM != nil {
-		for _, pawnCfg := range perigeoCfg.Pawns {
-			network.DeleteCiliumNode(shutdownCtx, dynamicClient, logger, pawnCfg.Name)
-		}
-	}
+	// Preserve CiliumNode CRDs across restarts so the operator doesn't
+	// reassign CIDRs. CiliumNodes are only deleted on explicit teardown
+	// (e.g. node decommissioning), not on service restart.
 
 	wg.Wait()
 

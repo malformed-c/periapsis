@@ -44,10 +44,9 @@ Added `GetPod` check before the terminal phase skip. If `pod.Status.Phase` is `F
 
 ## Constraints
 
-- **k8s dep versions** — must stay in sync with perigeos `go.mod`. Never bump `k8s.io/*` or `sigs.k8s.io/*` independently.
-- **PodLifecycleHandler interface** — must remain backward compatible with perigeos. Do not add required methods.
-- **No new deps** — any new dependency requires a matching update in perigeos `go.mod`.
-- **No binary** — Periapsis is a library. Do not add `cmd/` entries.
+- **k8s dep versions** — pinned to v0.34.x.
+- **PodLifecycleHandler interface** — being inlined per ADR-0002. Dispatch helpers in `node/dispatch.go` route to Gambit directly. Interface kept for test mocks.
+- **Single module** — perigeos is absorbed into periapsis. `cmd/perigeos` lives here.
 
 ---
 

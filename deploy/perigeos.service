@@ -15,7 +15,8 @@ ExecStart=/usr/local/bin/perigeos \
 
 Restart=on-failure
 RestartSec=5s
-WatchdogSec=120s
+# WatchdogSec disabled until sd_notify pings are implemented (ADR-0007 scope)
+# WatchdogSec=120s
 
 # State directory
 StateDirectory=perigeos
@@ -26,10 +27,12 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=perigeos
 
-# Hardening — perigeos needs root for systemd-nspawn and D-Bus machine1
-# but we can still restrict some capabilities
+# Hardening — perigeos needs root for systemd-nspawn and D-Bus machine1.
+# ProtectHome/ProtectSystem that create private mount namespaces must be
+# disabled: overlay mounts done here must be visible to transient nspawn
+# units that systemd starts in the init mount namespace (PID 1).
 ProtectSystem=no
-ProtectHome=yes
+ProtectHome=no
 NoNewPrivileges=no
 LimitNOFILE=1048576
 LimitNPROC=infinity

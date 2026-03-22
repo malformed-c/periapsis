@@ -8,6 +8,7 @@ import (
 
 	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // BatchWatcher replaces per-pod watcher goroutines with a single goroutine
@@ -164,13 +165,31 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	}
 
 	// All containers exited and none will be restarted — set terminal phase.
-	bw.gambit.mu.Lock()
+	var terminalPhase corev1.PodPhase
 	if allSucceeded {
-		bw.gambit.podPhases[uid] = corev1.PodSucceeded
+		terminalPhase = corev1.PodSucceeded
 	} else {
-		bw.gambit.podPhases[uid] = corev1.PodFailed
+		terminalPhase = corev1.PodFailed
 	}
+	bw.gambit.mu.Lock()
+	bw.gambit.podPhases[uid] = terminalPhase
 	bw.gambit.mu.Unlock()
+
+	// Push terminal status to PodController.
+	updated := pod.DeepCopy()
+	updated.Status.Phase = terminalPhase
+	now := metav1.NewTime(time.Now())
+	for i, cs := range updated.Status.ContainerStatuses {
+		if cs.State.Running != nil {
+			updated.Status.ContainerStatuses[i].State.Terminated = &corev1.ContainerStateTerminated{
+				Reason:     "Completed",
+				FinishedAt: now,
+				StartedAt:  cs.State.Running.StartedAt,
+			}
+			updated.Status.ContainerStatuses[i].State.Running = nil
+		}
+	}
+	bw.gambit.notifyPodStatus(updated)
 }
 
 // runProbes executes startup, liveness, and readiness probes for a running

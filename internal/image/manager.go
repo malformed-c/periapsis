@@ -313,7 +313,7 @@ func (im *ImageManager) Mount(podUID string, layerPaths []string) (string, error
 		}
 	}
 
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s",
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,index=off",
 		strings.Join(lowerDirs, ":"), upper, work)
 
 	if err := unix.Mount("overlay", merged, "overlay", unix.MS_NODEV, opts); err != nil {

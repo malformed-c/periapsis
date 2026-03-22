@@ -34,8 +34,15 @@ type ImageManager struct {
 
 	mu            sync.Mutex
 	manifestCache map[string]v1.Image    // image name → resolved manifest
+	configCache   map[string]*imageConfig // image name → persisted config (entrypoint/cmd)
 	imageSF       singleflight.Group     // deduplicates manifest resolution by image name
 	layerSF       singleflight.Group     // deduplicates layer downloads by content hash
+}
+
+// imageConfig holds the subset of OCI image config we need across restarts.
+type imageConfig struct {
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	Cmd        []string `json:"cmd,omitempty"`
 }
 
 // NewImageManager creates an ImageManager for a specific pawn.
@@ -45,6 +52,7 @@ func NewImageManager(baseDir, pawnName string, logger *slog.Logger) *ImageManage
 		layerCache:    filepath.Join(baseDir, "layers"),
 		podWorkspace:  filepath.Join(baseDir, "pawns", pawnName, "pods"),
 		manifestCache: make(map[string]v1.Image),
+		configCache:   make(map[string]*imageConfig),
 		logger:        logger,
 	}
 }
@@ -70,15 +78,28 @@ func (im *ImageManager) GetLayerCachePath() string {
 	return im.layerCache
 }
 
-// ImageEntrypoint returns the OCI image's Entrypoint and Cmd from the manifest
-// cache. Returns nil slices if the image hasn't been pulled yet.
+// ImageEntrypoint returns the OCI image's Entrypoint and Cmd.
+// Checks the in-memory manifest cache first, then falls back to the
+// disk-persisted config cache (survives process restarts).
 func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []string) {
 	im.mu.Lock()
 	img, ok := im.manifestCache[imageName]
-	im.mu.Unlock()
 	if !ok {
+		// Fall back to persisted config cache.
+		if cfg, cached := im.configCache[imageName]; cached {
+			im.mu.Unlock()
+			return cfg.Entrypoint, cfg.Cmd
+		}
+		// Try loading from disk.
+		if cfg, err := im.loadImageConfig(imageName); err == nil {
+			im.configCache[imageName] = cfg
+			im.mu.Unlock()
+			return cfg.Entrypoint, cfg.Cmd
+		}
+		im.mu.Unlock()
 		return nil, nil
 	}
+	im.mu.Unlock()
 	cf, err := img.ConfigFile()
 	if err != nil {
 		return nil, nil
@@ -160,8 +181,14 @@ func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, err
 		return nil, err
 	}
 
-	// Persist layer list to disk so it survives process restart.
+	// Persist layer list and image config to disk so they survive process restart.
 	im.saveLayerCache(imageName, layerPaths)
+	if cf, err := img.ConfigFile(); err == nil {
+		im.saveImageConfig(imageName, &imageConfig{
+			Entrypoint: cf.Config.Entrypoint,
+			Cmd:        cf.Config.Cmd,
+		})
+	}
 
 	return layerPaths, nil
 }
@@ -198,6 +225,33 @@ func (im *ImageManager) layerCacheFile(imageName string) string {
 	// Escape slashes and colons so the image name is a valid filename.
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
 	return filepath.Join(im.layerCache, ".manifests", safe+".json")
+}
+
+// imageConfigFile returns the path for a disk-persisted image config.
+func (im *ImageManager) imageConfigFile(imageName string) string {
+	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
+	return filepath.Join(im.layerCache, ".manifests", safe+".config.json")
+}
+
+// saveImageConfig persists an image's Entrypoint and Cmd to disk.
+func (im *ImageManager) saveImageConfig(imageName string, cfg *imageConfig) {
+	path := im.imageConfigFile(imageName)
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data, _ := json.Marshal(cfg)
+	os.WriteFile(path, data, 0644)
+}
+
+// loadImageConfig loads a previously persisted image config from disk.
+func (im *ImageManager) loadImageConfig(imageName string) (*imageConfig, error) {
+	data, err := os.ReadFile(im.imageConfigFile(imageName))
+	if err != nil {
+		return nil, err
+	}
+	var cfg imageConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 // saveLayerCache persists the ordered layer paths for an image to disk.

@@ -1628,8 +1628,7 @@ func (g *Gambit) RunInContainer(
 		return err
 	}
 
-	fullCmd := append([]string{"/bin/sh", "-c"}, strings.Join(cmd, " "))
-	return g.Runtime.RunInContainer(ctx, uid, containerName, fullCmd, attach)
+	return g.Runtime.RunInContainer(ctx, uid, containerName, cmd, attach)
 }
 
 func (g *Gambit) findPodUID(namespace, podName string) (string, error) {

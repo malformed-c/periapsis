@@ -19,7 +19,7 @@ import (
 
 const (
 	podStatusReasonNotFound          = "NotFound"
-	podStatusMessageNotFound         = "The pod status was not found and may have been deleted from the provider"
+	podStatusMessageNotFound         = "The pod status was not found and may have been deleted from Perigeos"
 	containerStatusReasonNotFound    = "NotFound"
 	containerStatusMessageNotFound   = "Container was not found and was likely deleted"
 	containerStatusExitCodeNotFound  = -137

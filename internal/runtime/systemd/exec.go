@@ -10,9 +10,12 @@ import (
 	"time"
 	"unsafe"
 
+	"errors"
+
 	dbusv5 "github.com/godbus/dbus/v5"
 	"github.com/malformed-c/periapsis/node/api"
 	"golang.org/x/sys/unix"
+	utilexec "k8s.io/utils/exec"
 )
 
 // runInContainerNsenter enters the container by nsenter-ing into the nspawn
@@ -38,7 +41,7 @@ func (s *SystemdRuntime) runInContainerNsenter(
 		fmt.Sprintf("--target=%d", pid),
 		"--mount", "--uts", "--ipc", "--net", "--pid", "--cgroup",
 		"--root=/proc/" + strconv.Itoa(pid) + "/root",
-		"--wd=/",
+		"--wdns=/",
 		"--",
 		"/usr/bin/env", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
@@ -47,10 +50,10 @@ func (s *SystemdRuntime) runInContainerNsenter(
 	execCmd := exec.CommandContext(ctx, "nsenter", args...)
 
 	if attach.TTY() {
-		return runWithPTY(ctx, execCmd, attach)
+		return wrapExitError(runWithPTY(ctx, execCmd, attach))
 	}
 	wireAttach(execCmd, attach)
-	return execCmd.Run()
+	return wrapExitError(execCmd.Run())
 }
 
 // runInContainerMachinectl uses `machinectl shell` to execute inside the container.
@@ -72,10 +75,10 @@ func (s *SystemdRuntime) runInContainerMachinectl(
 
 	execCmd := exec.CommandContext(ctx, "machinectl", args...)
 	if attach.TTY() {
-		return runWithPTY(ctx, execCmd, attach)
+		return wrapExitError(runWithPTY(ctx, execCmd, attach))
 	}
 	wireAttach(execCmd, attach)
-	return execCmd.Run()
+	return wrapExitError(execCmd.Run())
 }
 
 // getMachineLeaderPID returns the host PID of the container's PID 1.
@@ -225,7 +228,7 @@ func (s *SystemdRuntime) runInProgramContainer(
 		fmt.Sprintf("--target=%d", pid),
 		"--mount", // enter private mount namespace (bind mounts are here)
 		"--root=/proc/" + strconv.Itoa(pid) + "/root",
-		"--wd=/",
+		"--wdns=/",
 		"--",
 		"/usr/bin/env", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
@@ -239,10 +242,10 @@ func (s *SystemdRuntime) runInProgramContainer(
 
 	execCmd := exec.CommandContext(execCtx, "nsenter", args...)
 	if attach.TTY() {
-		return runWithPTY(execCtx, execCmd, attach)
+		return wrapExitError(runWithPTY(execCtx, execCmd, attach))
 	}
 	wireAttach(execCmd, attach)
-	return execCmd.Run()
+	return wrapExitError(execCmd.Run())
 }
 
 // getUnitMainPID returns the MainPID of a systemd service unit. This is used
@@ -370,9 +373,11 @@ func openPTY() (master, slave *os.File, err error) {
 		return nil, nil, fmt.Errorf("TIOCGPTN: %w", errno)
 	}
 
-	// Open slave WITHOUT O_NOCTTY so it becomes the controlling terminal.
+	// Open slave with O_NOCTTY to avoid making it the caller's controlling
+	// terminal. The exec child sets its own controlling terminal via
+	// SysProcAttr.Setctty, which works regardless of this flag.
 	slavePath := fmt.Sprintf("/dev/pts/%d", ptno)
-	slave, err = os.OpenFile(slavePath, os.O_RDWR, 0)
+	slave, err = os.OpenFile(slavePath, os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		master.Close()
 		return nil, nil, fmt.Errorf("open slave PTY %s: %w", slavePath, err)
@@ -392,4 +397,18 @@ func wireAttach(cmd *exec.Cmd, attach api.AttachIO) {
 	if attach.Stderr() != nil {
 		cmd.Stderr = attach.Stderr()
 	}
+}
+
+// wrapExitError converts a Go *exec.ExitError into a utilexec.CodeExitError
+// so that the Kubernetes remotecommand layer can extract the process exit code
+// and return it to kubectl (instead of a generic "Internal error occurred").
+func wrapExitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return utilexec.CodeExitError{Err: err, Code: exitErr.ExitCode()}
+	}
+	return err
 }

@@ -35,13 +35,13 @@ import (
 )
 
 const (
-	podStatusReasonProviderFailed = "ProviderFailed"
-	podEventCreateFailed          = "ProviderCreateFailed"
-	podEventCreateSuccess         = "ProviderCreateSuccess"
-	podEventDeleteFailed          = "ProviderDeleteFailed"
-	podEventDeleteSuccess         = "ProviderDeleteSuccess"
-	podEventUpdateFailed          = "ProviderUpdateFailed"
-	podEventUpdateSuccess         = "ProviderUpdateSuccess"
+	podStatusReasonProviderFailed = "PerigeosFailed"
+	podEventCreateFailed          = "PerigeosCreateFailed"
+	podEventCreateSuccess         = "PerigeosCreateSuccess"
+	podEventDeleteFailed          = "PerigeosDeleteFailed"
+	podEventDeleteSuccess         = "PerigeosDeleteSuccess"
+	podEventUpdateFailed          = "PerigeosUpdateFailed"
+	podEventUpdateSuccess         = "PerigeosUpdateSuccess"
 
 	// 151 milliseconds is just chosen as a small prime number to retry between
 	// attempts to get a notification from the provider to VK
@@ -85,15 +85,15 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 	// Hence, we ignore the error and just act upon the pod if it is non-nil (meaning that the provider still knows about the pod).
 	if podFromProvider, _ := pc.getPod(ctx, pod.Namespace, pod.Name); podFromProvider != nil {
 		if !podsEqual(podFromProvider, podForProvider) {
-			log.G(ctx).Debugf("Pod %s exists, updating pod in provider", podFromProvider.Name)
+			log.G(ctx).Debugf("Pod %s exists, updating pod in Perigeos", podFromProvider.Name)
 			if origErr := pc.updatePod(ctx, podForProvider); origErr != nil {
 				pc.handleProviderError(ctx, span, origErr, pod)
 				pc.recorder.Event(pod, corev1.EventTypeWarning, podEventUpdateFailed, origErr.Error())
 
 				return origErr
 			}
-			log.G(ctx).Info("Updated pod in provider")
-			pc.recorder.Event(pod, corev1.EventTypeNormal, podEventUpdateSuccess, "Update pod in provider successfully")
+			log.G(ctx).Info("Updated pod in Perigeos")
+			pc.recorder.Event(pod, corev1.EventTypeNormal, podEventUpdateSuccess, "Update pod in Perigeos successfully")
 
 		}
 	} else {
@@ -102,8 +102,8 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 			pc.recorder.Event(pod, corev1.EventTypeWarning, podEventCreateFailed, origErr.Error())
 			return origErr
 		}
-		log.G(ctx).Info("Created pod in provider")
-		pc.recorder.Event(pod, corev1.EventTypeNormal, podEventCreateSuccess, "Create pod in provider successfully")
+		log.G(ctx).Info("Created pod in Perigeos")
+		pc.recorder.Event(pod, corev1.EventTypeNormal, podEventCreateSuccess, "Create pod in Perigeos successfully")
 	}
 	return nil
 }
@@ -221,7 +221,7 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	pc.recorder.Event(pod, corev1.EventTypeNormal, podEventDeleteSuccess, "Delete pod in provider successfully")
+	pc.recorder.Event(pod, corev1.EventTypeNormal, podEventDeleteSuccess, "Delete pod in Perigeos successfully")
 	log.G(ctx).Debug("Deleted pod from provider")
 
 	return nil
@@ -261,7 +261,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 			deleteOptions.GracePeriodSeconds = new(int64)
 		}
 		// check status here to avoid pod re-created deleted incorrectly. e.g. delete a pod from K8s and re-create it(statefulSet and so on),
-		// pod in provider may not delete immediately. so deletionTimestamp is not nil. Then the re-created one would be deleted if we do not check pod status.
+		// pod in Perigeos may not delete immediately. so deletionTimestamp is not nil. Then the re-created one would be deleted if we do not check pod status.
 		if cmp.Equal(podFromKubernetes.Status, podFromProvider.Status) {
 			if err := pc.client.Pods(podFromKubernetes.Namespace).Delete(ctx, podFromKubernetes.Name, deleteOptions); err != nil && !errors.IsNotFound(err) {
 				span.SetStatus(err)

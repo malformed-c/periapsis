@@ -20,6 +20,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
+	"golang.org/x/sys/unix"
 )
 
 // SystemdRuntime implements runtime.Runtime by managing transient systemd-nspawn services.
@@ -33,11 +34,11 @@ type SystemdRuntime struct {
 	slice        string
 	execStrategy runtime.ExecStrategy
 
-	// stdioPipes holds the write end of stdio pipes keyed by unit name.
-	// The fd must stay open for the container's lifetime so systemd can
-	// access it via /proc/<pid>/fd/<n>. Closed when the container stops.
-	stdioPipesMu sync.Mutex
-	stdioPipes   map[string]*os.File
+	// attachPTYs holds PTY master fds for containers started with stdin=true.
+	// Key: machineName ("pod-<uid>-<container>"), Value: *os.File (master).
+	// The slave side is passed to nspawn via StandardInput/Output, and the
+	// master is used by AttachToContainer to relay stdin/stdout.
+	attachPTYs sync.Map
 }
 
 // Ensure compile-time interface compliance.
@@ -75,7 +76,6 @@ func NewSystemdRuntime(
 		pawnName:     pawnName,
 		slice:        sliceName(pawnName),
 		execStrategy: execStrategy,
-		stdioPipes:   make(map[string]*os.File),
 	}, nil
 }
 
@@ -209,14 +209,6 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"PERIGEOS_META_CONTAINER=" + containerName,
 	}
 
-	logProps, logW, err := s.stdioLogProps(containerName)
-	if err != nil {
-		return fmt.Errorf("setup container logging: %w", err)
-	}
-	// Do NOT defer logW.Close() here — the fd must stay open for the
-	// container's lifetime so systemd's child can access /proc/<pid>/fd/<n>.
-	// It is closed in closeStdioPipe() when the container stops.
-
 	properties := []dbus.Property{
 		dbus.PropDescription("Pod " + podUID),
 		dbus.PropSlice(slice),
@@ -227,7 +219,36 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		{Name: "KillMode", Value: dbusv5.MakeVariant("mixed")},
 		{Name: "Environment", Value: dbusv5.MakeVariant(metaEnv)},
 	}
-	properties = append(properties, logProps...)
+
+	// When the container has stdin enabled (e.g. kubectl run --attach --stdin),
+	// create a PTY pair. The slave becomes nspawn's stdin/stdout so the
+	// container's PID 1 can read/write through it. The master is stored for
+	// AttachToContainer to relay the attach streams.
+	if cfg.Container != nil && cfg.Container.Stdin {
+		master, slave, err := openPTY()
+		if err != nil {
+			return fmt.Errorf("create attach PTY for %s: %w", machineName, err)
+		}
+		// Set raw mode so the PTY doesn't echo input or do line buffering.
+		if termios, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS); err == nil {
+			termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+			termios.Oflag &^= unix.OPOST
+			termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+			termios.Cflag &^= unix.CSIZE | unix.PARENB
+			termios.Cflag |= unix.CS8
+			_ = unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, termios)
+		}
+		slavePath := slave.Name()
+		slave.Close() // systemd will reopen the slave path directly
+
+		s.attachPTYs.Store(machineName, master)
+		properties = append(properties,
+			dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
+			dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
+			dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
+		)
+		s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
+	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
 	if cfg.MemoryLimitBytes > 0 {
@@ -243,19 +264,19 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	ch := make(chan string, 1)
 	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, ch); err != nil {
-		logW.Close()
+		// Clean up PTY on failure.
+		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
+			masterVal.(*os.File).Close()
+		}
 		return fmt.Errorf("failed to create machine unit: %w", err)
 	}
 
 	if res := <-ch; res != "done" {
-		logW.Close()
+		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
+			masterVal.(*os.File).Close()
+		}
 		return fmt.Errorf("start machine job failed: %s", res)
 	}
-
-	// Store the write end so it stays open for the container's lifetime.
-	s.stdioPipesMu.Lock()
-	s.stdioPipes[serviceName] = logW
-	s.stdioPipesMu.Unlock()
 
 	return nil
 }
@@ -265,8 +286,12 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	s.logger.Info("Stopping Machine", "pod", podUID, "container", containerName)
 	wrapperUnit := wrapperUnitName(s.pawnName, podUID, containerName)
 
-	// Close the stdio pipe write end — the container no longer needs it.
-	s.closeStdioPipe(wrapperUnit)
+	// Clean up any attach PTY for this container.
+	machineName := "pod-" + podUID + "-" + containerName
+	if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
+		masterVal.(*os.File).Close()
+	}
+
 
 	ch := make(chan string, 1)
 	_, err := s.conn.StopUnitContext(ctx, wrapperUnit, "replace", ch)
@@ -291,15 +316,6 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	return nil
 }
 
-// closeStdioPipe closes and removes the stdio pipe write end for a unit.
-func (s *SystemdRuntime) closeStdioPipe(unitName string) {
-	s.stdioPipesMu.Lock()
-	if f, ok := s.stdioPipes[unitName]; ok {
-		f.Close()
-		delete(s.stdioPipes, unitName)
-	}
-	s.stdioPipesMu.Unlock()
-}
 
 // CheckMachined verifies systemd-machined is healthy by calling ListMachines
 // over D-Bus. If machined has exhausted its file descriptor limit or its
@@ -546,22 +562,28 @@ func (s *SystemdRuntime) RunInContainer(
 }
 
 // AttachToContainer attaches stdin/stdout/stderr to the running container's
-// PID 1 via nsenter, without executing a new command.
+// PID 1. If the container was started with stdin=true, a PTY master was
+// allocated at startup; we relay the attach streams through it. Otherwise
+// we fall back to nsenter with an interactive shell.
 func (s *SystemdRuntime) AttachToContainer(
 	ctx context.Context,
 	podUID, containerName string,
 	attach api.AttachIO,
 ) error {
 	machineName := "pod-" + podUID + "-" + containerName
+
+	// Fast path: relay through the PTY master that was created at container
+	// start for stdin-enabled containers.
+	if masterVal, ok := s.attachPTYs.Load(machineName); ok {
+		return s.relayAttachPTY(ctx, masterVal.(*os.File), attach)
+	}
+
+	// Fallback: nsenter into the container and start an interactive shell.
 	pid, err := s.getMachineLeaderPID(machineName)
 	if err != nil {
 		return fmt.Errorf("could not find leader PID for machine %s: %w", machineName, err)
 	}
 
-	// nsenter into all namespaces and attach to the container's shell.
-	// We run /bin/sh so there is something to attach to; for containers
-	// with a running foreground process, attaching to PID 1's tty directly
-	// is not universally supported — a shell gives a consistent experience.
 	args := []string{
 		fmt.Sprintf("--target=%d", pid),
 		"--mount", "--uts", "--ipc", "--net", "--pid", "--cgroup",
@@ -581,6 +603,62 @@ func (s *SystemdRuntime) AttachToContainer(
 		runErr = cmd.Run()
 	}
 	return suppressSignalExit(runErr)
+}
+
+// relayAttachPTY relays the attach streams through the PTY master that was
+// allocated when the container started. Writes to attach.Stdin go to the
+// container's stdin; reads from the container's stdout come back on
+// attach.Stdout.
+func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, attach api.AttachIO) error {
+	// Relay stdout: PTY master → attach.Stdout
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := master.Read(buf)
+			if n > 0 && attach.Stdout() != nil {
+				_, _ = attach.Stdout().Write(buf[:n])
+			}
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+
+	// Relay stdin: attach.Stdin → PTY master
+	if attach.Stdin() != nil {
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := attach.Stdin().Read(buf)
+				if n > 0 {
+					_, _ = master.Write(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	// Forward terminal resize events.
+	go func() {
+		for size := range attach.Resize() {
+			_ = unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
+				Row: uint16(size.Height),
+				Col: uint16(size.Width),
+			})
+		}
+	}()
+
+	// Wait for the container to exit (master read returns EIO/EOF) or
+	// the client to disconnect (context cancelled).
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	return nil
 }
 
 // suppressSignalExit returns nil for exits caused by signals (e.g. Ctrl+C → 130,

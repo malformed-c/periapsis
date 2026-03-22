@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -863,6 +864,16 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		return nil
 	}
 
+	// Pod admission: reject if the pod's resource requests exceed available
+	// node capacity. Prevents overcommit that cascading OOM kills.
+	if reason := g.admitPod(pod); reason != "" {
+		g.Logger.Warn("Pod admission rejected", "pod", pod.Name, "reason", reason)
+		if g.EventRecorder != nil {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedAdmission", reason)
+		}
+		return fmt.Errorf("pod admission: %s", reason)
+	}
+
 	uid := string(pod.UID)
 
 	g.mu.Lock()
@@ -1177,24 +1188,25 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		cMemLimit, cCPULimit := extractResourceLimits(c)
 		cEP, cCmd := g.ImageManager.ImageEntrypoint(c.Image)
 		cfg := pruntime.PodConfig{
-			Name:             pod.Name,
-			Namespace:        pod.Namespace,
-			UID:              uid,
-			ContainerName:    c.Name,
-			Container:        c,
-			PawnName:         g.Config.Name,
-			RootFS:           rootfs,
-			BindMounts:       bindMounts,
-			NetNSPath:        netPath,
-			HostNetwork:      pod.Spec.HostNetwork,
-			HostPID:          pod.Spec.HostPID,
-			Privileged:       isPrivileged(c),
-			Environment:      resolvedEnv,
-			PodIP:            podIP,
-			MemoryLimitBytes: cMemLimit,
-			CPULimitMillis:   cCPULimit,
-			ImageEntrypoint:  cEP,
-			ImageCmd:         cCmd,
+			Name:                          pod.Name,
+			Namespace:                     pod.Namespace,
+			UID:                           uid,
+			ContainerName:                 c.Name,
+			Container:                     c,
+			PawnName:                      g.Config.Name,
+			RootFS:                        rootfs,
+			BindMounts:                    bindMounts,
+			NetNSPath:                     netPath,
+			HostNetwork:                   pod.Spec.HostNetwork,
+			HostPID:                       pod.Spec.HostPID,
+			Privileged:                    isPrivileged(c),
+			Environment:                   resolvedEnv,
+			PodIP:                         podIP,
+			MemoryLimitBytes:              cMemLimit,
+			CPULimitMillis:                cCPULimit,
+			ImageEntrypoint:               cEP,
+			ImageCmd:                      cCmd,
+			TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
 		}
 
 		go func(cfg pruntime.PodConfig, cname string) {
@@ -1439,24 +1451,25 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	rMemLimit, rCPULimit := extractResourceLimits(container)
 	rEP, rCmd := g.ImageManager.ImageEntrypoint(container.Image)
 	cfg := pruntime.PodConfig{
-		Name:             pod.Name,
-		Namespace:        pod.Namespace,
-		UID:              uid,
-		ContainerName:    containerName,
-		Container:        container,
-		PawnName:         g.Config.Name,
-		RootFS:           rootfs,
-		BindMounts:       bindMounts,
-		NetNSPath:        netPath,
-		HostNetwork:      pod.Spec.HostNetwork,
-		HostPID:          pod.Spec.HostPID,
-		Privileged:       isPrivileged(container),
-		Environment:      resolvedEnv,
-		PodIP:            podIP,
-		MemoryLimitBytes: rMemLimit,
-		CPULimitMillis:   rCPULimit,
-		ImageEntrypoint:  rEP,
-		ImageCmd:         rCmd,
+		Name:                          pod.Name,
+		Namespace:                     pod.Namespace,
+		UID:                           uid,
+		ContainerName:                 containerName,
+		Container:                     container,
+		PawnName:                      g.Config.Name,
+		RootFS:                        rootfs,
+		BindMounts:                    bindMounts,
+		NetNSPath:                     netPath,
+		HostNetwork:                   pod.Spec.HostNetwork,
+		HostPID:                       pod.Spec.HostPID,
+		Privileged:                    isPrivileged(container),
+		Environment:                   resolvedEnv,
+		PodIP:                         podIP,
+		MemoryLimitBytes:              rMemLimit,
+		CPULimitMillis:                rCPULimit,
+		ImageEntrypoint:               rEP,
+		ImageCmd:                      rCmd,
+		TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
 	}
 
 	// Pre-flight: verify machined health before starting.
@@ -1499,7 +1512,21 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	// while the CNI is still allocating an IP or a machine is starting.
 	g.cancelInFlight(uid)
 
-	// Stop all app containers.
+	// Enforce terminationGracePeriodSeconds. PreStop hooks + container stop
+	// share this budget. If PreStop consumes part of it, the remaining time
+	// is available for SIGTERM before systemd sends SIGKILL.
+	gracePeriod := podTerminationGracePeriod(pod)
+	if gracePeriod > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(gracePeriod)*time.Second)
+		defer cancel()
+	}
+
+	// Run PreStop lifecycle hooks before stopping containers.
+	g.runPreStopHooks(ctx, pod, uid)
+
+	// Stop all app containers. systemd sends SIGTERM → waits TimeoutStopSec
+	// (set from terminationGracePeriodSeconds at unit creation) → SIGKILL.
 	for _, c := range pod.Spec.Containers {
 		if err := g.Runtime.StopMachine(ctx, uid, c.Name); err != nil {
 			g.Logger.Error("Failed to stop container", "container", c.Name, "err", err)
@@ -1551,6 +1578,136 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	g.mu.Unlock()
 
 	return nil
+}
+
+// admitPod checks if the pod's resource requests fit within remaining node capacity.
+// Returns an empty string if admitted, or a reason string if rejected.
+func (g *Gambit) admitPod(pod *corev1.Pod) string {
+	// Sum resource requests for the incoming pod.
+	var podCPU, podMem int64
+	for _, c := range pod.Spec.Containers {
+		if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+			podCPU += req.MilliValue()
+		}
+		if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+			podMem += req.Value()
+		}
+	}
+	// No requests specified — always admit (best-effort QoS).
+	if podCPU == 0 && podMem == 0 {
+		return ""
+	}
+
+	// Sum requests from all currently running pods.
+	g.mu.RLock()
+	var usedCPU, usedMem int64
+	for _, p := range g.pods {
+		for _, c := range p.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				usedCPU += req.MilliValue()
+			}
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				usedMem += req.Value()
+			}
+		}
+	}
+	g.mu.RUnlock()
+
+	// Check against node capacity.
+	nodeCPU := g.Config.CPU.MilliValue()
+	nodeMem := g.Config.Memory.Value()
+
+	if nodeCPU > 0 && usedCPU+podCPU > nodeCPU {
+		return fmt.Sprintf("Insufficient cpu: requested %dm, used %dm, capacity %dm",
+			podCPU, usedCPU, nodeCPU)
+	}
+	if nodeMem > 0 && usedMem+podMem > nodeMem {
+		return fmt.Sprintf("Insufficient memory: requested %d, used %d, capacity %d",
+			podMem, usedMem, nodeMem)
+	}
+	return ""
+}
+
+// podTerminationGracePeriod returns the pod's termination grace period in seconds.
+// Defaults to 30 (Kubernetes default) if not set.
+func podTerminationGracePeriod(pod *corev1.Pod) int64 {
+	if pod.Spec.TerminationGracePeriodSeconds != nil {
+		return *pod.Spec.TerminationGracePeriodSeconds
+	}
+	return 30
+}
+
+// runPreStopHooks executes PreStop lifecycle hooks for all running containers.
+// Hooks run within the parent context's deadline (shared with the stop budget).
+// Errors are logged but do not prevent container shutdown.
+func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid string) {
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if c.Lifecycle == nil || c.Lifecycle.PreStop == nil {
+			continue
+		}
+
+		hook := c.Lifecycle.PreStop
+		g.Logger.Info("Running PreStop hook", "container", c.Name, "pod", pod.Name)
+
+		switch {
+		case hook.Exec != nil:
+			if err := g.Runtime.RunInContainer(ctx, uid, c.Name, hook.Exec.Command, &noopAttachIO{}); err != nil {
+				g.Logger.Warn("PreStop exec hook failed", "container", c.Name, "err", err)
+				if g.EventRecorder != nil {
+					g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreStopHook",
+						"PreStop exec hook failed for container %s: %v", c.Name, err)
+				}
+			}
+
+		case hook.HTTPGet != nil:
+			g.runHTTPPreStopHook(ctx, pod, c.Name, uid, hook.HTTPGet)
+		}
+	}
+}
+
+// runHTTPPreStopHook executes an HTTP GET PreStop hook against the container.
+func (g *Gambit) runHTTPPreStopHook(ctx context.Context, pod *corev1.Pod, containerName, uid string, httpGet *corev1.HTTPGetAction) {
+	g.mu.RLock()
+	podIP := g.podIPs[uid]
+	g.mu.RUnlock()
+
+	host := httpGet.Host
+	if host == "" {
+		host = podIP
+	}
+	if host == "" {
+		g.Logger.Warn("PreStop HTTP hook: no host/podIP available", "container", containerName)
+		return
+	}
+
+	port := httpGet.Port.String()
+	scheme := string(httpGet.Scheme)
+	if scheme == "" {
+		scheme = "http"
+	}
+
+	url := fmt.Sprintf("%s://%s:%s%s", strings.ToLower(scheme), host, port, httpGet.Path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		g.Logger.Warn("PreStop HTTP hook: bad request", "container", containerName, "err", err)
+		return
+	}
+	for _, h := range httpGet.HTTPHeaders {
+		req.Header.Set(h.Name, h.Value)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		g.Logger.Warn("PreStop HTTP hook failed", "container", containerName, "url", url, "err", err)
+		if g.EventRecorder != nil {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreStopHook",
+				"PreStop HTTP hook failed for container %s: %v", containerName, err)
+		}
+		return
+	}
+	resp.Body.Close()
+	g.Logger.Info("PreStop HTTP hook completed", "container", containerName, "status", resp.StatusCode)
 }
 
 // ─── Pod Queries ─────────────────────────────────────────────────────────────

@@ -41,6 +41,10 @@ const (
 	podEventDeleteSuccess         = "PerigeosDeleteSuccess"
 	podEventUpdateFailed          = "PerigeosUpdateFailed"
 	podEventUpdateSuccess         = "PerigeosUpdateSuccess"
+	podEventStatusUpdateFailed    = "FailedStatusUpdate"
+	podEventForceDeleteFailed     = "FailedForceDelete"
+	podEventDeleteDanglingFailed  = "FailedDeleteDangling"
+	podEventSyncRetriesExhausted  = "SyncRetriesExhausted"
 
 	// 151 milliseconds is just chosen as a small prime number to retry between
 	// attempts to get a notification from the provider to VK
@@ -167,6 +171,8 @@ func (pc *PodController) handleProviderError(ctx context.Context, span trace.Spa
 	_, err := pc.client.Pods(pod.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 	if err != nil {
 		logger.WithError(err).Warn("Failed to update pod status")
+		pc.recorder.Event(pod, corev1.EventTypeWarning, podEventStatusUpdateFailed,
+			fmt.Sprintf("Failed to update pod status after provider error: %v", err))
 	} else {
 		logger.Info("Updated k8s pod status")
 	}
@@ -260,6 +266,8 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 	podFromProvider.ResourceVersion = "0"
 	if _, err := pc.client.Pods(podFromKubernetes.Namespace).UpdateStatus(ctx, podFromProvider, metav1.UpdateOptions{}); err != nil && !errors.IsNotFound(err) {
 		span.SetStatus(err)
+		pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
+			fmt.Sprintf("Failed to update pod status: %v", err))
 		return pkgerrors.Wrap(err, "error while updating pod status in kubernetes")
 	}
 
@@ -426,6 +434,8 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	}
 	if err != nil {
 		span.SetStatus(err)
+		pc.recorder.Event(k8sPod, corev1.EventTypeWarning, podEventForceDeleteFailed,
+			fmt.Sprintf("Failed to force-delete pod from API server: %v", err))
 		return err
 	}
 	return nil

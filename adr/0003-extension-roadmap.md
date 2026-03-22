@@ -113,6 +113,24 @@ Implement in order: observability (event emission), then tier 1 (graceful termin
 
 Event emission and forward reconciler can be implemented today without interface changes. Graceful termination and admission will require either interface extensions or ADR-0002 — track which approach is taken, as interface extensions here count toward ADR-0002's trigger threshold.
 
+## Future: PreStop hook shim
+
+The current PreStop implementation runs hooks via `RunInContainer` before calling `StopMachine`.
+This works but has a timing window: the hook runs while the container is still fully alive,
+then `StopMachine` sends SIGTERM as a separate step.
+
+A cleaner approach: build a small shim binary (`perigeos-prestop`) that is bind-mounted into
+containers and invoked via `ExecStop=` in the systemd unit. This would:
+
+- Execute the PreStop hook command inside the container's namespaces
+- Run as part of systemd's native stop sequence (after SIGTERM, before SIGKILL)
+- Eliminate the two-phase stop (hook then stop) in favor of systemd's built-in ordering
+- Handle the case where the container process exits before the hook completes
+
+The shim would read the hook spec from an environment variable or a mounted JSON file
+and dispatch exec/HTTP hooks accordingly. This is a refinement, not a prerequisite —
+the current `RunInContainer`-based approach is correct and matches kubelet's behavior.
+
 ## Consequences
 
 - `kubectl describe` and `kubectl get events` become the primary debugging tools, replacing log grep

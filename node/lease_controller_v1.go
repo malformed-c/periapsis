@@ -148,6 +148,8 @@ func (c *leaseController) sync(ctx context.Context) {
 			return
 		}
 		log.G(ctx).WithError(err).Info("failed to update lease using latest lease, fallback to ensure lease")
+		c.nodeController.nodeEvent(corev1.EventTypeWarning, "FailedLeaseRenewal",
+			fmt.Sprintf("Failed to renew node lease: %v", err))
 	}
 
 	lease, created := c.backoffEnsureLease(ctx, node)
@@ -157,6 +159,8 @@ func (c *leaseController) sync(ctx context.Context) {
 		if err := c.retryUpdateLease(ctx, node, lease); err != nil {
 			log.G(ctx).WithError(err).WithField("renewInterval", c.renewInterval).Errorf("Will retry after")
 			span.SetStatus(err)
+			c.nodeController.nodeEvent(corev1.EventTypeWarning, "FailedLeaseRenewal",
+				fmt.Sprintf("Failed to renew node lease: %v", err))
 		}
 	}
 }

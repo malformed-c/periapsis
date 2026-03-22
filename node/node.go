@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	coordclientset "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 )
@@ -200,6 +201,16 @@ func WithNodeStatusUpdateErrorHandler(h ErrorHandler) NodeControllerOpt {
 	}
 }
 
+// WithNodeEventRecorder sets the event recorder for the NodeController.
+// When set, node-level failures (ping timeout, status update, lease renewal)
+// are emitted as Warning events on the Node object.
+func WithNodeEventRecorder(r record.EventRecorder) NodeControllerOpt {
+	return func(n *NodeController) error {
+		n.recorder = r
+		return nil
+	}
+}
+
 // ErrorHandler is a type of function used to allow callbacks for handling errors.
 // It is expected that if a nil error is returned that the error is handled and
 // progress can continue (or a retry is possible).
@@ -233,6 +244,8 @@ type NodeController struct { //nolint:revive
 
 	nodePingController *nodePingController
 	pingTimeout        *time.Duration
+
+	recorder record.EventRecorder
 
 	group wait.Group
 }
@@ -373,10 +386,14 @@ func (n *NodeController) controlLoop(ctx context.Context, providerNode *corev1.N
 			providerNode.ObjectMeta.Labels = updated.Labels
 			if err := n.updateStatus(ctx, providerNode, false); err != nil {
 				log.G(ctx).WithError(err).Error("Error handling node status update")
+				n.nodeEvent(corev1.EventTypeWarning, "FailedNodeStatusUpdate",
+					fmt.Sprintf("Error updating node status: %v", err))
 			}
 		case <-timer.C:
 			if err := n.updateStatus(ctx, providerNode, false); err != nil {
 				log.G(ctx).WithError(err).Error("Error handling node status update")
+				n.nodeEvent(corev1.EventTypeWarning, "FailedNodeStatusUpdate",
+					fmt.Sprintf("Error updating node status: %v", err))
 			}
 		}
 		return false
@@ -391,6 +408,19 @@ func (n *NodeController) controlLoop(ctx context.Context, providerNode *corev1.N
 	}
 }
 
+// nodeEvent emits an event on the Node object if a recorder is configured.
+func (n *NodeController) nodeEvent(eventType, reason, message string) {
+	if n.recorder == nil {
+		return
+	}
+	n.serverNodeLock.Lock()
+	node := n.serverNode
+	n.serverNodeLock.Unlock()
+	if node != nil {
+		n.recorder.Event(node, eventType, reason, message)
+	}
+}
+
 func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.Node, skipErrorCb bool) (err error) {
 	ctx, span := trace.StartSpan(ctx, "node.updateStatus")
 	defer span.End()
@@ -401,6 +431,8 @@ func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.
 	if result, err := n.nodePingController.getResult(ctx); err != nil {
 		return err
 	} else if result.error != nil {
+		n.nodeEvent(corev1.EventTypeWarning, "NodePingFailed",
+			fmt.Sprintf("Node ping failed: %v", result.error))
 		return fmt.Errorf("Not updating node status because node ping failed: %w", result.error)
 	}
 

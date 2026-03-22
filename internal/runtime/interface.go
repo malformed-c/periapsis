@@ -131,6 +131,11 @@ type PodConfig struct {
 	// Container.Args overrides Cmd; unset fields fall back to the image values.
 	ImageEntrypoint []string
 	ImageCmd        []string
+
+	// TerminationGracePeriodSeconds from the pod spec. Sets TimeoutStopSec
+	// on the systemd unit so SIGTERM → wait → SIGKILL follows the pod's
+	// requested grace period. 0 means use systemd default (90s).
+	TerminationGracePeriodSeconds int64
 }
 
 // PodMetadata is returned by ListManagedMachines.

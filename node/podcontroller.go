@@ -476,6 +476,8 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 		if err != nil {
 			err = pkgerrors.Wrapf(err, "failed to delete pod %q in the provider", loggablePodNameFromCoordinates(namespace, name))
 			span.SetStatus(err)
+			pc.recorder.Event(pod, corev1.EventTypeWarning, "FailedSync",
+				fmt.Sprintf("Failed to delete orphan pod from provider: %v", err))
 		}
 		return err
 
@@ -618,6 +620,8 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 			if err := pc.provider.DeletePod(ctx, pod.DeepCopy()); err != nil && !errdefs.IsNotFound(err) {
 				span.SetStatus(err)
 				log.G(ctx).Errorf("failed to delete pod %q in Perigeos", loggablePodName(pod))
+				pc.recorder.Event(pod, corev1.EventTypeWarning, "FailedDeleteDangling",
+					fmt.Sprintf("Failed to delete dangling pod from provider: %v", err))
 			} else {
 				log.G(ctx).Infof("deleted leaked pod %q in Perigeos", loggablePodName(pod))
 			}

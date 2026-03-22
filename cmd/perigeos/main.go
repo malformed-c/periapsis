@@ -409,6 +409,7 @@ func main() {
 					pawnLogger.Error("Pawn status update failed", "err", err)
 					return err
 				}),
+				node.WithNodeEventRecorder(eventRecorder),
 			)
 			if err != nil {
 				pawnLogger.Error("Error creating NodeController", "err", err)

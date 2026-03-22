@@ -220,6 +220,15 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		{Name: "Environment", Value: dbusv5.MakeVariant(metaEnv)},
 	}
 
+	// Set TimeoutStopSec from the pod's terminationGracePeriodSeconds so
+	// systemd's SIGTERM → wait → SIGKILL sequence matches the pod spec.
+	if cfg.TerminationGracePeriodSeconds > 0 {
+		properties = append(properties, dbus.Property{
+			Name:  "TimeoutStopUSec",
+			Value: dbusv5.MakeVariant(uint64(cfg.TerminationGracePeriodSeconds) * 1_000_000),
+		})
+	}
+
 	// When the container has stdin enabled (e.g. kubectl run --attach --stdin),
 	// create a PTY pair. The slave becomes nspawn's stdin/stdout so the
 	// container's PID 1 can read/write through it. The master is stored for

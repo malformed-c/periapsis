@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -143,6 +144,12 @@ func main() {
 	kubeClient, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		logger.Error("Failed to create kubernetes client", "err", err)
+		os.Exit(1)
+	}
+
+	dynClient, err := dynamic.NewForConfig(kubeConfig)
+	if err != nil {
+		logger.Error("Failed to create dynamic client", "err", err)
 		os.Exit(1)
 	}
 
@@ -465,9 +472,16 @@ func main() {
 				g.SetAPIServer(apiServerHost, apiServerPort)
 			}
 
-			// CiliumNode creation for pawns is handled by the constellation
-			// agent's node watcher — when it discovers a new managed k8s Node,
-			// it creates the CiliumNode so the operator allocates a CIDR.
+			// Pre-create CiliumNode so the operator allocates a CIDR before
+			// the agent finishes booting. Eliminates the race where the agent
+			// restarts and loses its sub-allocator because the CiliumNode
+			// didn't exist yet when it looked.
+			if sharedNM != nil {
+				nodeIP := g.NodeIP()
+				if err := network.EnsureCiliumNode(ctx, dynClient, pawnLogger, pawnName, nodeIP); err != nil {
+					pawnLogger.Warn("Failed to ensure CiliumNode (non-fatal)", "err", err)
+				}
+			}
 
 			// Start NodeController — registers the node and keeps lease alive.
 			wg.Go(func() {

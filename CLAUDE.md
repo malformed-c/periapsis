@@ -5,7 +5,7 @@ Quick-start for Claude Code. Read `AGENTS.md` first — it has the full picture.
 ## What this is
 
 Periapsis is a fork of virtual-kubelet v1.11.0 that contains the full perigeos stack (ADR-0002).
-The `cmd/perigeos` binary, provider (`internal/provider/gambit.go`), runtime, network, and image
+The `cmd/perigeos` binary, provider (`node/gambit.go`), runtime, network, and image
 packages all live in this single module.
 
 ## Build
@@ -34,7 +34,7 @@ sudo -E go test ./internal/runtime/systemd/... -v -count=1
 | `node/podcontroller.go` | Pod sync loop — drives create/update/delete |
 | `node/pod.go` | `createOrUpdatePod`, `handleProviderError` |
 | `node/sync.go` | Pod status constants |
-| `internal/provider/gambit.go` | Pod lifecycle implementation (image, network, runtime) |
+| `node/gambit.go` | Pod lifecycle implementation (image, network, runtime) |
 | `internal/podutils/env.go` | Env var population — where the fieldRef fix lives |
 | `internal/runtime/systemd/` | systemd-nspawn machine management |
 | `internal/network/` | CNI network management |
@@ -47,6 +47,7 @@ sudo -E go test ./internal/runtime/systemd/... -v -count=1
 
 ## Constraints
 
-- ADR-0002 Phase 4: `PodLifecycleHandler` replaced by `PodProvider` interface (combined lifecycle + notification)
+- ADR-0002 complete (phases 4-8): `internal/provider/` dissolved into `node/`, PodProvider retained as testing seam
 - `dispatch.go` and `syncProviderWrapper` removed; PodController calls `pc.provider` directly
+- Forward reconciler: Gambit can request PodController re-sync via `RequestSync(namespace, name)`
 - k8s deps are pinned to v0.34.x

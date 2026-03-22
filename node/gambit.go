@@ -119,8 +119,9 @@ type Gambit struct {
 	inFlight     map[string]*podSaga                          // UID → active creation saga (nil = not creating)
 	batchWatcher *BatchWatcher                                // single watcher per pawn (replaces per-pod watchers)
 	restarts     map[string]map[string]*containerRestartState // UID → container → restart state
-	probeStates  map[string]map[string]*ContainerProbeState   // UID → container → probe state
-	probeRunner  *ProbeRunner
+	probeStates    map[string]map[string]*ContainerProbeState // UID → container → probe state
+	probeRunner    *ProbeRunner
+	completedPods  map[string]string                         // "namespace/name" → UID for recently-deleted pods (log fallback)
 	createSem    chan struct{}                                 // limits concurrent pod creation sagas
 
 	// podNotify is the callback registered by NotifyPods. When set, Gambit
@@ -200,8 +201,9 @@ func NewGambit(
 		hydratedUIDs: make(map[string]bool),
 		inFlight:     make(map[string]*podSaga),
 		restarts:     make(map[string]map[string]*containerRestartState),
-		probeStates:  make(map[string]map[string]*ContainerProbeState),
-		probeRunner:  NewProbeRunner(rt, logger, eRec),
+		probeStates:   make(map[string]map[string]*ContainerProbeState),
+		probeRunner:   NewProbeRunner(rt, logger, eRec),
+		completedPods: make(map[string]string),
 		volRefs:      make(map[string][]volumeMount),
 		volRefsByPod: make(map[string][]string),
 		createSem:    make(chan struct{}, createConcurrency(cfg)),
@@ -1537,6 +1539,10 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	g.mu.Lock()
 	g.untrackVolumeRefs(uid)
+	// Retain UID mapping for completed pods so GetContainerLogs can still
+	// retrieve journal entries after the pod is removed from g.pods.
+	key := pod.Namespace + "/" + pod.Name
+	g.completedPods[key] = uid
 	delete(g.pods, uid)
 	delete(g.podIPs, uid)
 	delete(g.podPhases, uid)
@@ -1777,20 +1783,25 @@ func (g *Gambit) GetContainerLogs(
 	g.Logger.Info("GetContainerLogs", "pawn", g.Config.Name, "namespace", namespace, "pod", podName, "container", containerName)
 
 	g.mu.RLock()
-	var targetPod *corev1.Pod
+	var uid string
 	for _, pod := range g.pods {
 		if pod.Namespace == namespace && pod.Name == podName {
-			targetPod = pod
+			uid = string(pod.UID)
 			break
 		}
 	}
+	// Fall back to completed pods — journal entries survive after DeletePod
+	// removes the pod from g.pods.
+	if uid == "" {
+		uid = g.completedPods[namespace+"/"+podName]
+	}
 	g.mu.RUnlock()
 
-	if targetPod == nil {
+	if uid == "" {
 		return nil, fmt.Errorf("pod %s/%s not found", namespace, podName)
 	}
 
-	return g.Runtime.GetLogStream(ctx, string(targetPod.UID), containerName, opts)
+	return g.Runtime.GetLogStream(ctx, uid, containerName, opts)
 }
 
 func (g *Gambit) AttachToContainer(

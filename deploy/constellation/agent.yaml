@@ -81,8 +81,11 @@ spec:
           periodSeconds: 30
           failureThreshold: 10
         readinessProbe:
-          exec:
-            command: ["test", "-S", "/var/run/cilium/cilium.sock"]
+          httpGet:
+            path: /healthz
+            host: 127.0.0.1
+            port: 9879
+            scheme: HTTP
           initialDelaySeconds: 10
           periodSeconds: 5
         volumeMounts:

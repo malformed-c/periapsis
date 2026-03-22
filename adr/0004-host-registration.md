@@ -37,7 +37,7 @@ Implement a kubeadm-style bootstrap token flow for registering new hosts with an
 ### PerigeosHost CRD
 
 ```yaml
-apiVersion: perigeos.io/v1alpha1
+apiVersion: periapsis.io/v1alpha1
 kind: PerigeosHost
 metadata:
   name: engicarbon
@@ -51,7 +51,7 @@ spec:
         kubernetes.io/os: linux
         kubernetes.io/arch: amd64
       taints:
-        - key: node.perigeos.io/type
+        - key: node.periapsis.io/type
           value: pawn
           effect: NoSchedule
     - name: pawn-02-infra

@@ -33,8 +33,7 @@ sudo -E go test ./internal/runtime/systemd/... -v -count=1
 | `cmd/perigeos/main.go` | Binary entrypoint — spawns pawns, wires controllers |
 | `node/podcontroller.go` | Pod sync loop — drives create/update/delete |
 | `node/pod.go` | `createOrUpdatePod`, `handleProviderError` |
-| `node/dispatch.go` | Routes provider calls to Gambit directly (ADR-0002) |
-| `node/sync.go` | Async pod status polling wrapper |
+| `node/sync.go` | Pod status constants |
 | `internal/provider/gambit.go` | Pod lifecycle implementation (image, network, runtime) |
 | `internal/podutils/env.go` | Env var population — where the fieldRef fix lives |
 | `internal/runtime/systemd/` | systemd-nspawn machine management |
@@ -48,6 +47,6 @@ sudo -E go test ./internal/runtime/systemd/... -v -count=1
 
 ## Constraints
 
-- ADR-0002 is in progress: `PodLifecycleHandler` interface is being inlined (dispatch.go routes to Gambit directly)
-- The interface is kept for now because `node/` tests use mock providers
+- ADR-0002 Phase 4: `PodLifecycleHandler` replaced by `PodProvider` interface (combined lifecycle + notification)
+- `dispatch.go` and `syncProviderWrapper` removed; PodController calls `pc.provider` directly
 - k8s deps are pinned to v0.34.x

@@ -6,13 +6,13 @@ set -euo pipefail
 #
 # Defaults:
 #   binary:  ./perigeos (from go build)
-#   config:  /etc/perigeos/perigeos.toml
-#   state:   /var/lib/perigeos/
-#   socket:  /run/perigeos.sock
+#   config:  /etc/apsis/perigeos/perigeos.toml
+#   state:   /var/lib/apsis/perigeos/
+#   socket:  /run/apsis/perigeos.sock
 
 BINARY="${1:-./perigeos}"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/perigeos"
+CONFIG_DIR="/etc/apsis/perigeos"
 SERVICE_FILE="$(dirname "$0")/perigeos.service"
 
 if [ "$(id -u)" -ne 0 ]; then

@@ -24,7 +24,6 @@ import (
 	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/manager"
-	"github.com/malformed-c/periapsis/internal/provider"
 	"github.com/malformed-c/periapsis/internal/queue"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
@@ -39,54 +38,16 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-// PodLifecycleHandler defines the interface used by the PodController to react
-// to new and changed pods scheduled to the node that is being managed.
-//
-// Errors produced by these methods should implement an interface from
-// github.com/malformed-c/periapsis/errdefs package in order for the
-// core logic to be able to understand the type of failure.
-type PodLifecycleHandler interface {
-	// CreatePod takes a Kubernetes Pod and deploys it within the provider.
+// PodProvider defines the interface used by the PodController to manage pod
+// lifecycle on the node. Providers must support async status notifications
+// via NotifyPods — the legacy sync polling wrapper has been removed (ADR-0002).
+type PodProvider interface {
 	CreatePod(ctx context.Context, pod *corev1.Pod) error
-
-	// UpdatePod takes a Kubernetes Pod and updates it within the provider.
 	UpdatePod(ctx context.Context, pod *corev1.Pod) error
-
-	// DeletePod takes a Kubernetes Pod and deletes it from the provider. Once a pod is deleted, the provider is
-	// expected to call the NotifyPods callback with a terminal pod status where all the containers are in a terminal
-	// state, as well as the pod. DeletePod may be called multiple times for the same pod.
 	DeletePod(ctx context.Context, pod *corev1.Pod) error
-
-	// GetPod retrieves a pod by name from the provider (can be cached).
-	// The Pod returned is expected to be immutable, and may be accessed
-	// concurrently outside of the calling goroutine. Therefore it is recommended
-	// to return a version after DeepCopy.
 	GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error)
-
-	// GetPodStatus retrieves the status of a pod by name from the provider.
-	// The PodStatus returned is expected to be immutable, and may be accessed
-	// concurrently outside of the calling goroutine. Therefore it is recommended
-	// to return a version after DeepCopy.
 	GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error)
-
-	// GetPods retrieves a list of all pods running on the provider (can be cached).
-	// The Pods returned are expected to be immutable, and may be accessed
-	// concurrently outside of the calling goroutine. Therefore it is recommended
-	// to return a version after DeepCopy.
 	GetPods(context.Context) ([]*corev1.Pod, error)
-}
-
-// PodNotifier is used as an extension to PodLifecycleHandler to support async updates of pod statuses.
-type PodNotifier interface {
-	// NotifyPods instructs the notifier to call the passed in function when
-	// the pod status changes. It should be called when a pod's status changes.
-	//
-	// The provided pointer to a Pod is guaranteed to be used in a read-only
-	// fashion. The provided pod's PodStatus should be up to date when
-	// this function is called.
-	//
-	// NotifyPods must not block the caller since it is only used to register the callback.
-	// The callback passed into `NotifyPods` may block when called.
 	NotifyPods(context.Context, func(*corev1.Pod))
 }
 
@@ -98,13 +59,7 @@ type PodEventFilterFunc func(context.Context, *corev1.Pod) bool
 
 // PodController is the controller implementation for Pod resources.
 type PodController struct {
-	provider PodLifecycleHandler
-	// gambit holds a direct reference to the Gambit provider when the concrete
-	// type is *provider.Gambit. This allows gradual inlining of provider methods
-	// into the sync loop (ADR-0002 Phase 3) without breaking the interface-based
-	// test infrastructure. When non-nil, dispatch points may bypass the interface
-	// and call Gambit methods or access its fields directly.
-	gambit *provider.Gambit
+	provider PodProvider
 
 	// podsInformer is an informer for Pod resources.
 	podsInformer corev1informers.PodInformer
@@ -172,7 +127,7 @@ type PodControllerConfig struct {
 
 	EventRecorder record.EventRecorder
 
-	Provider PodLifecycleHandler
+	Provider PodProvider
 
 	// Informers used for filling details for things like downward API in pod spec.
 	//
@@ -254,20 +209,11 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		podEventFilterFunc: cfg.PodEventFilterFunc,
 	}
 
-	if g, ok := cfg.Provider.(*provider.Gambit); ok {
-		pc.gambit = g
-	}
-
 	pc.syncPodsFromKubernetes = queue.New(cfg.SyncPodsFromKubernetesRateLimiter, "syncPodsFromKubernetes", pc.syncPodFromKubernetesHandler, cfg.SyncPodsFromKubernetesShouldRetryFunc)
 	pc.deletePodsFromKubernetes = queue.New(cfg.DeletePodsFromKubernetesRateLimiter, "deletePodsFromKubernetes", pc.deletePodsFromKubernetesHandler, cfg.DeletePodsFromKubernetesShouldRetryFunc)
 	pc.syncPodStatusFromProvider = queue.New(cfg.SyncPodStatusFromProviderRateLimiter, "syncPodStatusFromProvider", pc.syncPodStatusFromProviderHandler, cfg.SyncPodStatusFromProviderShouldRetryFunc)
 
 	return pc, nil
-}
-
-type asyncProvider interface {
-	PodLifecycleHandler
-	PodNotifier
 }
 
 // Run will set up the event handlers for types we are interested in, as well
@@ -290,23 +236,9 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 		pc.mu.Unlock()
 	}()
 
-	var provider asyncProvider
-	runProvider := func(context.Context) {}
-
-	if p, ok := pc.provider.(asyncProvider); ok {
-		provider = p
-	} else {
-		wrapped := &syncProviderWrapper{PodLifecycleHandler: pc.provider, gambit: pc.gambit, l: pc.podsLister}
-		runProvider = wrapped.run
-		provider = wrapped
-		log.G(ctx).Debug("Wrapped non-async provider with async")
-	}
-	pc.provider = provider
-
-	provider.NotifyPods(ctx, func(pod *corev1.Pod) {
+	pc.provider.NotifyPods(ctx, func(pod *corev1.Pod) {
 		pc.enqueuePodStatusUpdate(ctx, pod.DeepCopy())
 	})
-	go runProvider(ctx)
 
 	// Wait for the caches to be synced *before* starting to do work.
 	if ok := cache.WaitForCacheSync(ctx.Done(), pc.podsInformer.Informer().HasSynced); !ok {
@@ -507,7 +439,7 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 			return err
 		}
 
-		pod, err = pc.getPod(ctx, namespace, name)
+		pod, err = pc.provider.GetPod(ctx, namespace, name)
 		if err != nil && !errdefs.IsNotFound(err) {
 			err = pkgerrors.Wrapf(err, "failed to fetch pod with key %q from provider", key)
 			span.SetStatus(err)
@@ -592,7 +524,7 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	// a dropped watch event left the pod in a stale terminal phase in etcd
 	// without the provider ever running it. In that case drive creation anyway.
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
-		if existing, _ := pc.getPod(ctx, pod.Namespace, pod.Name); existing != nil {
+		if existing, _ := pc.provider.GetPod(ctx, pod.Namespace, pod.Name); existing != nil {
 			log.G(ctx).Warnf("skipping sync of pod %q in %q phase", loggablePodName(pod), pod.Status.Phase)
 			return nil
 		}
@@ -614,7 +546,7 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 	defer span.End()
 
 	// Grab the list of pods known to the provider.
-	pps, err := pc.getPods(ctx)
+	pps, err := pc.provider.GetPods(ctx)
 	if err != nil {
 		err := pkgerrors.Wrap(err, "failed to fetch the list of pods from the provider")
 		span.SetStatus(err)
@@ -663,7 +595,7 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 			// Add the pod's attributes to the current span.
 			ctx = addPodAttributes(ctx, span, pod)
 			// Actually delete the pod.
-			if err := pc.deleteDanglingPod(ctx, pod); err != nil && !errdefs.IsNotFound(err) {
+			if err := pc.provider.DeletePod(ctx, pod.DeepCopy()); err != nil && !errdefs.IsNotFound(err) {
 				span.SetStatus(err)
 				log.G(ctx).Errorf("failed to delete pod %q in Perigeos", loggablePodName(pod))
 			} else {

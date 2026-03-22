@@ -72,8 +72,8 @@ func main() {
 
 	perigeosConfigPath := flag.String("perigeosconfig", "", "Path to the perigeos TOML config (required)")
 	kubeConfigPath := flag.String("kubeconfig", "", "Path to kubeconfig")
-	baseDirFlag := flag.String("base-dir", "/var/lib/perigeos",
-		"Base directory for Perigeos state. Use a local path (e.g. ./var/lib/perigeos) for dev.")
+	baseDirFlag := flag.String("base-dir", "/var/lib/apsis/perigeos",
+		"Base directory for state. Use a local path (e.g. ./var/lib/apsis/perigeos) for dev.")
 	execStrategyFlag := flag.String("exec-strategy", "nsenter",
 		"RunInContainer strategy: nsenter (default) or machinectl")
 	controlSocketFlag := flag.String("control-socket", control.DefaultSocketPath,
@@ -290,8 +290,8 @@ func main() {
 			if isRealKubelet {
 				// Real kubelet node exists — label it and remove the virtual primary pawn.
 				labelPatch := []byte(`{"metadata":{"labels":{` +
-					`"perigeos.io/host":"` + hostName + `",` +
-					`"perigeos.io/primary":"true",` +
+					`"periapsis.io/host":"` + hostName + `",` +
+					`"periapsis.io/primary":"true",` +
 					`"node-role.kubernetes.io/primary":""}}}`)
 				if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, hostName, k8stypes.StrategicMergePatchType, labelPatch, metav1.PatchOptions{}); err != nil {
 					logger.Warn("Could not label primary node", "node", hostName, "err", err)

@@ -645,7 +645,7 @@ func scanDiskPods(baseDir, pawnName string) []string {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-const DefaultSocketPath = "/run/perigeos.sock"
+const DefaultSocketPath = "/run/apsis/perigeos.sock"
 
 type Client struct {
 	address string

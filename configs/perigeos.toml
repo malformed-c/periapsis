@@ -47,5 +47,5 @@ io_write_bandwidth_max = "1M"
 "kubernetes.io/arch" = "amd64" # Will be set automatically later
 
 [pawns.pawn-01-compute.taints]
-"node.perigeos.io/type" = "pawn:NoSchedule" # Will be default later
+"node.periapsis.io/type" = "pawn:NoSchedule" # Will be default later
 # mycustomtaint = ":NoSchedule"

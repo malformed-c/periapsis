@@ -83,10 +83,10 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 	// Check if the pod is already known by the provider.
 	// NOTE: Some providers return a non-nil error in their GetPod implementation when the pod is not found while some other don't.
 	// Hence, we ignore the error and just act upon the pod if it is non-nil (meaning that the provider still knows about the pod).
-	if podFromProvider, _ := pc.getPod(ctx, pod.Namespace, pod.Name); podFromProvider != nil {
+	if podFromProvider, _ := pc.provider.GetPod(ctx, pod.Namespace, pod.Name); podFromProvider != nil {
 		if !podsEqual(podFromProvider, podForProvider) {
 			log.G(ctx).Debugf("Pod %s exists, updating pod in Perigeos", podFromProvider.Name)
-			if origErr := pc.updatePod(ctx, podForProvider); origErr != nil {
+			if origErr := pc.provider.UpdatePod(ctx, podForProvider); origErr != nil {
 				pc.handleProviderError(ctx, span, origErr, pod)
 				pc.recorder.Event(pod, corev1.EventTypeWarning, podEventUpdateFailed, origErr.Error())
 
@@ -97,7 +97,7 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 
 		}
 	} else {
-		if origErr := pc.createPod(ctx, podForProvider); origErr != nil {
+		if origErr := pc.provider.CreatePod(ctx, podForProvider); origErr != nil {
 			pc.handleProviderError(ctx, span, origErr, pod)
 			pc.recorder.Event(pod, corev1.EventTypeWarning, podEventCreateFailed, origErr.Error())
 			return origErr
@@ -185,40 +185,29 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	podCopy := pod.DeepCopy()
 
-	// When Gambit is the provider directly (bypassing syncProviderWrapper),
-	// call DeletePod on Gambit and push terminal status inline. The
-	// syncProviderWrapper path handles this in its own DeletePod override.
-	if pc.gambit != nil {
-		if err := pc.gambit.DeletePod(ctx, podCopy); err != nil {
-			span.SetStatus(err)
-			pc.recorder.Event(pod, corev1.EventTypeWarning, podEventDeleteFailed, err.Error())
-			return err
-		}
+	if err := pc.provider.DeletePod(ctx, podCopy); err != nil {
+		span.SetStatus(err)
+		pc.recorder.Event(pod, corev1.EventTypeWarning, podEventDeleteFailed, err.Error())
+		return err
+	}
 
-		// Push terminal status — this replaces what syncProviderWrapper.DeletePod did.
-		if !shouldSkipPodStatusUpdate(pod) {
-			updated := pod.DeepCopy()
-			updated.Status.Phase = corev1.PodSucceeded
-			now := metav1.NewTime(time.Now())
-			for i, cs := range updated.Status.ContainerStatuses {
-				updated.Status.ContainerStatuses[i].State.Terminated = &corev1.ContainerStateTerminated{
-					Reason:     statusTerminatedReason,
-					Message:    containerStatusTerminatedMessage,
-					FinishedAt: now,
-				}
-				if cs.State.Running != nil {
-					updated.Status.ContainerStatuses[i].State.Terminated.StartedAt = cs.State.Running.StartedAt
-				}
+	// Push terminal status so k8s sees the pod as finished.
+	if !shouldSkipPodStatusUpdate(pod) {
+		updated := pod.DeepCopy()
+		updated.Status.Phase = corev1.PodSucceeded
+		now := metav1.NewTime(time.Now())
+		for i, cs := range updated.Status.ContainerStatuses {
+			updated.Status.ContainerStatuses[i].State.Terminated = &corev1.ContainerStateTerminated{
+				Reason:     statusTerminatedReason,
+				Message:    containerStatusTerminatedMessage,
+				FinishedAt: now,
 			}
-			updated.Status.Reason = statusTerminatedReason
-			pc.enqueuePodStatusUpdate(ctx, updated)
+			if cs.State.Running != nil {
+				updated.Status.ContainerStatuses[i].State.Terminated.StartedAt = cs.State.Running.StartedAt
+			}
 		}
-	} else {
-		if err := pc.provider.DeletePod(ctx, podCopy); err != nil {
-			span.SetStatus(err)
-			pc.recorder.Event(pod, corev1.EventTypeWarning, podEventDeleteFailed, err.Error())
-			return err
-		}
+		updated.Status.Reason = statusTerminatedReason
+		pc.enqueuePodStatusUpdate(ctx, updated)
 	}
 
 	pc.recorder.Event(pod, corev1.EventTypeNormal, podEventDeleteSuccess, "Delete pod in Perigeos successfully")
@@ -409,14 +398,6 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 		span.SetStatus(err)
 		return nil
 	}
-
-	defer func() {
-		if retErr == nil {
-			if w, ok := pc.provider.(syncWrapper); ok {
-				w._deletePodKey(ctx, key)
-			}
-		}
-	}()
 
 	// If the pod has been deleted from API server, we don't need to do anything.
 	k8sPod, err := pc.podsLister.Pods(namespace).Get(name)

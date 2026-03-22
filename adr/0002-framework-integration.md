@@ -1,6 +1,6 @@
 # ADR-0002: Evolve Periapsis from library to framework
 
-**Status:** In Progress (Phase 3 — LoggingProvider removed, dispatch helpers route to Gambit directly)
+**Status:** In Progress (Phase 4 — PodLifecycleHandler removed, PodProvider interface replaces it, dispatch.go deleted, syncProviderWrapper removed)
 **Date:** 2026-03-20
 
 ## Context

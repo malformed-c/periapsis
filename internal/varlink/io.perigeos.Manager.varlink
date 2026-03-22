@@ -1,7 +1,7 @@
 # io.perigeos.Manager
 #
 # Perigeos management interface. Exposed on a Unix socket
-# (/run/perigeos.sock by default) and optionally on TCP for remote access.
+# (/run/apsis/perigeos.sock by default) and optionally on TCP for remote access.
 
 interface io.perigeos.Manager
 

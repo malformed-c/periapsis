@@ -1,5 +1,5 @@
 # Constellation agent DaemonSet.
-# Runs on primary nodes (nodeSelector: perigeos.io/primary: "true").
+# Runs on primary nodes (nodeSelector: periapsis.io/primary: "true").
 # hostNetwork + privileged so the agent can install BPF programs and own the
 # host datapath; volumes give it access to the kernel module list, BPF FS,
 # iptables lock, cgroup hierarchy, and the CNI directories.
@@ -33,7 +33,7 @@ spec:
       hostPID: true
       serviceAccountName: constellation-agent
       nodeSelector:
-        perigeos.io/primary: "true"
+        periapsis.io/primary: "true"
       tolerations:
       - operator: Exists
       priorityClassName: system-node-critical
@@ -51,7 +51,7 @@ spec:
         imagePullPolicy: Always
         command: ["/usr/bin/cilium-agent"]
         args:
-        - --managed-nodes-selector=perigeos.io/host
+        - --managed-nodes-selector=periapsis.io/host
         - --routing-mode=tunnel
         - --kube-proxy-replacement=true
         - --ipam=cluster-pool

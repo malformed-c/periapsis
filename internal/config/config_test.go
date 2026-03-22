@@ -23,7 +23,7 @@ func TestProcess(t *testing.T) {
 		t.Skip("perigeos.toml not found, skipping")
 	}
 
-	cfg, err := rawConfig.Process("/var/lib/perigeos")
+	cfg, err := rawConfig.Process("/var/lib/apsis/perigeos")
 	if err != nil {
 		t.Fatal(err)
 	}

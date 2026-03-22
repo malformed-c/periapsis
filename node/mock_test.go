@@ -17,7 +17,7 @@ const (
 )
 
 var (
-	_ PodLifecycleHandler = (*mockProvider)(nil)
+	_ PodProvider = (*mockProviderAsync)(nil)
 )
 
 type mockProvider struct {
@@ -36,9 +36,8 @@ type mockProvider struct {
 // newMockProvider creates a new mockProvider.
 func newMockProvider() *mockProviderAsync {
 	provider := newSyncMockProvider()
-	// By default notifier is set to a function which is a no-op. In the event we've implemented the PodNotifier interface,
-	// it will be set, and then we'll call a real underlying implementation.
-	// This makes it easier in the sense we don't need to wrap each method.
+	// By default notifier is a no-op. The PodController calls NotifyPods to
+	// register the real callback, then the mock calls it on create/update/delete.
 	return &mockProviderAsync{provider}
 }
 
@@ -265,7 +264,7 @@ func (p *mockProviderAsync) NotifyPods(ctx context.Context, notifier func(*v1.Po
 }
 
 type testingProvider interface {
-	PodLifecycleHandler
+	PodProvider
 	setErrorOnDelete(error)
 	getAttemptedDeletes() *waitableInt
 	getDeletes() *waitableInt

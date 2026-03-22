@@ -8,10 +8,10 @@ Requires=dbus.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/perigeos \
-    --perigeosconfig /etc/perigeos/perigeos.toml \
+    --perigeosconfig /etc/apsis/perigeos/perigeos.toml \
     --kubeconfig /etc/rancher/k3s/k3s.yaml \
-    --base-dir /var/lib/perigeos \
-    --control-socket /run/perigeos.sock
+    --base-dir /var/lib/apsis/perigeos \
+    --control-socket /run/apsis/perigeos.sock
 
 Restart=on-failure
 RestartSec=5s
@@ -19,8 +19,8 @@ RestartSec=5s
 # WatchdogSec=120s
 
 # State directory
-StateDirectory=perigeos
-RuntimeDirectory=perigeos
+StateDirectory=apsis
+RuntimeDirectory=apsis
 
 # Logging — stdout/stderr go to journal
 StandardOutput=journal

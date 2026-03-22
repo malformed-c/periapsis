@@ -92,7 +92,7 @@ type GlobalConfig struct {
 	DefaultMemory resource.Quantity
 
 	// BaseDir is the root of all Perigeos state on disk.
-	// Default: /var/lib/perigeos. Override with --base-dir for dev/CI.
+	// Default: /var/lib/apsis/perigeos. Override with --base-dir for dev/CI.
 	BaseDir string
 
 	// ServerCAPath / ServerCAKeyPath are the k8s CA cert and key used to sign
@@ -115,11 +115,11 @@ type PawnConfig struct {
 	// NodeIP is the IP advertised to the apiserver. If empty, GetOutboundIP() is used.
 	NodeIP string
 
-	// BaseDir is the root of all Perigeos state on disk. Copied from GlobalConfig.
+	// BaseDir is the root of all apsis state on disk. Copied from GlobalConfig.
 	BaseDir string
 
 	// IsPrimary marks this pawn as the host's primary node.
-	// Primary nodes get perigeos.io/primary=true and
+	// Primary nodes get periapsis.io/primary=true and
 	// node-role.kubernetes.io/primary labels instead of the pawn role.
 	IsPrimary bool
 

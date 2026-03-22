@@ -46,7 +46,7 @@ type imageConfig struct {
 }
 
 // NewImageManager creates an ImageManager for a specific pawn.
-// baseDir is typically /var/lib/perigeos (prod) or ./var/lib/perigeos (dev).
+// baseDir is typically /var/lib/apsis/perigeos (prod) or ./var/lib/apsis/perigeos (dev).
 func NewImageManager(baseDir, pawnName string, logger *slog.Logger) *ImageManager {
 	return &ImageManager{
 		layerCache:    filepath.Join(baseDir, "layers"),
@@ -406,7 +406,7 @@ func (im *ImageManager) ensureOSRelease(merged string) error {
 	}
 	defer f.Close()
 
-	_, err = f.WriteString("NAME=Perigeos\nID=perigeos\nPRETTY_NAME=\"Perigeos Pawn\"\n")
+	_, err = f.WriteString("NAME=Periapsis\nID=periapsis\nPRETTY_NAME=\"Periapsis Pawn\"\n")
 	return err
 }
 

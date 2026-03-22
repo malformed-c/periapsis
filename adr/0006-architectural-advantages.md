@@ -33,7 +33,7 @@ This ADR catalogs improvements that the architecture uniquely enables. Items are
 
 **Why perigeos can fix it:** Perigeos controls the overlayfs mount and the volume setup. ConfigMap volumes can be implemented as a FUSE filesystem that serves content directly from an API server watch stream. The flow becomes: ConfigMap update hits etcd → watch event fires → FUSE serves new content → inotify fires in the container on the actual file. Propagation latency drops from 60 seconds to watch latency (typically sub-second). Pods that `inotify` on their config files see changes immediately.
 
-**Implementation path:** New volume driver in `internal/volume` that mounts a FUSE filesystem for ConfigMap/Secret volumes. The FUSE process watches the relevant object via the existing informer infrastructure. Standard overlayfs-backed volumes stay as the default; FUSE mode is opt-in via an annotation (`perigeos.io/volume-mode: watch`) or global config.
+**Implementation path:** New volume driver in `internal/volume` that mounts a FUSE filesystem for ConfigMap/Secret volumes. The FUSE process watches the relevant object via the existing informer infrastructure. Standard overlayfs-backed volumes stay as the default; FUSE mode is opt-in via an annotation (`periapsis.io/volume-mode: watch`) or global config.
 
 ## Structural wins
 
@@ -69,7 +69,7 @@ This ADR catalogs improvements that the architecture uniquely enables. Items are
 
 **Why perigeos can fix it:** Gambit controls init container execution directly. A pod annotation can declare dependencies between init containers, and Gambit runs independent ones concurrently.
 
-**Implementation path:** Add support for `perigeos.io/init-parallel: "true"` (all init containers run concurrently) and `perigeos.io/init-depends-on: "container-name"` (run after a specific init container completes). The pod spec remains valid Kubernetes — the annotations are hints. Default behavior (sequential) is unchanged.
+**Implementation path:** Add support for `periapsis.io/init-parallel: "true"` (all init containers run concurrently) and `periapsis.io/init-depends-on: "container-name"` (run after a specific init container completes). The pod spec remains valid Kubernetes — the annotations are hints. Default behavior (sequential) is unchanged.
 
 ### Node-local scheduling fast path
 

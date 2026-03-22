@@ -74,8 +74,8 @@ const (
 	DefaultCreateConcurrency = 5
 )
 
-// Gambit is the periapsis provider. It implements the PodLifecycleHandler
-// interface and orchestrates image pulling, overlayfs mounting, network setup,
+// Gambit is the periapsis provider. It implements the PodProvider interface
+// and orchestrates image pulling, overlayfs mounting, network setup,
 // and systemd-nspawn machine management for each pod.
 type Gambit struct {
 	Config         config.PawnConfig
@@ -548,14 +548,14 @@ func (g *Gambit) BuildNode() *corev1.Node {
 	// Primary nodes get the primary role; regular pawns get the pawn role.
 	labels := make(map[string]string, len(g.Config.Labels)+7)
 	maps.Copy(labels, g.Config.Labels)
-	labels["perigeos.io/host"] = hostName
+	labels["periapsis.io/host"] = hostName
 	labels["kubernetes.io/hostname"] = pawnName
 	labels["kubernetes.io/os"] = "linux"
 	labels["kubernetes.io/arch"] = runtime.GOARCH
 	labels["beta.kubernetes.io/os"] = "linux"
 	labels["beta.kubernetes.io/arch"] = runtime.GOARCH
 	if g.Config.IsPrimary {
-		labels["perigeos.io/primary"] = "true"
+		labels["periapsis.io/primary"] = "true"
 		labels["node-role.kubernetes.io/primary"] = ""
 	} else {
 		labels["node-role.kubernetes.io/pawn"] = ""
@@ -569,7 +569,7 @@ func (g *Gambit) BuildNode() *corev1.Node {
 		Spec: corev1.NodeSpec{
 			Unschedulable: false,
 			// Pawns carry their configured taints (typically
-			// node.perigeos.io/type=pawn:NoSchedule). DaemonSets schedule
+			// node.periapsis.io/type=pawn:NoSchedule). DaemonSets schedule
 			// on the primary node instead.
 			Taints:     g.Config.Taints,
 			ProviderID: fmt.Sprintf("perigeos://%s/%s", hostName, pawnName),

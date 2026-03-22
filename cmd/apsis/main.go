@@ -22,7 +22,7 @@ func shortUID(uid string) string {
 }
 
 func main() {
-	socketPath := flag.String("socket", control.DefaultSocketPath, "Path to perigeos control socket")
+	socketPath := flag.String("socket", control.DefaultSocketPath, "Path to control socket")
 	jsonOutput := flag.Bool("json", false, "Output raw JSON")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: apsis [flags] <command>\n  apsis <command> [flags]\n\nCommands:\n  status    Daemon status overview\n  pawns     List pawns with state and pod counts\n  pods      List pods across all pawns\n  showcase  Visual breakdown of cluster state\n  doctor    Compare pod state across all sources and report discrepancies\n  top       Live per-pawn cgroup stats (refreshes every 2s)\n  rollout   Stepped scale/rollout for a Deployment\n  version   Version info\n\nFlags:\n")

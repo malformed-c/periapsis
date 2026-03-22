@@ -52,7 +52,7 @@ func NewReconcilerForTest(
 	logger *slog.Logger,
 ) *TestReconciler {
 	tracker := newMockTracker()
-	im := image.NewImageManager("/tmp/perigeos-test", "test-pawn", slog.Default())
+	im := image.NewImageManager("/tmp/apsis-test", "test-pawn", slog.Default())
 	return &TestReconciler{
 		Reconciler: &Reconciler{
 			tracker:   tracker,
@@ -61,7 +61,7 @@ func NewReconcilerForTest(
 			image:     im,
 			podLister: podLister,
 			logger:    logger,
-			baseDir:   "/tmp/perigeos-test",
+			baseDir:   "/tmp/apsis-test",
 			pawnName:  "test-pawn",
 		},
 		tracker: tracker,

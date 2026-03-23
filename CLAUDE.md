@@ -50,4 +50,4 @@ sudo -E go test ./internal/runtime/systemd/... -v -count=1
 - ADR-0002 complete (phases 4-8): `internal/provider/` dissolved into `node/`, PodProvider retained as testing seam
 - `dispatch.go` and `syncProviderWrapper` removed; PodController calls `pc.provider` directly
 - Forward reconciler: Gambit can request PodController re-sync via `RequestSync(namespace, name)`
-- k8s deps are pinned to v0.34.x
+- k8s deps are pinned to v0.35.x

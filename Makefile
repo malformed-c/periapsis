@@ -16,10 +16,10 @@ build:
 	go build $(VERSION_FLAGS) -o $(BINARY) ./cmd/perigeos
 
 build-arm64:
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(VERSION_FLAGS) -o $(BINARY)-linux-arm64 ./cmd/perigeos
+	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build $(VERSION_FLAGS) -o $(BINARY)-linux-arm64 ./cmd/perigeos
 
 build-armv7:
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(VERSION_FLAGS) -o $(BINARY)-linux-armv7 ./cmd/perigeos
+	CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc go build $(VERSION_FLAGS) -o $(BINARY)-linux-armv7 ./cmd/perigeos
 
 test:
 	go test ./...

@@ -129,22 +129,14 @@ See `adr/` for full records. Key milestones:
 
 ## Build & Test
 
-**Build (native):**
+**Build:**
 ```bash
-make build
+go build ./cmd/perigeos
 ```
-
-**Build ARM:**
-```bash
-make build-arm64    # ARM64
-make build-armv7    # ARMv7
-```
-
-Binary is statically linked (CGO_ENABLED=0); no runtime deps beyond systemd, CNI plugins, and images.
 
 **Test:**
 ```bash
-make test
+go test ./...
 ```
 
 **Integration tests (runtime, requires root):**

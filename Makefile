@@ -8,18 +8,12 @@ VERSION      := $(shell git describe --tags --always --dirty="-dev")
 DATE         := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 VERSION_FLAGS := -ldflags='-X "main.buildVersion=$(VERSION)" -X "main.buildTime=$(DATE)"'
 
-.PHONY: all build build-arm64 build-armv7 test clean install uninstall
+.PHONY: all build test clean install uninstall
 
 all: build
 
 build:
 	go build $(VERSION_FLAGS) -o $(BINARY) ./cmd/perigeos
-
-build-arm64:
-	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build $(VERSION_FLAGS) -o $(BINARY)-linux-arm64 ./cmd/perigeos
-
-build-armv7:
-	CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc go build $(VERSION_FLAGS) -o $(BINARY)-linux-armv7 ./cmd/perigeos
 
 test:
 	go test ./...

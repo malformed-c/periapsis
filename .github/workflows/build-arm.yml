@@ -31,14 +31,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
       - name: Configure private module access
         run: git config --global url."https://${{ secrets.GO_PRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Tidy
         run: go mod tidy
 
-      - name: Install systemd dev headers
-        run: sudo apt-get update && sudo apt-get install -y libsystemd-dev
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libsystemd-dev
+          version: 1.0
 
       - name: Build
         run: go build -trimpath -ldflags="-s -w -flto" -o ${{ matrix.artifact }} ./cmd/perigeos

@@ -20,11 +20,20 @@ import (
 // (via notifyPodStatus) only for pods whose observable state actually changed.
 // This eliminates the need for the 5s poll-all-pods loop — status updates
 // are O(changed_pods) instead of O(all_pods).
+//
+// The watcher is hybrid event+poll: it subscribes to D-Bus unit state signals
+// via Runtime.SubscribeEvents so container exits are detected immediately,
+// with the ticker as a consistency fallback.
 type BatchWatcher struct {
 	gambit *Gambit
 	logger *slog.Logger
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// pokeCh receives non-blocking sends when a pod lifecycle event
+	// (creation, deletion) occurs. This triggers an immediate poll so
+	// fast-exit containers are detected without waiting for the ticker.
+	pokeCh chan struct{}
 
 	// prevStateMap holds the stateMap from the previous poll cycle.
 	// Used by the coalescer to detect container state transitions.
@@ -40,6 +49,14 @@ type BatchWatcher struct {
 	stateCacheMu sync.RWMutex
 	stateCache   map[string]pruntime.MachineState
 
+	// seenRunning tracks containers that have been observed in Running
+	// state at least once. Used to prevent premature terminal phase
+	// decisions: systemd units briefly pass through inactive/dead during
+	// startup, and ExecMainStatus isn't updated until after the unit
+	// settles. We only make terminal decisions for containers we've
+	// confirmed were actually running.
+	seenRunning map[string]bool // key: uid/containerName
+
 	// restarting tracks containers currently in a restart goroutine
 	// to prevent double-restarts between poll cycles.
 	restartingMu sync.Mutex
@@ -54,13 +71,32 @@ func StartBatchWatcher(g *Gambit) *BatchWatcher {
 		logger:       g.Logger.With("component", "batchwatcher"),
 		cancel:       cancel,
 		done:         make(chan struct{}),
+		pokeCh:       make(chan struct{}, 1),
 		prevStateMap: make(map[string]pruntime.MachineState),
 		prevReady:    make(map[string]bool),
 		stateCache:   make(map[string]pruntime.MachineState),
+		seenRunning:  make(map[string]bool),
 		restarting:   make(map[string]bool),
 	}
 	go bw.run(ctx)
 	return bw
+}
+
+// Poke triggers an immediate poll cycle. Non-blocking — if a poke is already
+// pending, the additional signal is coalesced.
+func (bw *BatchWatcher) Poke() {
+	select {
+	case bw.pokeCh <- struct{}{}:
+	default:
+	}
+}
+
+// MarkRunning records that a container has been observed in Running state.
+// Called by CreatePod after the machine is started so that the BatchWatcher
+// knows the container was running even if the D-Bus "running" event arrives
+// after the unit exits (fast-exit containers).
+func (bw *BatchWatcher) MarkRunning(uid, containerName string) {
+	bw.seenRunning[uid+"/"+containerName] = true
 }
 
 // ContainerState returns the cached state for a container from the most recent
@@ -84,8 +120,15 @@ func (bw *BatchWatcher) Stop() {
 
 func (bw *BatchWatcher) run(ctx context.Context) {
 	defer close(bw.done)
+
+	// On startup, clean up stale units left by a previous crash/restart.
+	bw.cleanupStaleUnits(ctx)
+
 	ticker := time.NewTicker(containerWatchPoll)
 	defer ticker.Stop()
+
+	// Subscribe to D-Bus unit state events for reactive detection.
+	eventCh := bw.gambit.Runtime.SubscribeEvents(ctx)
 
 	for {
 		select {
@@ -93,7 +136,69 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			bw.poll(ctx)
+		case ev := <-eventCh:
+			bw.handleUnitEvent(ctx, ev)
+		case <-bw.pokeCh:
+			bw.poll(ctx)
 		}
+	}
+}
+
+// handleUnitEvent reacts to a D-Bus unit state change by querying the
+// individual container's MachineStatus and updating the stateCache.
+// This is more targeted than a full poll — it only touches the affected
+// container, giving sub-second detection for fast-exit containers.
+func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev pruntime.UnitEvent) {
+	// Parse uid and containerName from the unit name.
+	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
+	uid, containerName := bw.gambit.parseUnitName(ev.UnitName)
+	if uid == "" {
+		return
+	}
+
+	// Map substate to MachineState.
+	//
+	// We intentionally ignore "dead" — it's an intermediate substate that
+	// fires BEFORE systemd updates ExecMainStatus. If we react to it, we
+	// see exit code 0 and incorrectly mark the pod as Succeeded. Systemd
+	// always follows "dead" with either:
+	//   - "failed" (non-zero exit) → we react to this immediately
+	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
+	//     poll detects the unit is gone within 2s
+	var state pruntime.MachineState
+	switch ev.SubState {
+	case "running":
+		state = pruntime.StateRunning
+	case "failed":
+		state = pruntime.StateFailed
+	case "start-pre", "start", "start-post":
+		state = pruntime.StateCreating
+	default:
+		return // ignore "dead" and other transient states
+	}
+
+	key := uid + "/" + containerName
+
+	// Track that we've seen this container running (used by checkPod
+	// to avoid premature terminal decisions during unit startup).
+	if state == pruntime.StateRunning {
+		bw.seenRunning[key] = true
+	}
+
+	// Update stateCache atomically.
+	bw.stateCacheMu.Lock()
+	prev := bw.stateCache[key]
+	bw.stateCache[key] = state
+	bw.stateCacheMu.Unlock()
+
+	if prev == state {
+		return // no change
+	}
+
+	// For failed containers, trigger a full poll to process restart policy
+	// and push terminal phase.
+	if state == pruntime.StateFailed {
+		bw.poll(ctx)
 	}
 }
 
@@ -140,9 +245,26 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		if e.phase == corev1.PodPending {
 			continue
 		}
-		// Skip pods in terminal phase.
+		// Skip pods in terminal phase — unless a container's state changed
+		// to a *different known state*, meaning systemd settled to a different
+		// result (e.g. the pod was marked Succeeded from an intermediate
+		// "dead" substate, but the unit actually failed).
+		// A unit disappearing from stateMap (after ResetUnit cleanup) is NOT
+		// a state change — it's expected cleanup.
 		if e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
-			continue
+			needsReeval := false
+			for _, c := range e.pod.Spec.Containers {
+				key := e.uid + "/" + c.Name
+				cur, curExists := stateMap[key]
+				prev, prevExists := bw.prevStateMap[key]
+				if prevExists && curExists && prev != cur {
+					needsReeval = true
+					break
+				}
+			}
+			if !needsReeval {
+				continue
+			}
 		}
 		if len(e.pod.Spec.Containers) == 0 {
 			continue
@@ -180,7 +302,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		if !changedPods[e.uid] {
 			continue
 		}
-		if e.phase == corev1.PodPending || e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
+		// Re-read podPhases under lock — checkPod may have set a terminal
+		// phase during *this* poll cycle, after the entries snapshot was taken.
+		bw.gambit.mu.RLock()
+		currentPhase := bw.gambit.podPhases[e.uid]
+		bw.gambit.mu.RUnlock()
+		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
 			continue
 		}
 		status := bw.gambit.buildPodStatus(e.pod, stateLookup)
@@ -204,6 +331,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			delete(bw.prevReady, k)
 		}
 	}
+	for k := range bw.seenRunning {
+		if !activeKeys[k] {
+			delete(bw.seenRunning, k)
+		}
+	}
 }
 
 func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]pruntime.MachineState) {
@@ -221,11 +353,28 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if !exists {
 			state = pruntime.StateExited
 		}
+		bw.logger.Debug("checkPod container state", "pod", pod.Name, "container", c.Name, "state", state, "exists", exists, "policy", policy)
+
+		// If the container appears exited but was never observed running,
+		// it may be in a brief inactive/dead state during unit startup
+		// (systemd transitions through inactive→active for transient units,
+		// and ExecMainStatus isn't updated until after the unit settles).
+		// Don't make terminal decisions — wait for the unit to settle.
+		if !bw.seenRunning[key] && (state == pruntime.StateExited || state == pruntime.StateUnknown) {
+			bw.logger.Debug("Deferring terminal decision — container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
+			allExited = false
+			allSucceeded = false
+			continue
+		}
 
 		switch state {
 		case pruntime.StateRunning, pruntime.StateCreating:
 			allExited = false
 			allSucceeded = false
+
+			if state == pruntime.StateRunning {
+				bw.seenRunning[key] = true
+			}
 
 			// Reset backoff if container has been running long enough.
 			if state == pruntime.StateRunning {
@@ -269,11 +418,9 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	} else {
 		terminalPhase = corev1.PodFailed
 	}
-	bw.gambit.mu.Lock()
-	bw.gambit.podPhases[uid] = terminalPhase
-	bw.gambit.mu.Unlock()
+	bw.logger.Info("Setting terminal phase", "pod", pod.Name, "phase", terminalPhase, "allSucceeded", allSucceeded)
 
-	// Push terminal status to PodController.
+	// Build terminal status.
 	updated := pod.DeepCopy()
 	updated.Status.Phase = terminalPhase
 	now := metav1.NewTime(time.Now())
@@ -287,7 +434,46 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			updated.Status.ContainerStatuses[i].State.Running = nil
 		}
 	}
+
+	// Update both the phase map AND the pod's Status in-place so that
+	// GetPodStatus returns the terminal status even after the systemd
+	// unit is cleaned up.
+	bw.gambit.mu.Lock()
+	bw.gambit.podPhases[uid] = terminalPhase
+	if p, ok := bw.gambit.pods[uid]; ok {
+		updated.Status.DeepCopyInto(&p.Status)
+	}
+	bw.gambit.mu.Unlock()
+
 	bw.gambit.notifyPodStatus(updated)
+
+	// Clean up dead/failed systemd units now that we've read their state.
+	// Without this, transient units accumulate in systemd's listing.
+	for _, c := range pod.Spec.Containers {
+		if err := bw.gambit.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
+			bw.logger.Debug("ResetUnit failed (unit may already be collected)", "pod", pod.Name, "container", c.Name, "err", err)
+		}
+	}
+}
+
+// cleanupStaleUnits removes dead/failed systemd units from a previous
+// perigeos lifetime that never got cleaned up (e.g. after a crash).
+func (bw *BatchWatcher) cleanupStaleUnits(ctx context.Context) {
+	bw.gambit.mu.RLock()
+	activeUIDs := make(map[string]bool, len(bw.gambit.pods))
+	for uid := range bw.gambit.pods {
+		activeUIDs[uid] = true
+	}
+	bw.gambit.mu.RUnlock()
+
+	cleaned, err := bw.gambit.Runtime.CleanupStaleUnits(ctx, activeUIDs)
+	if err != nil {
+		bw.logger.Error("Startup stale unit cleanup failed", "err", err)
+		return
+	}
+	if cleaned > 0 {
+		bw.logger.Info("Cleaned up stale units from previous run", "count", cleaned)
+	}
 }
 
 // runProbes executes startup, liveness, and readiness probes for a running

@@ -212,9 +212,12 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	properties := []dbus.Property{
 		dbus.PropDescription("Pod " + podUID),
 		dbus.PropSlice(slice),
+		dbus.PropType("exec"), // exec type ensures systemd tracks the main process exit code
 		dbus.PropExecStart(execStart, false),
 		{Name: "SyslogIdentifier", Value: dbusv5.MakeVariant(cfg.Container.Name)},
-		{Name: "CollectMode", Value: dbusv5.MakeVariant("inactive-or-failed")},
+		// No CollectMode — we manage unit lifecycle explicitly.
+		// The BatchWatcher reads exit codes and cleans up dead/failed
+		// units after processing their terminal state.
 		{Name: "Delegate", Value: dbusv5.MakeVariant(true)},
 		{Name: "KillMode", Value: dbusv5.MakeVariant("mixed")},
 		{Name: "Environment", Value: dbusv5.MakeVariant(metaEnv)},
@@ -271,20 +274,21 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		})
 	}
 
-	ch := make(chan string, 1)
-	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, ch); err != nil {
+	// We intentionally pass a nil channel instead of waiting for the job
+	// completion signal. go-systemd's startJob has a race condition: it
+	// registers the callback channel AFTER the D-Bus call returns, so for
+	// fast-exit units the JobRemoved signal can arrive and be consumed
+	// before the channel is registered, causing <-ch to block forever.
+	// See: https://github.com/coreos/go-systemd/issues/485
+	//
+	// Instead of waiting for the job signal, the caller's waitForContainer
+	// polls MachineStatus which handles both Running and Exited states.
+	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); err != nil {
 		// Clean up PTY on failure.
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
 			masterVal.(*os.File).Close()
 		}
 		return fmt.Errorf("failed to create machine unit: %w", err)
-	}
-
-	if res := <-ch; res != "done" {
-		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
-			masterVal.(*os.File).Close()
-		}
-		return fmt.Errorf("start machine job failed: %s", res)
 	}
 
 	return nil
@@ -358,6 +362,11 @@ func (s *SystemdRuntime) MachineStatus(ctx context.Context, podUID, containerNam
 	case "failed":
 		return runtime.StateFailed, nil
 	default:
+		// Check ExecMainStatus for non-zero exit code. Systemd may briefly
+		// report ActiveState=inactive before transitioning to failed.
+		if exitCode := s.readExitCode(ctx, serviceName); exitCode != 0 {
+			return runtime.StateFailed, nil
+		}
 		return runtime.StateExited, nil
 	}
 }
@@ -378,6 +387,14 @@ func (s *SystemdRuntime) ListManagedMachines(ctx context.Context) ([]runtime.Pod
 
 	for _, unit := range units {
 		state := mapActiveState(unit.ActiveState)
+		exitCode := s.readExitCode(ctx, unit.Name)
+
+		// Systemd may briefly report ActiveState=inactive before settling
+		// to failed for non-zero exits. Use ExecMainStatus as the source
+		// of truth: any non-zero exit code means the container failed.
+		if state == runtime.StateExited && exitCode != 0 {
+			state = runtime.StateFailed
+		}
 
 		env := s.readUnitEnv(ctx, unit.Name)
 
@@ -396,6 +413,7 @@ func (s *SystemdRuntime) ListManagedMachines(ctx context.Context) ([]runtime.Pod
 			ContainerName: env["PERIGEOS_META_CONTAINER"],
 			StartedAt:     s.readUnitStartTime(ctx, unit.Name),
 			State:         state,
+			ExitCode:      exitCode,
 		})
 	}
 
@@ -425,6 +443,20 @@ func (s *SystemdRuntime) readUnitEnv(ctx context.Context, unitName string) map[s
 		}
 	}
 	return result
+}
+
+// readExitCode reads the ExecMainStatus property of a systemd service unit,
+// which contains the process exit code. Returns 0 if unavailable.
+func (s *SystemdRuntime) readExitCode(ctx context.Context, unitName string) int32 {
+	prop, err := s.conn.GetServicePropertyContext(ctx, unitName, "ExecMainStatus")
+	if err != nil {
+		return 0
+	}
+	code, ok := prop.Value.Value().(int32)
+	if !ok {
+		return 0
+	}
+	return code
 }
 
 // readUnitStartTime returns the time the unit entered the active state by
@@ -829,4 +861,112 @@ func substituteEnvVars(s string, env map[string]string) string {
 // Format: perigeos-<pawn>-pod-<uid>-<container>.service
 func wrapperUnitName(pawnName, podUID, containerName string) string {
 	return fmt.Sprintf("perigeos-%s-pod-%s-%s.service", pawnName, podUID, containerName)
+}
+
+// ResetUnit cleans up a dead/failed transient unit by calling ResetFailedUnit.
+// This removes the unit from systemd's listing so it doesn't accumulate.
+func (s *SystemdRuntime) ResetUnit(ctx context.Context, podUID, containerName string) error {
+	serviceName := wrapperUnitName(s.pawnName, podUID, containerName)
+	return s.conn.ResetFailedUnitContext(ctx, serviceName)
+}
+
+// CleanupStaleUnits resets all dead/failed transient units whose pod UID is
+// not in the activeUIDs set. This handles units left behind by a previous
+// crash or restart where the BatchWatcher never got to clean them up.
+func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[string]bool) (int, error) {
+	pattern := fmt.Sprintf("perigeos-%s-pod-*.service", s.pawnName)
+	units, err := s.conn.ListUnitsByPatternsContext(ctx, nil, []string{pattern})
+	if err != nil {
+		return 0, fmt.Errorf("list units: %w", err)
+	}
+
+	cleaned := 0
+	for _, unit := range units {
+		// Only clean up non-running units.
+		if unit.ActiveState == "active" || unit.ActiveState == "activating" {
+			continue
+		}
+		// Parse UID from unit name.
+		env := s.readUnitEnv(ctx, unit.Name)
+		uid := env["PERIGEOS_META_UID"]
+		if uid == "" {
+			continue
+		}
+		if activeUIDs[uid] {
+			continue
+		}
+		if err := s.conn.ResetFailedUnitContext(ctx, unit.Name); err != nil {
+			s.logger.Debug("CleanupStaleUnits: reset failed", "unit", unit.Name, "err", err)
+			continue
+		}
+		s.logger.Info("Cleaned up stale unit", "unit", unit.Name, "uid", uid)
+		cleaned++
+	}
+	return cleaned, nil
+}
+
+// SubscribeEvents subscribes to D-Bus unit state change signals and returns
+// a channel that emits UnitEvents for perigeos-managed units.
+//
+// Uses SetPropertiesSubscriber instead of SetSubStateSubscriber because
+// the latter has an "ignore" mechanism that silently drops events for
+// units whose properties were recently queried (by ListManagedMachines
+// or GetUnitProperties). SetPropertiesSubscriber explicitly does NOT
+// have this problem (see go-systemd subscription.go:328-329).
+func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.UnitEvent {
+	// Subscribe to systemd signals on the go-systemd connection.
+	if err := s.conn.Subscribe(); err != nil {
+		s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", err)
+		return nil
+	}
+
+	s.logger.Info("D-Bus event subscription active")
+	eventCh := make(chan runtime.UnitEvent, 64)
+	propCh := make(chan *dbus.PropertiesUpdate, 64)
+	errCh := make(chan error, 8)
+	s.conn.SetPropertiesSubscriber(propCh, errCh)
+
+	prefix := "perigeos-"
+	go func() {
+		defer close(eventCh)
+		for {
+			select {
+			case <-ctx.Done():
+				s.conn.SetPropertiesSubscriber(nil, nil)
+				return
+			case update := <-propCh:
+				if update == nil {
+					continue
+				}
+				if !strings.HasPrefix(update.UnitName, prefix) {
+					continue
+				}
+				// Extract SubState from changed properties if present.
+				subStateVar, ok := update.Changed["SubState"]
+				if !ok {
+					continue
+				}
+				subState, ok := subStateVar.Value().(string)
+				if !ok {
+					continue
+				}
+				s.logger.Debug("D-Bus unit event", "unit", update.UnitName, "substate", subState)
+				select {
+				case eventCh <- runtime.UnitEvent{
+					UnitName: update.UnitName,
+					SubState: subState,
+				}:
+				default:
+					s.logger.Debug("Unit event channel full, dropping event",
+						"unit", update.UnitName, "substate", subState)
+				}
+			case err := <-errCh:
+				if err != nil {
+					s.logger.Warn("D-Bus subscription error", "err", err)
+				}
+			}
+		}
+	}()
+
+	return eventCh
 }

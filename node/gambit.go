@@ -156,6 +156,24 @@ type containerRestartState struct {
 	lastStarted time.Time // when the container last entered Running; used to reset backoff
 }
 
+// parseUnitName extracts (uid, containerName) from a systemd unit name.
+// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
+// Returns ("", "") if the unit name doesn't match this pawn's prefix.
+func (g *Gambit) parseUnitName(unitName string) (uid, containerName string) {
+	prefix := "perigeos-" + g.Config.Name + "-pod-"
+	suffix := ".service"
+	if !strings.HasPrefix(unitName, prefix) || !strings.HasSuffix(unitName, suffix) {
+		return "", ""
+	}
+	// Strip prefix and suffix to get "<uid>-<containerName>"
+	inner := unitName[len(prefix) : len(unitName)-len(suffix)]
+	// UIDs are standard 36-char UUIDs (8-4-4-4-12 with hyphens).
+	if len(inner) < 38 { // 36 (UUID) + 1 (hyphen) + at least 1 char
+		return "", ""
+	}
+	return inner[:36], inner[37:]
+}
+
 // resolveNodeIP returns the IP that this pawn advertises to the apiserver.
 // cfg.NodeIP takes precedence; if unset, the default outbound IP is used.
 // Override via node_ip in perigeos.toml when the control plane cannot reach
@@ -848,6 +866,11 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 // is registered. Safe to call when podNotify is nil (no-op).
 func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	if g.podNotify != nil {
+		var caller string
+		if _, file, line, ok := runtime.Caller(1); ok {
+			caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+		}
+		g.Logger.Debug("notifyPodStatus", "pod", pod.Name, "phase", pod.Status.Phase, "caller", caller)
 		g.podNotify(pod)
 	}
 }
@@ -1249,13 +1272,44 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		"containers", len(pod.Spec.Containers))
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
 
-	// Push Running status to PodController immediately instead of waiting
-	// for the next poll cycle.
-	if status, err := g.GetPodStatus(context.Background(), pod.Namespace, pod.Name); err == nil {
+	// Push Running status to PodController immediately. We construct the
+	// status directly rather than calling GetPodStatus, because the
+	// BatchWatcher cache may contain stale/intermediate states from
+	// systemd's unit startup sequence (brief inactive→active transition).
+	{
 		updated := pod.DeepCopy()
-		status.DeepCopyInto(&updated.Status)
+		updated.Status.Phase = corev1.PodRunning
+		updated.Status.HostIP = resolveNodeIP(g.Config)
+		updated.Status.PodIP = podIP
+		now := metav1.NewTime(time.Now())
+		updated.Status.StartTime = &now
+		for _, c := range pod.Spec.Containers {
+			updated.Status.ContainerStatuses = append(updated.Status.ContainerStatuses, corev1.ContainerStatus{
+				Name:  c.Name,
+				Image: c.Image,
+				Ready: false,
+				State: corev1.ContainerState{
+					Running: &corev1.ContainerStateRunning{StartedAt: now},
+				},
+			})
+		}
 		g.notifyPodStatus(updated)
 	}
+
+	// Mark all containers as seen-running in the BatchWatcher so it knows
+	// they actually started (even if the D-Bus "running" event arrives
+	// after the unit already exited for fast-exit containers).
+	if g.batchWatcher != nil {
+		for _, c := range pod.Spec.Containers {
+			g.batchWatcher.MarkRunning(uid, c.Name)
+		}
+	}
+
+	// Don't Poke here — the BatchWatcher will detect the exit via D-Bus
+	// events (SubState=failed for non-zero exits, immediate) or the next
+	// ticker poll (2s, for clean exits). Poking immediately would race
+	// with systemd's ExecMainStatus update, causing exit-1 containers
+	// to be misclassified as Succeeded.
 
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
 		Pod:   pod,
@@ -1273,8 +1327,17 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
-		if err == nil && state == pruntime.StateRunning {
-			return nil
+		if err == nil {
+			switch state {
+			case pruntime.StateRunning:
+				return nil
+			case pruntime.StateExited, pruntime.StateFailed:
+				// Container already ran and exited (fast-exit containers like
+				// certgen finish before the first poll). This is success from
+				// the perspective of "the machine started" — the BatchWatcher
+				// will handle terminal phase transitions and exit codes.
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -1748,6 +1811,13 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 	g.mu.RUnlock()
 	if phase == corev1.PodPending {
 		return &corev1.PodStatus{Phase: corev1.PodPending}, nil
+	}
+
+	// If the pod is in a terminal phase (set by BatchWatcher), return
+	// the stored status directly. The systemd unit may already be cleaned
+	// up (ResetUnit), so querying the stateCache would give stale results.
+	if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
+		return &targetPod.Status, nil
 	}
 
 	// If the pod was marked as failed during creation (e.g. CNI error,

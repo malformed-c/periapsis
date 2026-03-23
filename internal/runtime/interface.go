@@ -47,6 +47,30 @@ type Runtime interface {
 	// new machine registrations. Returns a descriptive error if machined is
 	// unreachable or resource-constrained (e.g. FD limit exhausted).
 	CheckMachined(ctx context.Context) error
+
+	// SubscribeEvents returns a channel that receives UnitEvent values
+	// whenever a managed unit changes state (e.g. active→dead/failed).
+	// The BatchWatcher uses this to reactively update container state
+	// instead of waiting for the next poll tick.
+	// The channel is closed when ctx is cancelled.
+	// Implementations that cannot provide events should return a nil channel.
+	SubscribeEvents(ctx context.Context) <-chan UnitEvent
+
+	// ResetUnit cleans up a dead/failed transient unit so it doesn't
+	// accumulate in systemd's unit listing. Called by the BatchWatcher
+	// after it has read the unit's exit code and processed terminal state.
+	ResetUnit(ctx context.Context, podUID, containerName string) error
+
+	// CleanupStaleUnits resets all dead/failed transient units that are
+	// not associated with any known pod UID. Called on startup to clean
+	// up units left behind by a previous crash or restart.
+	CleanupStaleUnits(ctx context.Context, activeUIDs map[string]bool) (cleaned int, err error)
+}
+
+// UnitEvent is emitted by SubscribeEvents when a managed unit changes state.
+type UnitEvent struct {
+	UnitName string
+	SubState string // systemd sub-state: "dead", "failed", "running", etc.
 }
 
 // MachineState represents the lifecycle state of a systemd-nspawn machine.
@@ -155,6 +179,9 @@ type PodMetadata struct {
 	// State is the current lifecycle state of the machine, populated by
 	// ListManagedMachines so callers can avoid per-unit D-Bus queries.
 	State MachineState
+	// ExitCode is the process exit code from systemd's ExecMainStatus.
+	// Only meaningful when State is StateExited or StateFailed.
+	ExitCode int32
 }
 
 // PawnSliceConfig carries the resource limits for a pawn's cgroup slice.

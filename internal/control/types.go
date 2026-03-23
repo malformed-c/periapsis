@@ -98,6 +98,10 @@ type PawnDiagnosis struct {
 	OrphanMachines  []DoctorEntry `json:"orphan_machines,omitempty"`   // in systemd, not in gambit
 	StaleDirs       []string      `json:"stale_dirs,omitempty"`        // on disk, not in gambit
 	MissingDirs     []DoctorEntry `json:"missing_dirs,omitempty"`      // in gambit, not on disk
+
+	// StaleUnits are dead/failed systemd units not associated with any active pod.
+	// These accumulate when perigeos crashes before BatchWatcher cleans them up.
+	StaleUnits int `json:"stale_units"`
 }
 
 // DoctorEntry identifies a pod in a discrepancy report.
@@ -114,6 +118,7 @@ type DoctorSummary struct {
 	TotalGhosts    int `json:"total_ghosts"`
 	TotalOrphans   int `json:"total_orphans"`
 	TotalStaleDirs int `json:"total_stale_dirs"`
+	TotalStaleUnits int `json:"total_stale_units"`
 	LxcVeths       int `json:"lxc_veths"`
 	NetnsCount     int `json:"netns_count"`
 }

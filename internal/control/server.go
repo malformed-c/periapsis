@@ -20,9 +20,10 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
-	"github.com/malformed-c/periapsis/node"
+	pruntime "github.com/malformed-c/periapsis/internal/runtime"
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
+	"github.com/malformed-c/periapsis/node"
 	"github.com/varlink/go/varlink"
 )
 
@@ -418,6 +419,7 @@ func (s *Server) buildDoctor(ctx context.Context) map[string]any {
 		resp.Summary.TotalGhosts += len(diag.GhostPods)
 		resp.Summary.TotalOrphans += len(diag.OrphanMachines)
 		resp.Summary.TotalStaleDirs += len(diag.StaleDirs)
+		resp.Summary.TotalStaleUnits += diag.StaleUnits
 		resp.Pawns = append(resp.Pawns, diag)
 	}
 	resp.Summary.LxcVeths = countLxcVeths()
@@ -605,13 +607,17 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 	diag := PawnDiagnosis{Name: g.Config.Name}
 	gambitUIDs := g.PodUIDs()
 	diag.GambitPods = len(gambitUIDs)
-	systemdUIDs := make(map[string]string)
+	type unitInfo struct {
+		name  string
+		state pruntime.MachineState
+	}
+	systemdUIDs := make(map[string]unitInfo)
 	if machines, err := g.Runtime.ListManagedMachines(ctx); err != nil {
 		s.logger.Error("Doctor: failed to list machines", "pawn", g.Config.Name, "err", err)
 	} else {
 		for _, m := range machines {
 			if m.UID != "" {
-				systemdUIDs[m.UID] = m.Name
+				systemdUIDs[m.UID] = unitInfo{name: m.Name, state: m.State}
 			}
 		}
 	}
@@ -623,9 +629,15 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 			diag.GhostPods = append(diag.GhostPods, DoctorEntry{UID: uid, Name: name})
 		}
 	}
-	for uid, name := range systemdUIDs {
+	for uid, info := range systemdUIDs {
 		if _, ok := gambitUIDs[uid]; !ok {
-			diag.OrphanMachines = append(diag.OrphanMachines, DoctorEntry{UID: uid, Name: name})
+			diag.OrphanMachines = append(diag.OrphanMachines, DoctorEntry{UID: uid, Name: info.name})
+		}
+		// Count dead/failed units not tracked by gambit — leftovers from crash/restart.
+		if info.state == pruntime.StateExited || info.state == pruntime.StateFailed {
+			if _, ok := gambitUIDs[uid]; !ok {
+				diag.StaleUnits++
+			}
 		}
 	}
 	for _, uid := range diskUIDs {

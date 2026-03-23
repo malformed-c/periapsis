@@ -53,6 +53,15 @@ func (m *mockRuntime) InitPawnSlice(_ context.Context, _ pruntime.PawnSliceConfi
 func (m *mockRuntime) CheckMachined(_ context.Context) error {
 	return nil
 }
+func (m *mockRuntime) SubscribeEvents(_ context.Context) <-chan pruntime.UnitEvent {
+	return nil
+}
+func (m *mockRuntime) ResetUnit(_ context.Context, _, _ string) error {
+	return nil
+}
+func (m *mockRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
+	return 0, nil
+}
 
 // ─── Mock Network ─────────────────────────────────────────────────────────────
 

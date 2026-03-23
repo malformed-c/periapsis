@@ -17,6 +17,8 @@ package node
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -271,11 +273,18 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		return pkgerrors.Wrap(err, "error while updating pod status in kubernetes")
 	}
 
+	var caller string
+	if _, file, line, ok := runtime.Caller(1); ok {
+		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
 	log.G(ctx).WithFields(log.Fields{
+		"pod":        podFromProvider.Name,
+		"namespace":  podFromProvider.Namespace,
 		"new phase":  string(podFromProvider.Status.Phase),
 		"new reason": podFromProvider.Status.Reason,
 		"old phase":  string(podFromKubernetes.Status.Phase),
 		"old reason": podFromKubernetes.Status.Reason,
+		"caller":     caller,
 	}).Debug("Updated pod status in kubernetes")
 
 	return nil
@@ -284,6 +293,21 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 // enqueuePodStatusUpdate updates our pod status map, and marks the pod as dirty in the workqueue. The pod must be DeepCopy'd
 // prior to enqueuePodStatusUpdate.
 func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1.Pod) {
+	// Caller tracing: walk up the stack to find the originating call site.
+	var callers []string
+	for skip := 1; skip <= 5; skip++ {
+		_, file, line, ok := runtime.Caller(skip)
+		if !ok {
+			break
+		}
+		callers = append(callers, fmt.Sprintf("%s:%d", filepath.Base(file), line))
+	}
+	log.G(ctx).WithFields(log.Fields{
+		"pod":     pod.Name,
+		"phase":   string(pod.Status.Phase),
+		"callers": strings.Join(callers, " <- "),
+	}).Debug("enqueuePodStatusUpdate called")
+
 	ctx, cancel := context.WithTimeout(ctx, notificationRetryPeriod*queue.MaxRetries)
 	defer cancel()
 

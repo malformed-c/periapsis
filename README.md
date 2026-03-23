@@ -17,7 +17,7 @@ The name follows the orbital theme: *periapsis* is the generic term for the clos
 - **Pawn** — wordplay on systemd-ns**pawn**; each virtual Kubernetes node
 - **Gambit** — the PodProvider implementation (image pull, network, runtime orchestration)
 - **Constellation** — Cilium-based CNI fork for pod networking
-- **Aposis** — CLI tool for introspection and debugging (apsis status, apsis doctor, etc.)
+- **Apsis** — CLI tool for introspection and debugging (apsis status, apsis doctor, etc.)
 
 ---
 

@@ -1,0 +1,67 @@
+name: Build ARM
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+env:
+  GOPRIVATE: github.com/malformed-c
+  GONOSUMCHECK: github.com/malformed-c/*
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            artifact: perigeos-linux-amd64
+          - arch: arm64
+            runner: ubuntu-latest-arm64
+            artifact: perigeos-linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private module access
+        run: git config --global url."https://${{ secrets.GO_PRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Tidy
+        run: go mod tidy
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o ${{ matrix.artifact }} ./cmd/perigeos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          retention-days: 30
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: perigeos-linux-*

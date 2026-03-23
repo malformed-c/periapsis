@@ -6,7 +6,7 @@ SERVICE_DST := /etc/systemd/system/perigeos.service
 
 VERSION      := $(shell git describe --tags --always --dirty="-dev")
 DATE         := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-VERSION_FLAGS := -ldflags='-X "main.buildVersion=$(VERSION)" -X "main.buildTime=$(DATE)"'
+VERSION_FLAGS := -ldflags='-s -w -X "main.buildVersion=$(VERSION)" -X "main.buildTime=$(DATE)"'
 GCFLAGS      := -gcflags="-l=4"
 
 .PHONY: all build test clean install uninstall

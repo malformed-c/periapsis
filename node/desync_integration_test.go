@@ -18,7 +18,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	rtsd "github.com/malformed-c/periapsis/internal/runtime/systemd"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -66,9 +66,9 @@ func newHarness(t *testing.T) *testHarness {
 	pawn := safePawnName(t)
 	base := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	im := image.NewImageManager(base, pawn, logger)
+	im := image.NewImageManager(base, logger)
 
-	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawn, im, logger, pruntime.ExecNsenter)
+	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawn, im, logger, perigeos.ExecNsenter)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime: %v", err)
 	}

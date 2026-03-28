@@ -22,7 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 )
 
 // Resolver resolves pod volume declarations into BindMounts.
@@ -58,14 +58,14 @@ func NewResolver(
 
 // Resolve returns the BindMounts for the given container within a pod.
 // It creates any necessary host-side directories/files.
-func (r *Resolver) Resolve(ctx context.Context, pod *corev1.Pod, container *corev1.Container) ([]pruntime.BindMount, error) {
+func (r *Resolver) Resolve(ctx context.Context, pod *corev1.Pod, container *corev1.Container) ([]perigeos.BindMount, error) {
 	// Build a map from volume name → volume spec for quick lookup.
 	volByName := make(map[string]*corev1.Volume, len(pod.Spec.Volumes))
 	for i := range pod.Spec.Volumes {
 		volByName[pod.Spec.Volumes[i].Name] = &pod.Spec.Volumes[i]
 	}
 
-	var mounts []pruntime.BindMount
+	var mounts []perigeos.BindMount
 	for _, vm := range container.VolumeMounts {
 		vol, ok := volByName[vm.Name]
 		if !ok {
@@ -91,14 +91,14 @@ func (r *Resolver) resolveVolume(
 	pod *corev1.Pod,
 	vol *corev1.Volume,
 	vm corev1.VolumeMount,
-) (pruntime.BindMount, error) {
+) (perigeos.BindMount, error) {
 	namespace := pod.Namespace
 	propagation := ""
 	if vm.MountPropagation != nil {
 		propagation = string(*vm.MountPropagation)
 	}
 
-	base := pruntime.BindMount{
+	base := perigeos.BindMount{
 		ContainerPath: vm.MountPath,
 		ReadOnly:      vm.ReadOnly,
 		Propagation:   propagation,
@@ -108,7 +108,7 @@ func (r *Resolver) resolveVolume(
 	case vol.HostPath != nil:
 		hostPath := vol.HostPath.Path
 		if err := ensurePath(hostPath, vol.HostPath.Type); err != nil {
-			return pruntime.BindMount{}, err
+			return perigeos.BindMount{}, err
 		}
 		base.HostPath = hostPath
 		return base, nil
@@ -116,7 +116,7 @@ func (r *Resolver) resolveVolume(
 	case vol.EmptyDir != nil:
 		dir := filepath.Join(r.stateDir, "emptydir", vol.Name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return pruntime.BindMount{}, fmt.Errorf("create emptyDir %s: %w", dir, err)
+			return perigeos.BindMount{}, fmt.Errorf("create emptyDir %s: %w", dir, err)
 		}
 		base.HostPath = dir
 		return base, nil
@@ -124,7 +124,7 @@ func (r *Resolver) resolveVolume(
 	case vol.ConfigMap != nil:
 		dir, err := r.writeConfigMap(ctx, namespace, vol)
 		if err != nil {
-			return pruntime.BindMount{}, err
+			return perigeos.BindMount{}, err
 		}
 		base.HostPath = dir
 		base.ReadOnly = true // configMaps are always ro
@@ -133,7 +133,7 @@ func (r *Resolver) resolveVolume(
 	case vol.Secret != nil:
 		dir, err := r.writeSecret(ctx, namespace, vol)
 		if err != nil {
-			return pruntime.BindMount{}, err
+			return perigeos.BindMount{}, err
 		}
 		base.HostPath = dir
 		base.ReadOnly = true
@@ -142,7 +142,7 @@ func (r *Resolver) resolveVolume(
 	case vol.PersistentVolumeClaim != nil:
 		hostPath, err := r.resolvePVC(ctx, namespace, vol.PersistentVolumeClaim.ClaimName)
 		if err != nil {
-			return pruntime.BindMount{}, err
+			return perigeos.BindMount{}, err
 		}
 		base.HostPath = hostPath
 		if vol.PersistentVolumeClaim.ReadOnly {
@@ -153,14 +153,14 @@ func (r *Resolver) resolveVolume(
 	case vol.Projected != nil:
 		dir, err := r.writeProjected(ctx, pod, vol)
 		if err != nil {
-			return pruntime.BindMount{}, err
+			return perigeos.BindMount{}, err
 		}
 		base.HostPath = dir
 		base.ReadOnly = true
 		return base, nil
 
 	default:
-		return pruntime.BindMount{}, fmt.Errorf("unsupported volume type for %q", vol.Name)
+		return perigeos.BindMount{}, fmt.Errorf("unsupported volume type for %q", vol.Name)
 	}
 }
 

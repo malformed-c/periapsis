@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/malformed-c/periapsis/node"
@@ -609,7 +609,7 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 	diag.GambitPods = len(gambitUIDs)
 	type unitInfo struct {
 		name  string
-		state pruntime.MachineState
+		state perigeos.MachineState
 	}
 	systemdUIDs := make(map[string]unitInfo)
 	if machines, err := g.Runtime.ListManagedMachines(ctx); err != nil {
@@ -634,7 +634,7 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 			diag.OrphanMachines = append(diag.OrphanMachines, DoctorEntry{UID: uid, Name: info.name})
 		}
 		// Count dead/failed units not tracked by gambit — leftovers from crash/restart.
-		if info.state == pruntime.StateExited || info.state == pruntime.StateFailed {
+		if info.state == perigeos.StateExited || info.state == perigeos.StateFailed {
 			if _, ok := gambitUIDs[uid]; !ok {
 				diag.StaleUnits++
 			}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,24 +18,24 @@ import (
 // ─── Mock Runtime ─────────────────────────────────────────────────────────────
 
 type mockRuntimeForGhosts struct {
-	machines []pruntime.PodMetadata
+	machines []perigeos.PodMetadata
 	stopped  []string
 }
 
-func (m *mockRuntimeForGhosts) RunMachine(_ context.Context, _ string, _ pruntime.PodConfig) error {
+func (m *mockRuntimeForGhosts) RunMachine(_ context.Context, _ string, _ perigeos.PodConfig) error {
 	return nil
 }
 func (m *mockRuntimeForGhosts) StopMachine(_ context.Context, uid, containerName string) error {
 	m.stopped = append(m.stopped, uid+"/"+containerName)
 	return nil
 }
-func (m *mockRuntimeForGhosts) MachineStatus(_ context.Context, _, _ string) (pruntime.MachineState, error) {
-	return pruntime.StateRunning, nil
+func (m *mockRuntimeForGhosts) MachineStatus(_ context.Context, _, _ string) (perigeos.MachineState, error) {
+	return perigeos.StateRunning, nil
 }
-func (m *mockRuntimeForGhosts) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (pruntime.MachineState, error) {
-	return pruntime.StateExited, nil
+func (m *mockRuntimeForGhosts) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (perigeos.MachineState, error) {
+	return perigeos.StateExited, nil
 }
-func (m *mockRuntimeForGhosts) ListManagedMachines(_ context.Context) ([]pruntime.PodMetadata, error) {
+func (m *mockRuntimeForGhosts) ListManagedMachines(_ context.Context) ([]perigeos.PodMetadata, error) {
 	return m.machines, nil
 }
 func (m *mockRuntimeForGhosts) GetLogStream(_ context.Context, _, _ string, _ api.ContainerLogOpts) (io.ReadCloser, error) {
@@ -47,13 +47,13 @@ func (m *mockRuntimeForGhosts) RunInContainer(_ context.Context, _, _ string, _ 
 func (m *mockRuntimeForGhosts) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
-func (m *mockRuntimeForGhosts) InitPawnSlice(_ context.Context, _ pruntime.PawnSliceConfig) error {
+func (m *mockRuntimeForGhosts) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
 	return nil
 }
 func (m *mockRuntimeForGhosts) CheckMachined(_ context.Context) error {
 	return nil
 }
-func (m *mockRuntimeForGhosts) SubscribeEvents(_ context.Context) <-chan pruntime.UnitEvent {
+func (m *mockRuntimeForGhosts) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
 	return nil
 }
 func (m *mockRuntimeForGhosts) ResetUnit(_ context.Context, _, _ string) error {
@@ -121,7 +121,7 @@ func makePodForGhosts(name, namespace, uid string) *corev1.Pod {
 // TestCleanGhosts_GhostPodIsEvicted verifies that pods in Gambit's map but not in
 // Kubernetes are evicted by cleanGhosts().
 func TestCleanGhosts_GhostPodIsEvicted(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	lister := &mockPodListerForGhosts{pods: []*corev1.Pod{}}
 	r := newTestReconcilerForGhosts(rt, nm, lister)
@@ -146,7 +146,7 @@ func TestCleanGhosts_GhostPodIsEvicted(t *testing.T) {
 // TestCleanGhosts_K8sPodIsNotEvicted verifies that pods in both Gambit and Kubernetes
 // are NOT evicted.
 func TestCleanGhosts_K8sPodIsNotEvicted(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	lister := &mockPodListerForGhosts{
 		pods: []*corev1.Pod{
@@ -173,7 +173,7 @@ func TestCleanGhosts_K8sPodIsNotEvicted(t *testing.T) {
 // TestCleanGhosts_InFlightPodIsNotEvicted verifies that pods marked as in-flight
 // are NOT evicted even if Kubernetes doesn't know about them yet.
 func TestCleanGhosts_InFlightPodIsNotEvicted(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	lister := &mockPodListerForGhosts{pods: []*corev1.Pod{}}
 	r := newTestReconcilerForGhosts(rt, nm, lister)
@@ -196,7 +196,7 @@ func TestCleanGhosts_InFlightPodIsNotEvicted(t *testing.T) {
 
 // TestCleanGhosts_MultiplePods tests a mix of ghost, known, and in-flight pods.
 func TestCleanGhosts_MultiplePods(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	lister := &mockPodListerForGhosts{
 		pods: []*corev1.Pod{
@@ -241,7 +241,7 @@ func TestCleanGhosts_MultiplePods(t *testing.T) {
 func TestCleanGhosts_RunOnceCallsBothCleans(t *testing.T) {
 	// Set up a scenario where we have both orphan machines and ghost pods
 	rt := &mockRuntimeForGhosts{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			// This machine is not in Gambit's pods, so it's an orphan
 			{UID: "orphan-machine-uid", Name: "orphan", Namespace: "default", ContainerName: "main"},
 		},
@@ -290,7 +290,7 @@ func TestCleanGhosts_RunOnceCallsBothCleans(t *testing.T) {
 
 // TestCleanGhosts_EmptyLister doesn't evict if lister is nil (graceful degradation).
 func TestCleanGhosts_EmptyLister(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	r := newTestReconcilerForGhosts(rt, nm, &mockPodListerForGhosts{})
 
@@ -310,7 +310,7 @@ func TestCleanGhosts_EmptyLister(t *testing.T) {
 
 // TestCleanGhosts_EmptyGambitMap doesn't process if Gambit has no pods.
 func TestCleanGhosts_EmptyGambitMap(t *testing.T) {
-	rt := &mockRuntimeForGhosts{machines: []pruntime.PodMetadata{}}
+	rt := &mockRuntimeForGhosts{machines: []perigeos.PodMetadata{}}
 	nm := &mockNetworkForGhosts{}
 	lister := &mockPodListerForGhosts{
 		pods: []*corev1.Pod{

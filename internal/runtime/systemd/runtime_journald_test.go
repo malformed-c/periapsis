@@ -343,7 +343,7 @@ func TestSystemd_MachineStatus_Failed(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawn,
-		image.NewImageManager(t.TempDir(), pawn, logger), logger, runtime.ExecNsenter)
+		image.NewImageManager(t.TempDir(), logger), logger, runtime.ExecNsenter)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime: %v", err)
 	}

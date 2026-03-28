@@ -9,10 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/record"
 )
 
 // ProbeResult represents the outcome of a single probe execution.
@@ -43,14 +42,13 @@ type ContainerProbeState struct {
 
 // ProbeRunner executes probes for containers.
 type ProbeRunner struct {
-	runtime  pruntime.Runtime
-	logger   *slog.Logger
-	recorder record.EventRecorder
+	runtime perigeos.Runtime
+	logger  *slog.Logger
 }
 
 // NewProbeRunner creates a new probe runner.
-func NewProbeRunner(rt pruntime.Runtime, logger *slog.Logger, recorder record.EventRecorder) *ProbeRunner {
-	return &ProbeRunner{runtime: rt, logger: logger, recorder: recorder}
+func NewProbeRunner(rt perigeos.Runtime, logger *slog.Logger) *ProbeRunner {
+	return &ProbeRunner{runtime: rt, logger: logger}
 }
 
 // RunProbe executes a single probe against a container and returns the result.
@@ -144,10 +142,6 @@ func (pr *ProbeRunner) runExecProbe(ctx context.Context, pod *corev1.Pod, contai
 			"cmd", action.Command,
 			"err", err,
 		)
-		if pr.recorder != nil {
-			pr.recorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
-				"Readiness probe failed: %v", err)
-		}
 		return ProbeFailure
 	}
 	return ProbeSuccess

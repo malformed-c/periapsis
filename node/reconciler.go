@@ -10,7 +10,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/volume"
 	v1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -37,7 +37,7 @@ type PodTracker interface {
 // for pod creation. This eliminates the double-create race entirely.
 type Reconciler struct {
 	tracker       PodTracker
-	runtime       pruntime.Runtime
+	runtime       perigeos.Runtime
 	network       network.NetworkManager
 	image         *image.ImageManager
 	podLister     v1.PodNamespaceLister
@@ -49,7 +49,7 @@ type Reconciler struct {
 
 func NewReconciler(
 	g *Gambit,
-	rt pruntime.Runtime,
+	rt perigeos.Runtime,
 	nm network.NetworkManager,
 	im *image.ImageManager,
 	podLister v1.PodNamespaceLister,
@@ -219,7 +219,7 @@ func splitNsName(nsName string) (string, string) {
 	return "", nsName
 }
 
-func (r *Reconciler) teardown(ctx context.Context, m pruntime.PodMetadata) {
+func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {
 	if err := r.runtime.StopMachine(ctx, m.UID, m.ContainerName); err != nil {
 		r.logger.Error("Reconciler: failed to stop machine", "uid", m.UID, "container", m.ContainerName, "err", err)
 	}

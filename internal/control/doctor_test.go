@@ -16,32 +16,32 @@ import (
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/node"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	"k8s.io/client-go/tools/record"
 )
 
 // ─── Mock Runtime ─────────────────────────────────────────────────────────────
 
-// doctorMockRuntime implements pruntime.Runtime for doctor tests.
+// doctorMockRuntime implements perigeos.Runtime for doctor tests.
 // Only ListManagedMachines is exercised by doctor; all other methods are stubs.
 type doctorMockRuntime struct {
-	machines []pruntime.PodMetadata
+	machines []perigeos.PodMetadata
 }
 
-func (r *doctorMockRuntime) RunMachine(_ context.Context, _ string, _ pruntime.PodConfig) error {
+func (r *doctorMockRuntime) RunMachine(_ context.Context, _ string, _ perigeos.PodConfig) error {
 	return nil
 }
 func (r *doctorMockRuntime) StopMachine(_ context.Context, _, _ string) error {
 	return nil
 }
-func (r *doctorMockRuntime) MachineStatus(_ context.Context, _, _ string) (pruntime.MachineState, error) {
-	return pruntime.StateUnknown, nil
+func (r *doctorMockRuntime) MachineStatus(_ context.Context, _, _ string) (perigeos.MachineState, error) {
+	return perigeos.StateUnknown, nil
 }
-func (r *doctorMockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (pruntime.MachineState, error) {
-	return pruntime.StateUnknown, nil
+func (r *doctorMockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (perigeos.MachineState, error) {
+	return perigeos.StateUnknown, nil
 }
-func (r *doctorMockRuntime) ListManagedMachines(_ context.Context) ([]pruntime.PodMetadata, error) {
+func (r *doctorMockRuntime) ListManagedMachines(_ context.Context) ([]perigeos.PodMetadata, error) {
 	return r.machines, nil
 }
 func (r *doctorMockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.ContainerLogOpts) (io.ReadCloser, error) {
@@ -53,13 +53,13 @@ func (r *doctorMockRuntime) RunInContainer(_ context.Context, _, _ string, _ []s
 func (r *doctorMockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
-func (r *doctorMockRuntime) InitPawnSlice(_ context.Context, _ pruntime.PawnSliceConfig) error {
+func (r *doctorMockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
 	return nil
 }
 func (r *doctorMockRuntime) CheckMachined(_ context.Context) error {
 	return nil
 }
-func (r *doctorMockRuntime) SubscribeEvents(_ context.Context) <-chan pruntime.UnitEvent {
+func (r *doctorMockRuntime) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
 	return nil
 }
 func (r *doctorMockRuntime) ResetUnit(_ context.Context, _, _ string) error {
@@ -86,7 +86,7 @@ func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
 // populated by calling HydrateFromRuntime — use this to seed in-memory state.
-func newDoctorTestGambit(t *testing.T, pawnName string, machines []pruntime.PodMetadata) (*node.Gambit, *doctorMockRuntime) {
+func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodMetadata) (*node.Gambit, *doctorMockRuntime) {
 	t.Helper()
 	baseDir := t.TempDir()
 	cfg := config.PawnConfig{
@@ -96,7 +96,7 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []pruntime.PodM
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	rt := &doctorMockRuntime{machines: machines}
 	nm := &doctorMockNetwork{}
-	im := image.NewImageManager(baseDir, pawnName, logger)
+	im := image.NewImageManager(baseDir, logger)
 	rec := record.NewFakeRecorder(100)
 	return node.NewGambit(cfg, im, nm, rt, logger, rec), rt
 }
@@ -198,7 +198,7 @@ func TestScanDiskPods_OnlyDirs(t *testing.T) {
 
 func TestDoctorHealthy(t *testing.T) {
 	// gambit, systemd and disk all agree: one pod, uid-1.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-1", Name: "mypod", Namespace: "default"},
 	}
 	g, _ := newDoctorTestGambit(t, "pawn0", machines)
@@ -227,7 +227,7 @@ func TestDoctorHealthy(t *testing.T) {
 
 func TestDoctorGhostPods(t *testing.T) {
 	// uid-ghost: in gambit (hydrated), NOT in systemd after the runtime is mutated.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-ghost", Name: "ghost", Namespace: "default"},
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 	}
@@ -241,7 +241,7 @@ func TestDoctorGhostPods(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-ok")
 
 	// Simulate systemd drift: uid-ghost is gone.
-	rt.machines = []pruntime.PodMetadata{
+	rt.machines = []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 	}
 
@@ -265,7 +265,7 @@ func TestDoctorGhostPods(t *testing.T) {
 
 func TestDoctorOrphanMachines(t *testing.T) {
 	// uid-orphan: in systemd, NOT in gambit.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 	}
 	g, rt := newDoctorTestGambit(t, "pawn0", machines)
@@ -275,7 +275,7 @@ func TestDoctorOrphanMachines(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-ok")
 
 	// Systemd now has an extra machine gambit doesn't know about.
-	rt.machines = []pruntime.PodMetadata{
+	rt.machines = []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 		{UID: "uid-orphan", Name: "orphan", Namespace: "kube-system"},
 	}
@@ -300,7 +300,7 @@ func TestDoctorOrphanMachines(t *testing.T) {
 
 func TestDoctorStaleDirs(t *testing.T) {
 	// uid-stale: dir exists on disk, NOT in gambit.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 	}
 	g, _ := newDoctorTestGambit(t, "pawn0", machines)
@@ -327,7 +327,7 @@ func TestDoctorStaleDirs(t *testing.T) {
 
 func TestDoctorMissingDirs(t *testing.T) {
 	// uid-missing: in gambit, NOT on disk.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 		{UID: "uid-missing", Name: "missing", Namespace: "default"},
 	}
@@ -376,7 +376,7 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	//   systemd: uid-a, uid-b, uid-orphan          → ghost=uid-c,uid-d; orphan=uid-orphan
 	//   disk:    uid-a, uid-b, uid-stale            → stale=uid-stale;   missing=uid-c,uid-d
 
-	initial := []pruntime.PodMetadata{
+	initial := []perigeos.PodMetadata{
 		{UID: "uid-a", Name: "pod-a", Namespace: "default"},
 		{UID: "uid-b", Name: "pod-b", Namespace: "default"},
 		{UID: "uid-c", Name: "pod-c", Namespace: "default"},
@@ -393,7 +393,7 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-stale")
 
 	// Systemd drifts: uid-a, uid-b, uid-orphan
-	rt.machines = []pruntime.PodMetadata{
+	rt.machines = []perigeos.PodMetadata{
 		{UID: "uid-a", Name: "pod-a", Namespace: "default"},
 		{UID: "uid-b", Name: "pod-b", Namespace: "default"},
 		{UID: "uid-orphan", Name: "pod-orphan", Namespace: "kube-system"},
@@ -461,7 +461,7 @@ func TestDoctorEmptyGambit(t *testing.T) {
 func TestDoctorMultipleContainersSameUID(t *testing.T) {
 	// A multi-container pod produces multiple machines with the same UID.
 	// The doctor should deduplicate — systemdUIDs counts unique UIDs.
-	machines := []pruntime.PodMetadata{
+	machines := []perigeos.PodMetadata{
 		{UID: "uid-multi", Name: "mypod", Namespace: "default", ContainerName: "app"},
 		{UID: "uid-multi", Name: "mypod", Namespace: "default", ContainerName: "sidecar"},
 	}
@@ -512,7 +512,7 @@ func TestDoctorFuzz(t *testing.T) {
 
 		// Assign each UID to sets randomly.
 		inGambit := make(map[string]bool)
-		inSystemd := make([]pruntime.PodMetadata, 0)
+		inSystemd := make([]perigeos.PodMetadata, 0)
 		inDisk := make(map[string]bool)
 
 		allUIDs := make([]string, nTotal)
@@ -520,7 +520,7 @@ func TestDoctorFuzz(t *testing.T) {
 			allUIDs[i] = fmt.Sprintf("uid-%d-%d", iter, i)
 		}
 
-		var hydrateUIDs []pruntime.PodMetadata
+		var hydrateUIDs []perigeos.PodMetadata
 		for _, uid := range allUIDs {
 			g := rng.Intn(2) == 1
 			s := rng.Intn(2) == 1
@@ -528,7 +528,7 @@ func TestDoctorFuzz(t *testing.T) {
 
 			if g {
 				// Add to gambit by also adding to initial hydration list.
-				hydrateUIDs = append(hydrateUIDs, pruntime.PodMetadata{
+				hydrateUIDs = append(hydrateUIDs, perigeos.PodMetadata{
 					UID:       uid,
 					Name:      "pod-" + uid,
 					Namespace: "default",
@@ -536,7 +536,7 @@ func TestDoctorFuzz(t *testing.T) {
 				inGambit[uid] = true
 			}
 			if s {
-				inSystemd = append(inSystemd, pruntime.PodMetadata{
+				inSystemd = append(inSystemd, perigeos.PodMetadata{
 					UID:       uid,
 					Name:      "pod-" + uid,
 					Namespace: "default",
@@ -554,7 +554,7 @@ func TestDoctorFuzz(t *testing.T) {
 		rt := &doctorMockRuntime{machines: hydrateUIDs}
 		nm := &doctorMockNetwork{}
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		im := image.NewImageManager(baseDir, pawnName, logger)
+		im := image.NewImageManager(baseDir, logger)
 		rec := record.NewFakeRecorder(100)
 		g := node.NewGambit(cfg, im, nm, rt, logger, rec)
 

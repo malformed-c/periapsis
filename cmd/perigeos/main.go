@@ -23,7 +23,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
 	"github.com/malformed-c/periapsis/node"
@@ -160,13 +160,13 @@ func main() {
 
 	klog.Infof("Connected to Kubernetes API server %s", serverVersion)
 
-	var execStrategy pruntime.ExecStrategy
+	var execStrategy perigeos.ExecStrategy
 	switch *execStrategyFlag {
 	case "machinectl":
-		execStrategy = pruntime.ExecMachinectl
+		execStrategy = perigeos.ExecMachinectl
 		logger.Info("Using machinectl exec strategy")
 	default:
-		execStrategy = pruntime.ExecNsenter
+		execStrategy = perigeos.ExecNsenter
 		logger.Info("Using nsenter exec strategy")
 	}
 
@@ -329,6 +329,10 @@ func main() {
 		}
 	}
 
+	// Shared image manager — one manifest cache + singleflight across all pawns.
+	sharedIM := image.NewImageManager(perigeoCfg.Global.BaseDir, logger)
+	sharedIM.SweepStaleTmpDirs()
+
 	var (
 		serversMu  sync.Mutex
 		allGambits []*node.Gambit
@@ -340,9 +344,6 @@ func main() {
 
 			pawnName := pawnCfg.Name
 			pawnLogger := logger.With("pawn", pawnName)
-
-			im := image.NewImageManager(perigeoCfg.Global.BaseDir, pawnName, logger)
-			im.SweepStaleTmpDirs()
 			var nm network.NetworkManager
 			if sharedNM != nil {
 				nm = sharedNM
@@ -352,13 +353,13 @@ func main() {
 
 			// Use Background context for D-Bus connection — it must survive
 			// signal cancellation so DrainPods can stop containers during shutdown.
-			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, im, pawnLogger, execStrategy)
+			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, sharedIM, pawnLogger, execStrategy)
 			if err != nil {
 				pawnLogger.Error("Failed to init runtime", "err", err)
 				return
 			}
 
-			sliceCfg := pruntime.PawnSliceConfig{
+			sliceCfg := perigeos.PawnSliceConfig{
 				Name:                pawnCfg.Name,
 				BaseDir:             perigeoCfg.Global.BaseDir,
 				CPU:                 pawnCfg.CPU,
@@ -381,7 +382,7 @@ func main() {
 				corev1.EventSource{Host: pawnName, Component: "Perigeos"},
 			)
 
-			g := node.NewGambit(pawnCfg, im, nm, rt, pawnLogger, eventRecorder)
+			g := node.NewGambit(pawnCfg, sharedIM, nm, rt, pawnLogger, eventRecorder)
 			controlSrv.RegisterGambit(g)
 
 			if err := g.HydrateFromRuntime(ctx); err != nil {
@@ -459,7 +460,7 @@ func main() {
 			pawnLogger.Info("Local caches synced")
 
 			podLister := localInformer.Core().V1().Pods().Lister().Pods(corev1.NamespaceAll)
-			reconciler := node.NewReconciler(g, rt, nm, im, podLister, pawnLogger.With("component", "reconciler"))
+			reconciler := node.NewReconciler(g, rt, nm, sharedIM, podLister, pawnLogger.With("component", "reconciler"))
 
 			// Wire listers for env population and volume resolution.
 			g.SetListers(cmInformer.Lister(), secretInformer.Lister(), svcInformer.Lister())

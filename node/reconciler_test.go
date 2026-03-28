@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,24 +18,24 @@ import (
 // ─── Mock Runtime ─────────────────────────────────────────────────────────────
 
 type mockRuntime struct {
-	machines []pruntime.PodMetadata
+	machines []perigeos.PodMetadata
 	stopped  []string
 }
 
-func (m *mockRuntime) RunMachine(_ context.Context, _ string, _ pruntime.PodConfig) error {
+func (m *mockRuntime) RunMachine(_ context.Context, _ string, _ perigeos.PodConfig) error {
 	return nil
 }
 func (m *mockRuntime) StopMachine(_ context.Context, uid, containerName string) error {
 	m.stopped = append(m.stopped, uid+"/"+containerName)
 	return nil
 }
-func (m *mockRuntime) MachineStatus(_ context.Context, _, _ string) (pruntime.MachineState, error) {
-	return pruntime.StateRunning, nil
+func (m *mockRuntime) MachineStatus(_ context.Context, _, _ string) (perigeos.MachineState, error) {
+	return perigeos.StateRunning, nil
 }
-func (m *mockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (pruntime.MachineState, error) {
-	return pruntime.StateExited, nil
+func (m *mockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (perigeos.MachineState, error) {
+	return perigeos.StateExited, nil
 }
-func (m *mockRuntime) ListManagedMachines(_ context.Context) ([]pruntime.PodMetadata, error) {
+func (m *mockRuntime) ListManagedMachines(_ context.Context) ([]perigeos.PodMetadata, error) {
 	return m.machines, nil
 }
 func (m *mockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.ContainerLogOpts) (io.ReadCloser, error) {
@@ -47,13 +47,13 @@ func (m *mockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string,
 func (m *mockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
-func (m *mockRuntime) InitPawnSlice(_ context.Context, _ pruntime.PawnSliceConfig) error {
+func (m *mockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
 	return nil
 }
 func (m *mockRuntime) CheckMachined(_ context.Context) error {
 	return nil
 }
-func (m *mockRuntime) SubscribeEvents(_ context.Context) <-chan pruntime.UnitEvent {
+func (m *mockRuntime) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
 	return nil
 }
 func (m *mockRuntime) ResetUnit(_ context.Context, _, _ string) error {
@@ -116,7 +116,7 @@ func makePod(name, namespace, uid string) *corev1.Pod {
 
 func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "orphan-uid", Name: "orphan", Namespace: "default", ContainerName: "main"},
 		},
 	}
@@ -135,7 +135,7 @@ func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
 
 func TestReconciler_InFlightMachineIsSkipped(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "inflight-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
 		},
 	}
@@ -152,7 +152,7 @@ func TestReconciler_InFlightMachineIsSkipped(t *testing.T) {
 
 func TestReconciler_KnownPodIsSkipped(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "known-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
 		},
 	}
@@ -169,7 +169,7 @@ func TestReconciler_KnownPodIsSkipped(t *testing.T) {
 
 func TestReconciler_K8sPodListerMatchSkips(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "k8s-uid", Name: "mypod", Namespace: "default", ContainerName: "main"},
 		},
 	}
@@ -193,7 +193,7 @@ func TestReconciler_K8sPodListerMatchSkips(t *testing.T) {
 
 func TestReconciler_MultipleOrphans(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "uid-1", ContainerName: "app"},
 			{UID: "uid-2", ContainerName: "sidecar"},
 			{UID: "uid-3", ContainerName: "app"},
@@ -211,7 +211,7 @@ func TestReconciler_MultipleOrphans(t *testing.T) {
 
 func TestReconciler_MixedOrphanAndKnown(t *testing.T) {
 	rt := &mockRuntime{
-		machines: []pruntime.PodMetadata{
+		machines: []perigeos.PodMetadata{
 			{UID: "orphan-1", ContainerName: "main"},
 			{UID: "known-1", ContainerName: "main"},
 			{UID: "orphan-2", ContainerName: "sidecar"},

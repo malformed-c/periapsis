@@ -23,14 +23,13 @@ import (
 
 // ImageManager handles OCI image pulling and overlayfs mounting.
 //
-// Layer cache is shared globally across all pawns (keyed by content hash).
-// Pod workspaces are per-pawn under <baseDir>/pawns/<pawnName>/pods/.
+// Layer cache and pod workspaces live under baseDir. A single ImageManager
+// is shared across all pawns so manifest resolution and layer downloads
+// are deduplicated process-wide.
 type ImageManager struct {
-	// layerCache is shared across all pawns: <baseDir>/layers/
-	layerCache string
-	// podWorkspace is per-pawn: <baseDir>/pawns/<pawnName>/pods/
-	podWorkspace string
-	logger       *slog.Logger
+	baseDir    string
+	layerCache string // <baseDir>/layers/
+	logger     *slog.Logger
 
 	mu            sync.Mutex
 	manifestCache map[string]v1.Image    // image name → resolved manifest
@@ -45,12 +44,12 @@ type imageConfig struct {
 	Cmd        []string `json:"cmd,omitempty"`
 }
 
-// NewImageManager creates an ImageManager for a specific pawn.
-// baseDir is typically /var/lib/apsis/perigeos (prod) or ./var/lib/apsis/perigeos (dev).
-func NewImageManager(baseDir, pawnName string, logger *slog.Logger) *ImageManager {
+// NewImageManager creates a shared ImageManager.
+// baseDir is typically /var/lib/apsis/perigeos.
+func NewImageManager(baseDir string, logger *slog.Logger) *ImageManager {
 	return &ImageManager{
+		baseDir:       baseDir,
 		layerCache:    filepath.Join(baseDir, "layers"),
-		podWorkspace:  filepath.Join(baseDir, "pawns", pawnName, "pods"),
 		manifestCache: make(map[string]v1.Image),
 		configCache:   make(map[string]*imageConfig),
 		logger:        logger,
@@ -116,12 +115,14 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 //   - "Never"        — fail if no cached manifest exists
 //
 // When pullPolicy is empty it defaults to "Always".
-func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, error) {
+func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, bool, error) {
 	return im.PullWithProgress(imageName, pullPolicy, nil)
 }
 
 // PullWithProgress is like Pull but calls progress after each layer completes.
-func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, progress PullProgress) ([]string, error) {
+// Returns (layerPaths, cached, error). cached is true when layers were served
+// entirely from local cache without a registry fetch.
+func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, progress PullProgress) ([]string, bool, error) {
 	if pullPolicy == "" {
 		pullPolicy = "Always"
 	}
@@ -134,14 +135,15 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 		cached, ok := im.manifestCache[imageName]
 		im.mu.Unlock()
 		if ok {
-			return im.layersFromImage(cached, progress)
+			paths, err := im.layersFromImage(cached, progress)
+			return paths, err == nil, err
 		}
 		// Check disk-persisted layer cache (survives process restart).
 		if paths, err := im.loadLayerCache(imageName); err == nil {
-			return paths, nil
+			return paths, true, nil
 		}
 		if pullPolicy == "Never" {
-			return nil, fmt.Errorf("image %s not in cache and pullPolicy=Never", imageName)
+			return nil, false, fmt.Errorf("image %s not in cache and pullPolicy=Never", imageName)
 		}
 	}
 
@@ -165,14 +167,15 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 		im.mu.Unlock()
 		if ok {
 			im.logger.Info("Registry unavailable, using cached manifest", "image", imageName, "err", err)
-			return im.layersFromImage(cached, progress)
+			paths, layerErr := im.layersFromImage(cached, progress)
+			return paths, layerErr == nil, layerErr
 		}
 		// Try disk-persisted layer cache (survives process restart).
 		if paths, diskErr := im.loadLayerCache(imageName); diskErr == nil {
 			im.logger.Info("Registry unavailable, using disk-cached layers", "image", imageName, "err", err)
-			return paths, nil
+			return paths, true, nil
 		}
-		return nil, fmt.Errorf("failed to pull manifest: %w", err)
+		return nil, false, fmt.Errorf("failed to pull manifest: %w", err)
 	}
 
 	img := manifestObj.(v1.Image)
@@ -183,7 +186,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 
 	layerPaths, err := im.layersFromImage(img, progress)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Persist layer list and image config to disk so they survive process restart.
@@ -195,7 +198,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 		})
 	}
 
-	return layerPaths, nil
+	return layerPaths, false, nil
 }
 
 // PullProgress is called after each layer is resolved.
@@ -342,12 +345,12 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer) (string, error)
 // Mount creates an overlayfs for a pod using the given ordered layer paths.
 // Returns the absolute path to the merged directory (the container's rootfs view).
 //
-// Layout under podWorkspace/<podUID>/:
+// Layout under <baseDir>/pods/<podUID>/:
 //   rootfs/  — merged (container's view)
 //   upper/   — writable layer
 //   work/    — overlayfs scratch space
 func (im *ImageManager) Mount(podUID string, layerPaths []string) (string, error) {
-	base, err := filepath.Abs(filepath.Join(im.podWorkspace, podUID))
+	base, err := filepath.Abs(filepath.Join(im.baseDir, "pods", podUID))
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
@@ -426,7 +429,7 @@ func (im *ImageManager) ensureOSRelease(merged string) error {
 
 // Unmount lazily unmounts the overlayfs and removes the pod's workspace directory.
 func (im *ImageManager) Unmount(podUID string) error {
-	base, err := filepath.Abs(filepath.Join(im.podWorkspace, podUID))
+	base, err := filepath.Abs(filepath.Join(im.baseDir, "pods", podUID))
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}

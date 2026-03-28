@@ -5,7 +5,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	v1 "k8s.io/client-go/listers/core/v1"
 )
 
@@ -47,13 +47,13 @@ func (t *TestReconciler) MarkHasPod(uid string)   { t.tracker.hasPod[uid] = true
 // NewReconcilerForTest creates a Reconciler with a mock PodTracker instead of
 // a real Gambit. The image.ImageManager uses /tmp so no special dirs are needed.
 func NewReconcilerForTest(
-	rt pruntime.Runtime,
+	rt perigeos.Runtime,
 	nm network.NetworkManager,
 	podLister v1.PodNamespaceLister,
 	logger *slog.Logger,
 ) *TestReconciler {
 	tracker := newMockTracker()
-	im := image.NewImageManager("/tmp/apsis-test", "test-pawn", slog.Default())
+	im := image.NewImageManager("/tmp/apsis-test", slog.Default())
 	tr := &TestReconciler{
 		Reconciler: &Reconciler{
 			tracker:   tracker,

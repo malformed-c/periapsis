@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -37,7 +37,7 @@ type BatchWatcher struct {
 
 	// prevStateMap holds the stateMap from the previous poll cycle.
 	// Used by the coalescer to detect container state transitions.
-	prevStateMap map[string]pruntime.MachineState
+	prevStateMap map[string]perigeos.MachineState
 
 	// prevReady tracks the last-known Ready state per container.
 	// Readiness changes (probe pass/fail) don't change the machine state
@@ -47,7 +47,7 @@ type BatchWatcher struct {
 	// stateCache holds the latest stateMap for external consumers
 	// (e.g. GetPodStatus) to read without per-container D-Bus calls.
 	stateCacheMu sync.RWMutex
-	stateCache   map[string]pruntime.MachineState
+	stateCache   map[string]perigeos.MachineState
 
 	// seenRunning tracks containers that have been observed in Running
 	// state at least once. Used to prevent premature terminal phase
@@ -72,9 +72,9 @@ func StartBatchWatcher(g *Gambit) *BatchWatcher {
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		pokeCh:       make(chan struct{}, 1),
-		prevStateMap: make(map[string]pruntime.MachineState),
+		prevStateMap: make(map[string]perigeos.MachineState),
 		prevReady:    make(map[string]bool),
-		stateCache:   make(map[string]pruntime.MachineState),
+		stateCache:   make(map[string]perigeos.MachineState),
 		seenRunning:  make(map[string]bool),
 		restarting:   make(map[string]bool),
 	}
@@ -101,13 +101,13 @@ func (bw *BatchWatcher) MarkRunning(uid, containerName string) {
 
 // ContainerState returns the cached state for a container from the most recent
 // poll cycle. Returns StateUnknown if no cache entry exists yet.
-func (bw *BatchWatcher) ContainerState(uid, containerName string) pruntime.MachineState {
+func (bw *BatchWatcher) ContainerState(uid, containerName string) perigeos.MachineState {
 	key := uid + "/" + containerName
 	bw.stateCacheMu.RLock()
 	state, ok := bw.stateCache[key]
 	bw.stateCacheMu.RUnlock()
 	if !ok {
-		return pruntime.StateUnknown
+		return perigeos.StateUnknown
 	}
 	return state
 }
@@ -148,7 +148,7 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 // individual container's MachineStatus and updating the stateCache.
 // This is more targeted than a full poll — it only touches the affected
 // container, giving sub-second detection for fast-exit containers.
-func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev pruntime.UnitEvent) {
+func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// Parse uid and containerName from the unit name.
 	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 	uid, containerName := bw.gambit.parseUnitName(ev.UnitName)
@@ -165,14 +165,14 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev pruntime.UnitEve
 	//   - "failed" (non-zero exit) → we react to this immediately
 	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
 	//     poll detects the unit is gone within 2s
-	var state pruntime.MachineState
+	var state perigeos.MachineState
 	switch ev.SubState {
 	case "running":
-		state = pruntime.StateRunning
+		state = perigeos.StateRunning
 	case "failed":
-		state = pruntime.StateFailed
+		state = perigeos.StateFailed
 	case "start-pre", "start", "start-post":
-		state = pruntime.StateCreating
+		state = perigeos.StateCreating
 	default:
 		return // ignore "dead" and other transient states
 	}
@@ -181,7 +181,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev pruntime.UnitEve
 
 	// Track that we've seen this container running (used by checkPod
 	// to avoid premature terminal decisions during unit startup).
-	if state == pruntime.StateRunning {
+	if state == perigeos.StateRunning {
 		bw.seenRunning[key] = true
 	}
 
@@ -197,7 +197,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev pruntime.UnitEve
 
 	// For failed containers, trigger a full poll to process restart policy
 	// and push terminal phase.
-	if state == pruntime.StateFailed {
+	if state == perigeos.StateFailed {
 		bw.poll(ctx)
 	}
 }
@@ -213,7 +213,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	}
 
 	// Index by uid/containerName for O(1) lookup.
-	stateMap := make(map[string]pruntime.MachineState, len(machines))
+	stateMap := make(map[string]perigeos.MachineState, len(machines))
 	for _, m := range machines {
 		stateMap[m.UID+"/"+m.ContainerName] = m.State
 	}
@@ -278,7 +278,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				changedPods[e.uid] = true
 			}
 			// Check readiness changes (probe transitions don't change machine state).
-			if cur == pruntime.StateRunning {
+			if cur == perigeos.StateRunning {
 				ready := bw.gambit.isContainerReady(e.uid, c.Name)
 				if prev, ok := bw.prevReady[key]; !ok || prev != ready {
 					changedPods[e.uid] = true
@@ -292,11 +292,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 
 	// Coalescer: push status updates only for pods with actual changes.
 	// The downstream enqueuePodStatusUpdate has cmp.Equal dedup as a safety net.
-	stateLookup := func(uid, containerName string) pruntime.MachineState {
+	stateLookup := func(uid, containerName string) perigeos.MachineState {
 		if s, ok := stateMap[uid+"/"+containerName]; ok {
 			return s
 		}
-		return pruntime.StateUnknown
+		return perigeos.StateUnknown
 	}
 	for _, e := range entries {
 		if !changedPods[e.uid] {
@@ -338,7 +338,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	}
 }
 
-func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]pruntime.MachineState) {
+func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState) {
 	policy := pod.Spec.RestartPolicy
 	if policy == "" {
 		policy = corev1.RestartPolicyAlways
@@ -351,7 +351,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		key := uid + "/" + c.Name
 		state, exists := stateMap[key]
 		if !exists {
-			state = pruntime.StateExited
+			state = perigeos.StateExited
 		}
 		bw.logger.Debug("checkPod container state", "pod", pod.Name, "container", c.Name, "state", state, "exists", exists, "policy", policy)
 
@@ -360,7 +360,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// (systemd transitions through inactive→active for transient units,
 		// and ExecMainStatus isn't updated until after the unit settles).
 		// Don't make terminal decisions — wait for the unit to settle.
-		if !bw.seenRunning[key] && (state == pruntime.StateExited || state == pruntime.StateUnknown) {
+		if !bw.seenRunning[key] && (state == perigeos.StateExited || state == perigeos.StateUnknown) {
 			bw.logger.Debug("Deferring terminal decision — container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
 			allExited = false
 			allSucceeded = false
@@ -368,16 +368,16 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		}
 
 		switch state {
-		case pruntime.StateRunning, pruntime.StateCreating:
+		case perigeos.StateRunning, perigeos.StateCreating:
 			allExited = false
 			allSucceeded = false
 
-			if state == pruntime.StateRunning {
+			if state == perigeos.StateRunning {
 				bw.seenRunning[key] = true
 			}
 
 			// Reset backoff if container has been running long enough.
-			if state == pruntime.StateRunning {
+			if state == perigeos.StateRunning {
 				bw.gambit.mu.Lock()
 				if rs, ok := bw.gambit.restarts[uid][c.Name]; ok {
 					if time.Since(rs.lastStarted) > restartBackoffReset {
@@ -390,14 +390,14 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 				bw.runProbes(ctx, uid, pod, &c, podIP)
 			}
 
-		case pruntime.StateFailed:
+		case perigeos.StateFailed:
 			allSucceeded = false
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 				allExited = false
 			}
 
-		case pruntime.StateExited:
+		case perigeos.StateExited:
 			if policy == corev1.RestartPolicyAlways {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 				allExited = false
@@ -494,6 +494,9 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 			if restart := EvalStartup(ps, c.StartupProbe, result); restart {
 				bw.logger.Warn("Startup probe failed past threshold, restarting",
 					"pod", pod.Name, "container", c.Name)
+				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+					"Startup probe failed for container %s (threshold %d)",
+					c.Name, c.StartupProbe.FailureThreshold)
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 			}
 		}
@@ -523,9 +526,14 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 
 	// 3. Readiness probe — controls Ready condition on the container.
 	if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds) {
+		wasReady := ps.Ready
 		result := bw.gambit.probeRunner.RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
 		markProbed(ps, "readiness")
 		EvalReadiness(ps, c.ReadinessProbe, result)
+		if wasReady && !ps.Ready {
+			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+				"Readiness probe failed for container %s", c.Name)
+		}
 	}
 }
 

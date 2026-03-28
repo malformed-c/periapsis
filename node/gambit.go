@@ -25,7 +25,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
-	pruntime "github.com/malformed-c/periapsis/internal/runtime"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/malformed-c/periapsis/internal/volume"
@@ -93,7 +93,7 @@ type Gambit struct {
 	Config         config.PawnConfig
 	ImageManager   *image.ImageManager
 	NetworkManager network.NetworkManager
-	Runtime        pruntime.Runtime
+	Runtime        perigeos.Runtime
 	Logger         *slog.Logger
 	Tidal          *downward.Tidal
 	EventRecorder  record.EventRecorder
@@ -200,7 +200,7 @@ func NewGambit(
 	cfg config.PawnConfig,
 	im *image.ImageManager,
 	nm network.NetworkManager,
-	rt pruntime.Runtime,
+	rt perigeos.Runtime,
 	logger *slog.Logger,
 	eRec record.EventRecorder,
 ) *Gambit {
@@ -222,7 +222,7 @@ func NewGambit(
 		inFlight:     make(map[string]*podSaga),
 		restarts:     make(map[string]map[string]*containerRestartState),
 		probeStates:   make(map[string]map[string]*ContainerProbeState),
-		probeRunner:   NewProbeRunner(rt, logger, eRec),
+		probeRunner:   NewProbeRunner(rt, logger),
 		completedPods: make(map[string]string),
 		deleting:      make(map[string]bool),
 		volRefs:      make(map[string][]volumeMount),
@@ -1095,14 +1095,18 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		g.Logger.Info("Starting init container", "pod", pod.Name, "container", ic.Name)
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for init container %s", ic.Image, ic.Name)
-		layers, err := g.ImageManager.PullWithProgress(ic.Image, string(ic.ImagePullPolicy),
+		layers, cached, err := g.ImageManager.PullWithProgress(ic.Image, string(ic.ImagePullPolicy),
 			pullProgressFunc(g, pod, ic.Image, ic.Name))
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
 			compensate()
 			return fmt.Errorf("pull init container %s: %w", ic.Name, err)
 		}
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for init container %s", ic.Image, ic.Name)
+		if cached {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present for init container %s", ic.Image, ic.Name)
+		} else {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for init container %s", ic.Image, ic.Name)
+		}
 
 		rootfs, err := g.ImageManager.Mount(uid+"-"+ic.Name, layers)
 		if err != nil {
@@ -1131,7 +1135,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		}
 		icMemLimit, icCPULimit := extractResourceLimits(ic)
 		icEP, icCmd := g.ImageManager.ImageEntrypoint(ic.Image)
-		cfg := pruntime.PodConfig{
+		cfg := perigeos.PodConfig{
 			Name:             pod.Name,
 			Namespace:        pod.Namespace,
 			UID:              uid,
@@ -1168,7 +1172,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			return fmt.Errorf("init container %s: %w", ic.Name, err)
 		}
 		_ = g.ImageManager.Unmount(uid + "-" + ic.Name)
-		if state == pruntime.StateFailed {
+		if state == perigeos.StateFailed {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedInit", "Init container %s exited with error", ic.Name)
 			compensate()
 			return fmt.Errorf("init container %s failed", ic.Name)
@@ -1188,14 +1192,18 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		c := &pod.Spec.Containers[i]
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
-		layers, err := g.ImageManager.PullWithProgress(c.Image, string(c.ImagePullPolicy),
+		layers, cached, err := g.ImageManager.PullWithProgress(c.Image, string(c.ImagePullPolicy),
 			pullProgressFunc(g, pod, c.Image, c.Name))
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
 			compensate()
 			return fmt.Errorf("pull container %s: %w", c.Name, err)
 		}
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for container %s", c.Image, c.Name)
+		if cached {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present for container %s", c.Image, c.Name)
+		} else {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for container %s", c.Image, c.Name)
+		}
 
 		rootfs, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
 		if err != nil {
@@ -1226,7 +1234,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		}
 		cMemLimit, cCPULimit := extractResourceLimits(c)
 		cEP, cCmd := g.ImageManager.ImageEntrypoint(c.Image)
-		cfg := pruntime.PodConfig{
+		cfg := perigeos.PodConfig{
 			Name:                          pod.Name,
 			Namespace:                     pod.Namespace,
 			UID:                           uid,
@@ -1248,7 +1256,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
 		}
 
-		go func(cfg pruntime.PodConfig, cname string) {
+		go func(cfg perigeos.PodConfig, cname string) {
 			if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 				startResults <- startResult{cname, err}
 				return
@@ -1345,9 +1353,9 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 		state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
 		if err == nil {
 			switch state {
-			case pruntime.StateRunning:
+			case perigeos.StateRunning:
 				return nil
-			case pruntime.StateExited, pruntime.StateFailed:
+			case perigeos.StateExited, perigeos.StateFailed:
 				// Container already ran and exited (fast-exit containers like
 				// certgen finish before the first poll). This is success from
 				// the perspective of "the machine started" — the BatchWatcher
@@ -1491,7 +1499,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// Without this, overlays stack on each restart (each Mount adds a new one).
 	_ = g.ImageManager.Unmount(uid + "-" + containerName)
 
-	layers, err := g.ImageManager.Pull(container.Image, string(container.ImagePullPolicy))
+	layers, _, err := g.ImageManager.Pull(container.Image, string(container.ImagePullPolicy))
 	if err != nil {
 		g.Logger.Error("Restart: image pull failed", "container", containerName, "err", err)
 		return
@@ -1530,7 +1538,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 	rMemLimit, rCPULimit := extractResourceLimits(container)
 	rEP, rCmd := g.ImageManager.ImageEntrypoint(container.Image)
-	cfg := pruntime.PodConfig{
+	cfg := perigeos.PodConfig{
 		Name:                          pod.Name,
 		Namespace:                     pod.Namespace,
 		UID:                           uid,
@@ -1582,10 +1590,10 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	restartedPod := g.pods[uid]
 	g.mu.RUnlock()
 	if restartedPod != nil {
-		status := g.buildPodStatus(restartedPod, func(u, cn string) pruntime.MachineState {
+		status := g.buildPodStatus(restartedPod, func(u, cn string) perigeos.MachineState {
 			state, err := g.Runtime.MachineStatus(ctx, u, cn)
 			if err != nil {
-				return pruntime.StateUnknown
+				return perigeos.StateUnknown
 			}
 			return state
 		})
@@ -1889,14 +1897,14 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	// Use the BatchWatcher's cached stateMap if available, otherwise fall
 	// back to per-container D-Bus queries.
-	var stateLookup func(uid, containerName string) pruntime.MachineState
+	var stateLookup func(uid, containerName string) perigeos.MachineState
 	if g.batchWatcher != nil {
 		stateLookup = g.batchWatcher.ContainerState
 	} else {
-		stateLookup = func(uid, containerName string) pruntime.MachineState {
+		stateLookup = func(uid, containerName string) perigeos.MachineState {
 			state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
 			if err != nil {
-				return pruntime.StateUnknown
+				return perigeos.StateUnknown
 			}
 			return state
 		}
@@ -1909,7 +1917,7 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 // function. Used by both GetPodStatus (on-demand) and the BatchWatcher
 // coalescer (push on change). The stateLookup func returns the current
 // container state given (uid, containerName).
-func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, containerName string) pruntime.MachineState) *corev1.PodStatus {
+func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, containerName string) perigeos.MachineState) *corev1.PodStatus {
 	uid := string(pod.UID)
 
 	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
@@ -1941,17 +1949,17 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 		}
 
 		switch state {
-		case pruntime.StateRunning:
+		case perigeos.StateRunning:
 			cs.Ready = g.isContainerReady(uid, c.Name)
 			cs.State = corev1.ContainerState{
 				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.startTime)},
 			}
-		case pruntime.StateCreating, pruntime.StateUnknown:
+		case perigeos.StateCreating, perigeos.StateUnknown:
 			podPhase = corev1.PodPending
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
-		case pruntime.StateFailed:
+		case perigeos.StateFailed:
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				podPhase = corev1.PodRunning
 				cs.State = corev1.ContainerState{
@@ -1963,7 +1971,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"},
 				}
 			}
-		case pruntime.StateExited:
+		case perigeos.StateExited:
 			if policy == corev1.RestartPolicyAlways {
 				podPhase = corev1.PodRunning
 				cs.State = corev1.ContainerState{

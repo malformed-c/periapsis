@@ -160,6 +160,9 @@ func (pc *PodController) handleProviderError(ctx context.Context, span trace.Spa
 		podPhase = corev1.PodFailed
 	}
 
+	pc.recorder.Event(pod, corev1.EventTypeWarning, "ProviderError",
+		fmt.Sprintf("Provider operation failed: %v", origErr))
+
 	pod.ResourceVersion = "" // Blank out resource version to prevent object has been modified error
 	pod.Status.Phase = podPhase
 	pod.Status.Reason = podStatusReasonProviderFailed

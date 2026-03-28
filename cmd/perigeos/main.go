@@ -585,6 +585,29 @@ func main() {
 	}
 	gambitsMu.Unlock()
 
+	// Wait for any in-progress deletions (from apiserver or drain) to finish.
+	// This prevents the daemon from exiting while containers are still stopping.
+	for drainCtx.Err() == nil {
+		anyDeleting := false
+		gambitsMu.Lock()
+		for _, g := range allGambits {
+			if g.DeletionsInProgress() {
+				anyDeleting = true
+				break
+			}
+		}
+		gambitsMu.Unlock()
+		if !anyDeleting {
+			break
+		}
+		logger.Info("Waiting for in-progress deletions to complete...")
+		select {
+		case <-drainCtx.Done():
+			logger.Warn("Drain timeout — exiting with deletions still in progress")
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 

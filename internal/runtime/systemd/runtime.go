@@ -117,6 +117,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"--console=pipe",
 		"--keep-unit",
 		"--register=yes",
+		"--kill-signal=SIGTERM",
 		"--machine=" + machineName,
 		// --slice= is NOT passed here: --keep-unit tells nspawn to stay in the
 		// calling unit's cgroup rather than creating a new scope, so nspawn

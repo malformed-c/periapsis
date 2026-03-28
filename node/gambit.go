@@ -123,6 +123,7 @@ type Gambit struct {
 	probeStates    map[string]map[string]*ContainerProbeState // UID → container → probe state
 	probeRunner    *ProbeRunner
 	completedPods  map[string]string                         // "namespace/name" → UID for recently-deleted pods (log fallback)
+	deleting       map[string]bool                            // UIDs with DeletePod in progress — suppresses restarts
 	createSem    chan struct{}                                 // limits concurrent pod creation sagas
 
 	// podNotify is the callback registered by NotifyPods. When set, Gambit
@@ -223,6 +224,7 @@ func NewGambit(
 		probeStates:   make(map[string]map[string]*ContainerProbeState),
 		probeRunner:   NewProbeRunner(rt, logger, eRec),
 		completedPods: make(map[string]string),
+		deleting:      make(map[string]bool),
 		volRefs:      make(map[string][]volumeMount),
 		volRefsByPod: make(map[string][]string),
 		createSem:    make(chan struct{}, createConcurrency(cfg)),
@@ -794,6 +796,14 @@ func (g *Gambit) Shutdown() {
 	}
 }
 
+// DeletionsInProgress returns true if any pods are currently being deleted.
+func (g *Gambit) DeletionsInProgress() bool {
+	g.mu.RLock()
+	n := len(g.deleting)
+	g.mu.RUnlock()
+	return n > 0
+}
+
 // DrainPods actively stops all running pods on this pawn. Unlike the passive
 // drain (waiting for apiserver DeletePod calls), this directly stops containers
 // and cleans up resources. Call after Shutdown().
@@ -967,6 +977,8 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 			g.Logger.Warn("CreatePod attempt failed",
 				"pod", pod.Name, "attempt", attempt, "err", err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedCreate",
+				"creation attempt %d failed: %v", attempt, err)
 
 			// restartPolicy: Never → don't retry, mark Failed immediately.
 			if neverRestart {
@@ -1024,6 +1036,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	// Failing fast here avoids a 60s waitForContainer timeout when
 	// nspawn exits immediately with "Failed to pin client process: Too many open files".
 	if err := g.Runtime.CheckMachined(ctx); err != nil {
+		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreFlight", "machined check failed: %v", err)
 		return fmt.Errorf("machined pre-flight: %w", err)
 	}
 
@@ -1071,6 +1084,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	pod.Status.HostIP = resolveNodeIP(g.Config)
 	rm, _ := manager.NewResourceManager(nil, g.secretLister, g.cmLister, g.svcLister)
 	if err := podutils.PopulateEnvironmentVariables(ctx, pod, rm, g.EventRecorder); err != nil {
+		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPopulateEnv", "environment variable resolution failed: %v", err)
 		compensate()
 		return fmt.Errorf("env population: %w", err)
 	}
@@ -1081,7 +1095,8 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		g.Logger.Info("Starting init container", "pod", pod.Name, "container", ic.Name)
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for init container %s", ic.Image, ic.Name)
-		layers, err := g.ImageManager.Pull(ic.Image, string(ic.ImagePullPolicy))
+		layers, err := g.ImageManager.PullWithProgress(ic.Image, string(ic.ImagePullPolicy),
+			pullProgressFunc(g, pod, ic.Image, ic.Name))
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
 			compensate()
@@ -1173,7 +1188,8 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		c := &pod.Spec.Containers[i]
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
-		layers, err := g.ImageManager.Pull(c.Image, string(c.ImagePullPolicy))
+		layers, err := g.ImageManager.PullWithProgress(c.Image, string(c.ImagePullPolicy),
+			pullProgressFunc(g, pod, c.Image, c.Name))
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
 			compensate()
@@ -1363,6 +1379,7 @@ func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	failedPod.Status.Phase = corev1.PodFailed
 	failedPod.Status.Reason = "CreateFailed"
 	failedPod.Status.Message = err.Error()
+	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "pod creation failed: %v", err)
 	g.mu.Lock()
 	g.pods[uid] = failedPod
 	g.podPhases[uid] = corev1.PodFailed
@@ -1558,6 +1575,24 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	g.mu.Unlock()
 
 	g.Logger.Info("Container restarted successfully", "pod", pod.Name, "container", containerName)
+
+	// Push updated status immediately so restartCount is visible in k8s
+	// without waiting for the next batch watcher cycle.
+	g.mu.RLock()
+	restartedPod := g.pods[uid]
+	g.mu.RUnlock()
+	if restartedPod != nil {
+		status := g.buildPodStatus(restartedPod, func(u, cn string) pruntime.MachineState {
+			state, err := g.Runtime.MachineStatus(ctx, u, cn)
+			if err != nil {
+				return pruntime.StateUnknown
+			}
+			return state
+		})
+		updated := restartedPod.DeepCopy()
+		status.DeepCopyInto(&updated.Status)
+		g.notifyPodStatus(updated)
+	}
 }
 
 func (g *Gambit) UpdatePod(_ context.Context, pod *corev1.Pod) error {
@@ -1569,6 +1604,11 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
 	uid := string(pod.UID)
 	g.setKind(pod)
+
+	// Mark pod as deleting so the batch watcher won't restart its containers.
+	g.mu.Lock()
+	g.deleting[uid] = true
+	g.mu.Unlock()
 
 	// If a CreatePod saga is running, cancel it and wait for its compensations
 	// to finish before proceeding. This closes the race where DeletePod arrives
@@ -1638,6 +1678,7 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	delete(g.podPhases, uid)
 	delete(g.restarts, uid)
 	delete(g.probeStates, uid)
+	delete(g.deleting, uid)
 	g.mu.Unlock()
 
 	return nil
@@ -1689,6 +1730,24 @@ func (g *Gambit) admitPod(pod *corev1.Pod) string {
 			podMem, usedMem, nodeMem)
 	}
 	return ""
+}
+
+// pullProgressFunc returns a callback that emits Pulling events at 10% steps.
+func pullProgressFunc(g *Gambit, pod *corev1.Pod, imageName, containerName string) image.PullProgress {
+	var lastPct int
+	return func(done, total int) {
+		if total == 0 {
+			return
+		}
+		pct := done * 100 / total
+		// Emit at every 10% boundary crossed, and always at 100%.
+		step := pct / 10 * 10
+		if step > lastPct || pct == 100 {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling",
+				"Pulling image %s: %d%% (%d/%d layers) for %s", imageName, pct, done, total, containerName)
+			lastPct = step
+		}
+	}
 }
 
 // podTerminationGracePeriod returns the pod's termination grace period in seconds.

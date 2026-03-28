@@ -65,7 +65,8 @@ type Queue struct {
 	// wakeup
 	wakeupCh chan struct{}
 
-	retryFunc ShouldRetryFunc
+	retryFunc  ShouldRetryFunc
+	onForget   func(key string, err error)
 }
 
 type queueItem struct {
@@ -84,6 +85,12 @@ type queueItem struct {
 
 func (item *queueItem) String() string {
 	return fmt.Sprintf("<plannedToStartWorkAt:%s key: %s>", item.plannedToStartWorkAt.String(), item.key)
+}
+
+// OnForget sets a callback that fires when the queue permanently forgets a key
+// due to retry exhaustion. The error is the final wrapped error from retryFunc.
+func (q *Queue) OnForget(fn func(key string, err error)) {
+	q.onForget = fn
 }
 
 // New creates a queue
@@ -469,6 +476,9 @@ func (q *Queue) handleQueueItemObject(ctx context.Context, qi *queueItem) error 
 	}
 
 	// We've exceeded the maximum retries or we were successful.
+	if err != nil && q.onForget != nil {
+		q.onForget(qi.key, err)
+	}
 	q.ratelimiter.Forget(qi.key)
 	if !qi.redirtiedAt.IsZero() {
 		delay := time.Until(qi.redirtiedAt)

@@ -44,13 +44,15 @@ Added `GetPod` check before the terminal phase skip. If `pod.Status.Phase` is `F
 
 ## Constraints
 
-- **k8s dep versions** — pinned to v0.34.x.
-- **PodLifecycleHandler interface** — being inlined per ADR-0002. Dispatch helpers in `node/dispatch.go` route to Gambit directly. Interface kept for test mocks.
+- **k8s dep versions** — pinned to v0.35.x.
+- **PodProvider interface** — ADR-0002 complete. `internal/provider/` dissolved into `node/`. Interface retained as testing seam for PodController unit tests.
 - **Single module** — perigeos is absorbed into periapsis. `cmd/perigeos` lives here.
 
 ---
 
 ## Open work
 
-1. **Event emission before CreatePod** — errors in `PopulateEnvironmentVariables` and other pre-creation steps don't emit Kubernetes events, making them invisible in `kubectl describe pod`. Should emit a Warning event from `createOrUpdatePod` on any pre-provider error.
-2. **Forward reconciler hook** — a provider callback to list pods the provider knows about on startup, enabling perigeos to recover missed pods without polling the API server independently.
+1. ~~**Event emission before CreatePod**~~ — Done. All error paths now emit Kubernetes events (see ADR-0003).
+2. ~~**Forward reconciler hook**~~ — Done. `HydrateFromRuntime` + `RequestSync` (see ADR-0003 tier 1).
+
+No open items. See ADR-0003 for remaining tier 2 backlog (eviction, ephemeral containers).

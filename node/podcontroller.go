@@ -209,6 +209,20 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 	pc.deletePodsFromKubernetes = queue.New(cfg.DeletePodsFromKubernetesRateLimiter, "deletePodsFromKubernetes", pc.deletePodsFromKubernetesHandler, cfg.DeletePodsFromKubernetesShouldRetryFunc)
 	pc.syncPodStatusFromProvider = queue.New(cfg.SyncPodStatusFromProviderRateLimiter, "syncPodStatusFromProvider", pc.syncPodStatusFromProviderHandler, cfg.SyncPodStatusFromProviderShouldRetryFunc)
 
+	// Emit a Kubernetes event when the sync queue permanently gives up on a pod.
+	pc.syncPodsFromKubernetes.OnForget(func(key string, err error) {
+		namespace, name, splitErr := cache.SplitMetaNamespaceKey(key)
+		if splitErr != nil {
+			return
+		}
+		pod, getErr := pc.podsLister.Pods(namespace).Get(name)
+		if getErr != nil {
+			return
+		}
+		pc.recorder.Event(pod, corev1.EventTypeWarning, "SyncRetriesExhausted",
+			fmt.Sprintf("Gave up syncing pod after repeated failures: %v", err))
+	})
+
 	return pc, nil
 }
 

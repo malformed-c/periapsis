@@ -1,7 +1,8 @@
 # ADR-0003: Periapsis extension roadmap
 
-**Status:** Accepted  
+**Status:** Implemented (eviction + ephemeral containers remain tier 2 backlog)
 **Date:** 2026-03-20
+**Updated:** 2026-03-28
 
 ## Context
 
@@ -15,58 +16,54 @@ VK's sync loop swallows most errors into log lines and queue requeues. The only 
 
 A pod stuck in Pending could be caused by `PopulateEnvironmentVariables` failing on an unresolvable configmap ref, a pod lister error, a status update conflict, or a dozen other internal failures — none of which produce an event. The queue retries with backoff, generating hundreds of log lines over minutes but zero user-visible signal. Diagnosing this requires access to perigeos process logs and knowledge of which wrapped error messages to grep for.
 
-### Changes required
+### Changes required — **all implemented**
 
 **`node/pod.go`:**
-- `createOrUpdatePod`: emit Warning event when `PopulateEnvironmentVariables` fails (reason: `FailedPopulateEnv`). Highest-value single fix.
-- `handleProviderError`: emit Warning event with the original provider error (reason: `ProviderError`). Currently only updates status, which can itself fail silently.
-- `updatePodStatus`: emit Warning event when the status API call fails (reason: `FailedStatusUpdate`).
+- ~~`createOrUpdatePod`: emit Warning event when `PopulateEnvironmentVariables` fails (reason: `FailedPopulateEnv`).~~ Done — emitted from `createPodSync` in gambit.go.
+- ~~`handleProviderError`: emit Warning event with the original provider error (reason: `ProviderError`).~~ Done.
+- ~~`updatePodStatus`: emit Warning event when the status API call fails (reason: `FailedStatusUpdate`).~~ Done.
 
 **`node/podcontroller.go`:**
-- `syncPodFromKubernetesHandler`: emit Warning event on non-404 lister errors (reason: `FailedSync`).
-- `deleteDanglingPods`: emit Warning event when provider-side delete fails (reason: `FailedDeleteDangling`).
+- ~~`syncPodFromKubernetesHandler`: emit Warning event on non-404 lister errors (reason: `FailedSync`).~~ Done.
+- ~~`deleteDanglingPods`: emit Warning event when provider-side delete fails (reason: `FailedDeleteDangling`).~~ Done.
 
 **`node/pod.go` delete path:**
-- `deletePodsFromKubernetesHandler`: emit Warning event on non-404 non-conflict API delete failures (reason: `FailedForceDelete`).
+- ~~`deletePodsFromKubernetesHandler`: emit Warning event on non-404 non-conflict API delete failures (reason: `FailedForceDelete`).~~ Done.
 
 **`node/node.go`:**
-- Add a recorder to `NodeController` (currently has none; requires a new `NodeControllerOpt`).
-- Emit Warning events on the Node object for lease renewal failure (`FailedLeaseRenewal`), node status update failure (`FailedNodeStatusUpdate`), ping timeout (`NodePingTimeout`).
+- ~~Add a recorder to `NodeController`.~~ Done — `WithNodeEventRecorder` option.
+- ~~Emit Warning events on the Node object for lease renewal failure (`FailedLeaseRenewal`), node status update failure (`FailedNodeStatusUpdate`), ping timeout (`NodePingFailed`).~~ Done.
 
 **Queue catch-all:**
-- When the queue exhausts retries for a key and calls `Forget`, emit a Warning event on the associated pod (reason: `SyncRetriesExhausted`). Insurance for any error path missed above.
+- ~~When the queue exhausts retries for a key and calls `Forget`, emit a Warning event on the associated pod (reason: `SyncRetriesExhausted`).~~ Done — via `Queue.OnForget` callback.
 
-## Tier 1 — breaks real workloads
+**`node/gambit.go` (provider-level):**
+- `CheckMachined` failure: `FailedPreFlight` event. Done.
+- `PopulateEnvironmentVariables` failure: `FailedPopulateEnv` wrapping event. Done.
+- Creation retry loop: `FailedCreate` event per attempt. Done.
+- `markPodFailed`: `CreateFailed` event for terminal failures. Done.
 
-### Graceful termination
+## Tier 1 — breaks real workloads — **all implemented**
 
-VK's `deletePod` immediately calls `provider.DeletePod` with no lifecycle handling. There is no PreStop hook execution, no terminationGracePeriodSeconds observance, no SIGTERM-then-wait-then-SIGKILL sequence. When the API server requests deletion with a 30-second grace period, VK calls DeletePod immediately and Gambit kills the machine.
+### Graceful termination — done
 
-Any workload that drains connections, flushes buffers, or persists state on shutdown is broken. This is the single largest gap between perigeos and a real kubelet.
+`Gambit.DeletePod` now enforces `terminationGracePeriodSeconds` as a context timeout shared
+between PreStop hooks and container stop. `runPreStopHooks` executes exec and HTTP hooks
+before signalling containers. `StopMachine` sends SIGTERM; systemd's `TimeoutStopSec`
+(set from `terminationGracePeriodSeconds` at unit creation) enforces the SIGKILL deadline.
 
-**Changes required:**
-- `deletePod` in `node/pod.go` must read `pod.Spec.TerminationGracePeriodSeconds` and `pod.DeletionGracePeriodSeconds`
-- Execute PreStop hooks (exec and HTTP) before signalling the provider
-- Pass the grace period to the provider so it can SIGTERM → wait → SIGKILL
-- `PodLifecycleHandler` needs a new method or `DeletePod` needs a grace period parameter (this is one of the interface changes that may trigger ADR-0002)
+### Pod admission — done
 
-### Pod admission
+`Gambit.admitPod` checks aggregate resource requests against remaining node capacity before
+`CreatePod` proceeds. Rejected pods receive a `FailedAdmission` Warning event and the error
+propagates to the API server.
 
-VK accepts every pod the scheduler sends. There is no resource fit check against advertised node capacity. If the scheduler places 50 pods on a pawn advertising 1G memory, VK calls CreatePod for all of them. Real kubelet rejects with Unschedulable.
+### Forward reconciler — done
 
-**Changes required:**
-- Pre-CreatePod admission check in `createOrUpdatePod` comparing pod resource requests against node allocatable minus already-running pods
-- Reject with a status update (phase Pending, reason Unschedulable) and Warning event when the pod doesn't fit
-- The provider needs to expose current resource usage, either via a new interface method or by the framework querying it directly
-
-### Forward reconciler
-
-On startup after a crash, perigeos has pods on disk and running systemd machines, but VK's sync loop has an empty in-memory state. VK re-lists from the API server and drives CreatePod for pods the provider already has running. Gambit handles this defensively (checks for existing machines), but it causes unnecessary churn and race conditions with the reconciler.
-
-**Changes required:**
-- A startup hook where the provider returns its known pod set before the sync loop begins processing
-- `syncPodInProvider` consults this set to skip creation for pods already running
-- This is listed in periapsis open work item #2
+`HydrateFromRuntime` reconstructs the pod set from running systemd units at startup.
+`CreatePod` detects hydrated pods and skips re-creation, upgrading hydration stubs to full
+pod objects when the informer reconnects. `RequestSync(namespace, name)` lets Gambit trigger
+PodController re-syncs without polling.
 
 ## Tier 2 — production gaps
 
@@ -79,14 +76,12 @@ Gambit computes disk/memory/PID pressure for node conditions. VK reports these c
 - Priority-sorted pod list with QoS-class tiebreaking (BestEffort → Burstable → Guaranteed)
 - Provider hook to report current per-pod resource consumption
 
-### ConfigMap/Secret refresh
+### ConfigMap/Secret refresh — done
 
-Mounted volumes are populated at pod creation and never updated. Workloads depending on rotated credentials or dynamic configuration will read stale data indefinitely.
-
-**Changes required:**
-- Watch or periodic poll for ConfigMap/Secret changes affecting running pods
-- Provider hook to update mounted volume content in a running machine
-- Needs careful handling — some pods mount as env vars (immutable after start), some as volume files (updatable)
+`Gambit.SetInformers` registers `UpdateFunc` handlers on ConfigMap and Secret informers.
+`refreshConfigMapVolumes` / `refreshSecretVolumes` perform inode-preserving rewrites of
+projected volume files via `RefreshConfigMapDirect` / `RefreshSecretDirect`. Env vars
+remain immutable after start (matching kubelet behavior).
 
 ### Ephemeral containers
 
@@ -97,21 +92,27 @@ Mounted volumes are populated at pod creation and never updated. Workloads depen
 - Provider (or framework-inline) creates a new nspawn machine sharing the target pod's namespaces
 - Status reporting includes ephemeral container states
 
-## Tier 3 — unlocked by framework integration (ADR-0002)
+## Tier 3 — unlocked by framework integration (ADR-0002) — **all implemented**
 
-### Pod creation reordering
+### Pod creation reordering — done
 
-Currently: env population → CreatePod → CNI → status.podIP. The ADR-0001 `status.podIP` bug was a direct consequence — env population runs before CNI, so podIP is empty. With the framework approach: CNI setup → env population (podIP now known) → RunMachine. Impossible through the provider interface because `PopulateEnvironmentVariables` runs before `CreatePod`.
+ADR-0002 dissolved the provider interface boundary. `createPodSync` now runs:
+CNI setup → `PopulateEnvironmentVariables` (podIP known) → image pull → RunMachine.
+The ADR-0001 `status.podIP` empty-at-env-time bug is structurally eliminated.
 
-### Unified status reporting
+### Unified status reporting — done
 
-Currently VK polls `GetPodStatus` on a timer and the provider reconstructs status from systemd state. With framework integration, the sync loop directly observes machine state transitions and updates status atomically with the action that caused them. Eliminates poll lag and status races.
+The batch watcher observes systemd unit state transitions and pushes status updates
+via `notifyPodStatus`. `GetPodStatus` polling is eliminated; `buildPodStatus` reads
+live unit state and journal exit codes atomically with the transition that caused them.
 
 ## Decision
 
 Implement in order: observability (event emission), then tier 1 (graceful termination, admission, forward reconciler), then tier 2 as needed. Tier 3 is deferred to ADR-0002 trigger conditions.
 
-Event emission and forward reconciler can be implemented today without interface changes. Graceful termination and admission will require either interface extensions or ADR-0002 — track which approach is taken, as interface extensions here count toward ADR-0002's trigger threshold.
+**Update (2026-03-28):** All tiers complete except eviction and ephemeral containers (tier 2).
+ADR-0002 was completed, dissolving the provider interface and enabling tier 3 items.
+Graceful termination and admission were implemented directly in Gambit without interface extensions.
 
 ## Future: PreStop hook shim
 
@@ -133,8 +134,8 @@ the current `RunInContainer`-based approach is correct and matches kubelet's beh
 
 ## Consequences
 
-- `kubectl describe` and `kubectl get events` become the primary debugging tools, replacing log grep
+- `kubectl describe` and `kubectl get events` are now the primary debugging tools — all error paths emit events
 - Graceful termination enables stateful workloads (databases, queue consumers, anything with connection draining)
 - Pod admission prevents resource overcommit and the cascading failures it causes
-- Each tier 1 item that requires a `PodLifecycleHandler` change moves closer to ADR-0002's trigger conditions
-- Tier 2 items are optional and should be driven by concrete workload requirements, not speculative completeness
+- ADR-0002 was triggered and completed — `PodLifecycleHandler` dissolved, Gambit inlined into the framework
+- Remaining tier 2 items (eviction, ephemeral containers) are optional and should be driven by concrete workload requirements

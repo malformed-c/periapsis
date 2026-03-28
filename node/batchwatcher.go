@@ -531,8 +531,17 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 
 // maybeRestart launches a restart goroutine for a container if one isn't
 // already running. Prevents double-restarts between poll cycles.
+// Skips the restart if the pod has been removed from gambit (DeletePod in progress).
 func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev1.Pod, containerName string) {
 	key := uid + "/" + containerName
+
+	// Don't restart containers for pods that are being deleted.
+	bw.gambit.mu.RLock()
+	isDeleting := bw.gambit.deleting[uid]
+	bw.gambit.mu.RUnlock()
+	if isDeleting {
+		return
+	}
 
 	bw.restartingMu.Lock()
 	if bw.restarting[key] {

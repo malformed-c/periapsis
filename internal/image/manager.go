@@ -117,6 +117,11 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 //
 // When pullPolicy is empty it defaults to "Always".
 func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, error) {
+	return im.PullWithProgress(imageName, pullPolicy, nil)
+}
+
+// PullWithProgress is like Pull but calls progress after each layer completes.
+func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, progress PullProgress) ([]string, error) {
 	if pullPolicy == "" {
 		pullPolicy = "Always"
 	}
@@ -129,7 +134,7 @@ func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, err
 		cached, ok := im.manifestCache[imageName]
 		im.mu.Unlock()
 		if ok {
-			return im.layersFromImage(cached)
+			return im.layersFromImage(cached, progress)
 		}
 		// Check disk-persisted layer cache (survives process restart).
 		if paths, err := im.loadLayerCache(imageName); err == nil {
@@ -160,7 +165,7 @@ func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, err
 		im.mu.Unlock()
 		if ok {
 			im.logger.Info("Registry unavailable, using cached manifest", "image", imageName, "err", err)
-			return im.layersFromImage(cached)
+			return im.layersFromImage(cached, progress)
 		}
 		// Try disk-persisted layer cache (survives process restart).
 		if paths, diskErr := im.loadLayerCache(imageName); diskErr == nil {
@@ -176,7 +181,7 @@ func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, err
 	im.manifestCache[imageName] = img
 	im.mu.Unlock()
 
-	layerPaths, err := im.layersFromImage(img)
+	layerPaths, err := im.layersFromImage(img, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -193,15 +198,21 @@ func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, err
 	return layerPaths, nil
 }
 
+// PullProgress is called after each layer is resolved.
+// done is the number of layers completed, total is the total layer count.
+type PullProgress func(done, total int)
+
 // layersFromImage extracts and caches all layers from a resolved image.
-func (im *ImageManager) layersFromImage(img v1.Image) ([]string, error) {
+// If progress is non-nil it is called after each layer completes.
+func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]string, error) {
 	layers, err := img.Layers()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get layers: %w", err)
 	}
 
+	total := len(layers)
 	var layerPaths []string
-	for _, layer := range layers {
+	for i, layer := range layers {
 		diffID, err := layer.DiffID()
 		if err != nil {
 			return nil, err
@@ -215,6 +226,9 @@ func (im *ImageManager) layersFromImage(img v1.Image) ([]string, error) {
 		}
 
 		layerPaths = append(layerPaths, pathIface.(string))
+		if progress != nil {
+			progress(i+1, total)
+		}
 	}
 
 	return layerPaths, nil

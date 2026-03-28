@@ -10,9 +10,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/malformed-c/periapsis/node"
 	"github.com/malformed-c/periapsis/internal/pki"
+	"github.com/malformed-c/periapsis/node"
 	"github.com/malformed-c/periapsis/node/api"
+	"k8s.io/client-go/kubernetes"
 )
 
 type PawnServer struct {
@@ -24,7 +25,15 @@ type PawnServer struct {
 	listener   net.Listener
 }
 
-func NewPawnServer(g *node.Gambit, caPath, caKeyPath string) (*PawnServer, error) {
+// PawnServerConfig holds the configuration for creating a PawnServer.
+type PawnServerConfig struct {
+	CACertPath string
+	CAKeyPath  string
+	ConfigDir  string // e.g. /etc/apsis/perigeos — for persisting CSR certs
+	KubeClient kubernetes.Interface
+}
+
+func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 	port     := g.Config.Port
 	pawnName := g.Config.Name
 
@@ -50,19 +59,9 @@ func NewPawnServer(g *node.Gambit, caPath, caKeyPath string) (*PawnServer, error
 
 	addr := fmt.Sprintf(":%d", port)
 
-	var tlsCert tls.Certificate
-	var err error
-
-	caCert, caKey, errLoad := pki.LoadCA(caPath, caKeyPath)
-	if errLoad == nil {
-		slog.Default().Info("Signing pawn certificate with k8s CA", "pawn", pawnName, "ca", caPath)
-		tlsCert, err = pki.GenerateCert(pawnName, caCert, caKey)
-	} else {
-		slog.Default().Warn("K8s CA not loaded, falling back to self-signed cert", "ca", caPath, "err", errLoad)
-		tlsCert, err = pki.GenerateCert(pawnName, nil, nil)
-	}
+	tlsCert, err := obtainCert(pawnName, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("generate TLS cert for %s: %w", pawnName, err)
+		return nil, fmt.Errorf("obtain TLS cert for %s: %w", pawnName, err)
 	}
 
 	tlsCfg := &tls.Config{
@@ -103,4 +102,37 @@ func (ps *PawnServer) Start() error {
 // Stop allows for graceful shutdown.
 func (s *PawnServer) Stop(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+// obtainCert tries three strategies in order:
+//  1. CSR via Kubernetes certificates API (if kubeClient provided)
+//  2. Sign with local CA cert+key (legacy k3s path)
+//  3. Self-signed fallback
+func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) {
+	logger := slog.Default()
+
+	// Strategy 1: CSR flow — proper k8s way, no CA key needed on node.
+	if cfg.KubeClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		cert, err := pki.RequestServingCert(ctx, cfg.KubeClient, pawnName, cfg.ConfigDir, logger)
+		if err == nil {
+			return cert, nil
+		}
+		logger.Warn("CSR flow failed, trying CA signing", "pawn", pawnName, "err", err)
+	}
+
+	// Strategy 2: Sign with local CA (legacy — requires CA key on node).
+	if cfg.CACertPath != "" {
+		caCert, caKey, err := pki.LoadCA(cfg.CACertPath, cfg.CAKeyPath)
+		if err == nil {
+			logger.Info("Signing pawn certificate with local CA", "pawn", pawnName, "ca", cfg.CACertPath)
+			return pki.GenerateCert(pawnName, caCert, caKey)
+		}
+		logger.Warn("Local CA not loaded", "ca", cfg.CACertPath, "err", err)
+	}
+
+	// Strategy 3: Self-signed fallback.
+	logger.Warn("Using self-signed certificate", "pawn", pawnName)
+	return pki.GenerateCert(pawnName, nil, nil)
 }

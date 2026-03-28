@@ -1,0 +1,40 @@
+# RBAC for perigeos CSR self-approval.
+#
+# Perigeos submits and approves its own kubelet-serving CSRs.
+# kube-controller-manager then signs the approved CSR and issues the cert.
+#
+# This is the self-approval path — the security boundary is the kubeconfig,
+# not CSR approval. When Apogeos operator exists, it will handle approval
+# and this ClusterRole can be scoped down.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: perigeos:csr-manager
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests/approval"]
+    verbs: ["update"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["signers"]
+    resourceNames: ["kubernetes.io/kubelet-serving"]
+    verbs: ["approve"]
+---
+# Bind to the perigeos service account or user.
+# Adjust the subject to match your kubeconfig identity.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: perigeos:csr-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: perigeos:csr-manager
+subjects:
+  # Default: bind to the system:masters group (k3s admin kubeconfig).
+  # Replace with a dedicated service account for production.
+  - kind: Group
+    name: system:masters
+    apiGroup: rbac.authorization.k8s.io

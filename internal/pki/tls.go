@@ -123,6 +123,47 @@ func GenerateCert(nodeName string, caCert *x509.Certificate, caKey any) (tls.Cer
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
+// hostName returns os.Hostname, swallowing errors.
+func hostName() (string, error) {
+	return os.Hostname()
+}
+
+// collectIPs gathers all IP addresses that should appear in cert SANs:
+// 127.0.0.1, the outbound IP, and every interface IP.
+func collectIPs() []net.IP {
+	var ips []net.IP
+	ips = append(ips, net.ParseIP("127.0.0.1"))
+
+	if outbound := GetOutboundIP(); outbound != nil {
+		ips = append(ips, outbound)
+	}
+
+	addrs, _ := net.InterfaceAddrs()
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil {
+			continue
+		}
+		dup := false
+		for _, existing := range ips {
+			if existing.Equal(ip) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
 // GetOutboundIP finds the local IP address that is used to talk to the internet.
 // We prefer this over iterating interfaces because it gives us the "routable" IP.
 func GetOutboundIP() net.IP {

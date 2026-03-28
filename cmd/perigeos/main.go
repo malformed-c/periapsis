@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"slices"
 	"strings"
@@ -518,7 +519,12 @@ func main() {
 				reconciler.Run(ctx)
 			})
 
-			pawnServer, err := server.NewPawnServer(g, perigeoCfg.Global.ServerCAPath, perigeoCfg.Global.ServerCAKeyPath)
+			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{
+				CACertPath: perigeoCfg.Global.ServerCAPath,
+				CAKeyPath:  perigeoCfg.Global.ServerCAKeyPath,
+				ConfigDir:  filepath.Dir(*perigeosConfigPath),
+				KubeClient: kubeClient,
+			})
 			if err != nil {
 				pawnLogger.Error("Error creating PawnServer — port already bound or TLS failure", "port", pawnCfg.Port, "err", err)
 				return

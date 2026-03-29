@@ -1095,8 +1095,11 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		g.Logger.Info("Starting init container", "pod", pod.Name, "container", ic.Name)
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for init container %s", ic.Image, ic.Name)
-		layers, cached, err := g.ImageManager.PullWithProgress(ic.Image, string(ic.ImagePullPolicy),
-			pullProgressFunc(g, pod, ic.Image, ic.Name))
+		layers, cached, err := g.ImageManager.PullWithOptions(ic.Image, string(ic.ImagePullPolicy),
+			image.PullOptions{
+				Progress: pullProgressFunc(g, pod, ic.Image, ic.Name),
+				Event:    podEventFn(g, pod),
+			})
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
 			compensate()
@@ -1192,8 +1195,11 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		c := &pod.Spec.Containers[i]
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
-		layers, cached, err := g.ImageManager.PullWithProgress(c.Image, string(c.ImagePullPolicy),
-			pullProgressFunc(g, pod, c.Image, c.Name))
+		layers, cached, err := g.ImageManager.PullWithOptions(c.Image, string(c.ImagePullPolicy),
+			image.PullOptions{
+				Progress: pullProgressFunc(g, pod, c.Image, c.Name),
+				Event:    podEventFn(g, pod),
+			})
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
 			compensate()
@@ -1499,7 +1505,8 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// Without this, overlays stack on each restart (each Mount adds a new one).
 	_ = g.ImageManager.Unmount(uid + "-" + containerName)
 
-	layers, _, err := g.ImageManager.Pull(container.Image, string(container.ImagePullPolicy))
+	layers, _, err := g.ImageManager.PullWithOptions(container.Image, string(container.ImagePullPolicy),
+		image.PullOptions{Event: podEventFn(g, pod)})
 	if err != nil {
 		g.Logger.Error("Restart: image pull failed", "container", containerName, "err", err)
 		return
@@ -1741,6 +1748,14 @@ func (g *Gambit) admitPod(pod *corev1.Pod) string {
 }
 
 // pullProgressFunc returns a callback that emits Pulling events at 10% steps.
+// podEventFn returns an image.PullEventFn that forwards layer pull events as
+// pod events on the given pod.
+func podEventFn(g *Gambit, pod *corev1.Pod) image.PullEventFn {
+	return func(eventType, reason, message string) {
+		g.EventRecorder.Eventf(pod, eventType, reason, "%s", message)
+	}
+}
+
 func pullProgressFunc(g *Gambit, pod *corev1.Pod, imageName, containerName string) image.PullProgress {
 	var lastPct int
 	return func(done, total int) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,7 +18,7 @@ import (
 const peerConnsPerHost = layerConcurrency
 
 // peerStallTimeout is how long a peer body read may make no progress before
-// the download is considered stalled and the transfer is abandoned.
+// the download is considered stalled and the peer is marked bad.
 const peerStallTimeout = 30 * time.Second
 
 // PeerConfig configures peer blob fetching.
@@ -76,85 +77,97 @@ func (im *ImageManager) peerEndpoints(ctx context.Context) []string {
 	return endpoints
 }
 
-// peerResult carries one goroutine's outcome. cancel must be called by whoever
-// consumes the result (either to abort a failed request or to clean up a winner
-// once its body is fully consumed).
-type peerResult struct {
-	body   io.ReadCloser
-	cancel context.CancelFunc
-}
-
-// fetchFromPeers fans out to all known peer endpoints and returns the first
-// successful blob response as a raw compressed stream. Caller must close it.
-//
-// Each peer request runs with its own child context so only losers are
-// cancelled — the winner's body read continues with the parent ctx deadline.
-// ResponseHeaderTimeout on the shared transport kills slow-to-respond peers
-// without touching the winner's ongoing download.
-func (im *ImageManager) fetchFromPeers(ctx context.Context, hash string) (io.ReadCloser, bool) {
+// newPeerSelector snapshots the current healthy peer list for one pull.
+// Returns nil if no peers are available.
+func (im *ImageManager) newPeerSelector(ctx context.Context) *peerSelector {
 	if im.peerClient == nil {
-		return nil, false
+		return nil
 	}
-	endpoints := im.peerEndpoints(ctx)
-	if len(endpoints) == 0 {
-		return nil, false
+	eps := im.peerEndpoints(ctx)
+	if len(eps) == 0 {
+		return nil
 	}
-
-	n := len(endpoints)
-	results := make(chan peerResult, n)
-
-	for _, ep := range endpoints {
-		reqCtx, reqCancel := context.WithCancel(ctx)
-		ep := ep
-		go func() {
-			url := fmt.Sprintf("https://%s/blobs/%s", ep, hash)
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
-			if err != nil {
-				reqCancel()
-				results <- peerResult{}
-				return
-			}
-			resp, err := im.peerClient.Do(req)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				if resp != nil {
-					resp.Body.Close()
-				}
-				reqCancel()
-				results <- peerResult{}
-				return
-			}
-			// Don't cancel here — caller owns reqCancel for the winner.
-			results <- peerResult{body: stallReader(resp.Body, peerStallTimeout), cancel: reqCancel}
-		}()
-	}
-
-	for i := range n {
-		r := <-results
-		if r.body != nil {
-			// Drain and cancel the remaining in-flight requests in the background.
-			go drainPeerResults(results, n-i-1)
-			return r.body, true
-		}
-	}
-	return nil, false
+	return &peerSelector{healthy: eps, client: im.peerClient}
 }
 
-// drainPeerResults consumes exactly count results from ch, closing any bodies
-// and cancelling any contexts for requests that were still in flight.
-func drainPeerResults(ch <-chan peerResult, count int) {
-	for range count {
-		if r := <-ch; r.cancel != nil {
-			if r.body != nil {
-				r.body.Close()
+// peerSelector distributes layer downloads across a snapshot of healthy peers.
+// Layers are assigned round-robin; a peer that stalls is evicted so subsequent
+// layers avoid it. All methods are safe for concurrent use.
+type peerSelector struct {
+	mu      sync.Mutex
+	healthy []string
+	next    int // round-robin cursor
+	client  *http.Client
+}
+
+// pick returns the next healthy endpoint (round-robin) and true, or ("", false)
+// if no healthy peers remain.
+func (ps *peerSelector) pick() (string, bool) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if len(ps.healthy) == 0 {
+		return "", false
+	}
+	ep := ps.healthy[ps.next%len(ps.healthy)]
+	ps.next++
+	return ep, true
+}
+
+// markBad removes ep from the healthy set.
+func (ps *peerSelector) markBad(ep string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	for i, e := range ps.healthy {
+		if e == ep {
+			ps.healthy = append(ps.healthy[:i], ps.healthy[i+1:]...)
+			// Adjust cursor so we don't skip an entry after the removed one.
+			if ps.next > i {
+				ps.next--
 			}
-			r.cancel()
+			return
 		}
 	}
+}
+
+// fetch tries to fetch a blob from the next healthy peer. Returns the response
+// body (wrapped with stall detection), the endpoint used, and true on success.
+// On connection/header failure the peer is immediately marked bad and the next
+// healthy peer is tried. Caller must close the returned body.
+func (ps *peerSelector) fetch(ctx context.Context, hash string) (io.ReadCloser, string, bool) {
+	for {
+		ep, ok := ps.pick()
+		if !ok {
+			return nil, "", false
+		}
+		body, err := fetchOnePeer(ctx, ps.client, hash, ep)
+		if err != nil {
+			ps.markBad(ep)
+			continue
+		}
+		return stallReader(body, peerStallTimeout), ep, true
+	}
+}
+
+// fetchOnePeer sends a single GET /blobs/{hash} to ep and returns the response
+// body on HTTP 200, or an error otherwise.
+func fetchOnePeer(ctx context.Context, client *http.Client, hash, ep string) (io.ReadCloser, error) {
+	url := fmt.Sprintf("https://%s/blobs/%s", ep, hash)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("peer %s: HTTP %d", ep, resp.StatusCode)
+	}
+	return resp.Body, nil
 }
 
 // stallReader wraps r and returns an error if no bytes are read within timeout.
-// This lets fetchFromPeers detect a stalled peer mid-download so ensureLayer
-// can fall back to the upstream registry.
 func stallReader(r io.ReadCloser, timeout time.Duration) io.ReadCloser {
 	return &stallDetector{ReadCloser: r, timeout: timeout}
 }

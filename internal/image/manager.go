@@ -127,13 +127,19 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 //
 // When pullPolicy is empty it defaults to "Always".
 func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, bool, error) {
-	return im.PullWithProgress(imageName, pullPolicy, nil)
+	return im.PullWithOptions(imageName, pullPolicy, PullOptions{})
 }
 
 // PullWithProgress is like Pull but calls progress after each layer completes.
 // Returns (layerPaths, cached, error). cached is true when layers were served
 // entirely from local cache without a registry fetch.
 func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, progress PullProgress) ([]string, bool, error) {
+	return im.PullWithOptions(imageName, pullPolicy, PullOptions{Progress: progress})
+}
+
+// PullWithOptions is like PullWithProgress but also accepts an event callback for
+// notable layer events (peer hit, stall, registry retry).
+func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opts PullOptions) ([]string, bool, error) {
 	if pullPolicy == "" {
 		pullPolicy = "Always"
 	}
@@ -146,7 +152,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 		cached, ok := im.manifestCache[imageName]
 		im.mu.Unlock()
 		if ok {
-			paths, err := im.layersFromImage(cached, progress)
+			paths, err := im.layersFromImage(cached, opts)
 			return paths, err == nil, err
 		}
 		// Check disk-persisted layer cache (survives process restart).
@@ -178,7 +184,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 		im.mu.Unlock()
 		if ok {
 			im.logger.Info("Registry unavailable, using cached manifest", "image", imageName, "err", err)
-			paths, layerErr := im.layersFromImage(cached, progress)
+			paths, layerErr := im.layersFromImage(cached, opts)
 			return paths, layerErr == nil, layerErr
 		}
 		// Try disk-persisted layer cache (survives process restart).
@@ -195,7 +201,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 	im.manifestCache[imageName] = img
 	im.mu.Unlock()
 
-	layerPaths, err := im.layersFromImage(img, progress)
+	layerPaths, err := im.layersFromImage(img, opts)
 	if err != nil {
 		return nil, false, err
 	}
@@ -216,10 +222,19 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 // done is the number of layers completed, total is the total layer count.
 type PullProgress func(done, total int)
 
+// PullEventFn is called for notable events during a pull (peer hit, stall, retry).
+// eventType is corev1.EventTypeNormal or corev1.EventTypeWarning.
+type PullEventFn func(eventType, reason, message string)
+
+// PullOptions configures a pull operation.
+type PullOptions struct {
+	Progress PullProgress
+	Event    PullEventFn // optional; nil disables event emission
+}
+
 // layersFromImage extracts and caches all layers from a resolved image.
 // Layers are downloaded in parallel (up to layerConcurrency at once).
-// If progress is non-nil it is called after each layer completes.
-func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]string, error) {
+func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]string, error) {
 	layers, err := img.Layers()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get layers: %w", err)
@@ -228,6 +243,10 @@ func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]
 	total := len(layers)
 	layerPaths := make([]string, total)
 	var doneCount atomic.Int32
+
+	// Snapshot peer list once for the whole pull so all layers share the same
+	// healthy set and bad peers are evicted across layers.
+	selector := im.newPeerSelector(context.Background())
 
 	g := new(errgroup.Group)
 	g.SetLimit(layerConcurrency)
@@ -240,14 +259,14 @@ func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]
 				return err
 			}
 			pathIface, err, _ := im.layerSF.Do(diffID.Hex, func() (interface{}, error) {
-				return im.ensureLayer(diffID.Hex, layer)
+				return im.ensureLayer(diffID.Hex, layer, selector, opts.Event)
 			})
 			if err != nil {
 				return err
 			}
 			layerPaths[i] = pathIface.(string)
-			if progress != nil {
-				progress(int(doneCount.Add(1)), total)
+			if opts.Progress != nil {
+				opts.Progress(int(doneCount.Add(1)), total)
 			}
 			return nil
 		})
@@ -334,7 +353,7 @@ func (im *ImageManager) BlobPath(hash string) string {
 //  2. Blob file exists locally — extract from it (handles mid-extraction crashes).
 //  3. Peer node has blob — fetch compressed stream, tee to local blob file + extract.
 //  4. Upstream registry — fetch compressed stream, tee to local blob file + extract.
-func (im *ImageManager) ensureLayer(hash string, layer v1.Layer) (string, error) {
+func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerSelector, eventFn PullEventFn) (string, error) {
 	destPath := filepath.Join(im.layerCache, hash)
 
 	// 1. Already extracted.
@@ -364,33 +383,51 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer) (string, error)
 		}
 	}
 
-	// 3. Try a peer node.
+	// 3. Try peers via selector — each stalling peer is evicted so subsequent
+	//    layers from the same pull skip it automatically.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if peerBody, ok := im.fetchFromPeers(ctx, hash); ok {
-		im.logger.Info("Pulling layer from peer", "hash", hash)
-		err := saveAndExtract(peerBody, blobFile, tmpPath)
-		peerBody.Close()
-		if err == nil {
-			return commitLayer(tmpPath, destPath)
-		}
-		im.logger.Warn("Peer layer fetch failed, falling back to upstream", "hash", hash, "err", err)
-		os.Remove(blobFile)
-		os.RemoveAll(tmpPath)
-		if err := os.MkdirAll(tmpPath, 0755); err != nil {
-			return "", err
+	if selector != nil {
+		for {
+			peerBody, peerEp, ok := selector.fetch(ctx, hash)
+			if !ok {
+				break // no healthy peers left
+			}
+			im.logger.Info("Pulling layer from peer", "hash", hash, "peer", peerEp)
+			err := saveAndExtract(peerBody, blobFile, tmpPath)
+			peerBody.Close()
+			if err == nil {
+				if eventFn != nil {
+					eventFn("Normal", "PulledFromPeer", fmt.Sprintf("Layer %s pulled from peer %s", hash[:12], peerEp))
+				}
+				return commitLayer(tmpPath, destPath)
+			}
+			// Stall or extraction error — evict this peer and try the next.
+			im.logger.Warn("Peer layer fetch failed, trying next peer", "hash", hash, "peer", peerEp, "err", err)
+			if eventFn != nil {
+				eventFn("Warning", "PeerFallback", fmt.Sprintf("Peer %s stalled on layer %s, trying next peer", peerEp, hash[:12]))
+			}
+			selector.markBad(peerEp)
+			os.Remove(blobFile)
+			os.RemoveAll(tmpPath)
+			if err := os.MkdirAll(tmpPath, 0755); err != nil {
+				return "", err
+			}
 		}
 	}
 
 	// 4. Upstream registry — retry up to 3 times on stall/error.
 	const maxAttempts = 3
-	const registryMinRate = 512  // bytes/sec — below this after warmup = stalled
+	const registryMinRate = 512 // bytes/sec — below this after warmup = stalled
 	const registryWarmup = 30 * time.Second
 	var lastErr error
 	for attempt := range maxAttempts {
 		if attempt > 0 {
 			im.logger.Warn("Retrying upstream layer fetch", "hash", hash, "attempt", attempt+1, "err", lastErr)
+			if eventFn != nil {
+				eventFn("Warning", "RegistryRetry", fmt.Sprintf("Retrying layer %s from registry (attempt %d/%d): %v", hash[:12], attempt+1, maxAttempts, lastErr))
+			}
 			os.Remove(blobFile)
 			os.RemoveAll(tmpPath)
 			if err := os.MkdirAll(tmpPath, 0755); err != nil {

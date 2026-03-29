@@ -343,11 +343,10 @@ func main() {
 
 	// P2P blob cache — peers pull layers from each other before hitting upstream.
 	// Blobs are served via /blobs/{digest} on each pawn's HTTPS server.
-	// The primary pawn always uses PerigeosPort; peers probe that port.
+	// Port is read per-node from node.Status.DaemonEndpoints.KubeletEndpoint.Port.
 	sharedIM.SetPeers(image.PeerConfig{
-		Client:   kubeClient,
-		SelfIP:   pki.GetOutboundIP().String(),
-		BlobPort: perigeoCfg.Global.PerigeosPort,
+		Client: kubeClient,
+		SelfIP: pki.GetOutboundIP().String(),
 	})
 
 	var (

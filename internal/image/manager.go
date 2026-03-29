@@ -9,20 +9,26 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
+
+// layerConcurrency is the maximum number of layers downloaded in parallel.
+const layerConcurrency = 8
 
 // ImageManager handles OCI image pulling and overlayfs mounting.
 //
@@ -33,13 +39,14 @@ type ImageManager struct {
 	baseDir    string
 	layerCache string // <baseDir>/layers/
 	logger     *slog.Logger
-	peers      *PeerConfig // nil until SetPeers is called
+	peers      *PeerConfig  // nil until SetPeers is called
+	peerClient *http.Client // shared transport; nil until SetPeers is called
 
 	mu            sync.Mutex
-	manifestCache map[string]v1.Image    // image name → resolved manifest
+	manifestCache map[string]v1.Image     // image name → resolved manifest
 	configCache   map[string]*imageConfig // image name → persisted config (entrypoint/cmd)
-	imageSF       singleflight.Group     // deduplicates manifest resolution by image name
-	layerSF       singleflight.Group     // deduplicates layer downloads by content hash
+	imageSF       singleflight.Group      // deduplicates manifest resolution by image name
+	layerSF       singleflight.Group      // deduplicates layer downloads by content hash
 }
 
 // imageConfig holds the subset of OCI image config we need across restarts.
@@ -210,6 +217,7 @@ func (im *ImageManager) PullWithProgress(imageName string, pullPolicy string, pr
 type PullProgress func(done, total int)
 
 // layersFromImage extracts and caches all layers from a resolved image.
+// Layers are downloaded in parallel (up to layerConcurrency at once).
 // If progress is non-nil it is called after each layer completes.
 func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]string, error) {
 	layers, err := img.Layers()
@@ -218,27 +226,34 @@ func (im *ImageManager) layersFromImage(img v1.Image, progress PullProgress) ([]
 	}
 
 	total := len(layers)
-	var layerPaths []string
+	layerPaths := make([]string, total)
+	var doneCount atomic.Int32
+
+	g := new(errgroup.Group)
+	g.SetLimit(layerConcurrency)
+
 	for i, layer := range layers {
-		diffID, err := layer.DiffID()
-		if err != nil {
-			return nil, err
-		}
-
-		pathIface, err, _ := im.layerSF.Do(diffID.Hex, func() (interface{}, error) {
-			return im.ensureLayer(diffID.Hex, layer)
+		i, layer := i, layer
+		g.Go(func() error {
+			diffID, err := layer.DiffID()
+			if err != nil {
+				return err
+			}
+			pathIface, err, _ := im.layerSF.Do(diffID.Hex, func() (interface{}, error) {
+				return im.ensureLayer(diffID.Hex, layer)
+			})
+			if err != nil {
+				return err
+			}
+			layerPaths[i] = pathIface.(string)
+			if progress != nil {
+				progress(int(doneCount.Add(1)), total)
+			}
+			return nil
 		})
-		if err != nil {
-			return nil, err
-		}
-
-		layerPaths = append(layerPaths, pathIface.(string))
-		if progress != nil {
-			progress(i+1, total)
-		}
 	}
 
-	return layerPaths, nil
+	return layerPaths, g.Wait()
 }
 
 // layerCacheFile returns the path for a disk-persisted layer list.
@@ -368,21 +383,38 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer) (string, error)
 		}
 	}
 
-	// 4. Upstream registry.
-	im.logger.Info("Pulling layer from upstream", "hash", hash)
-	rc, err := layer.Compressed()
-	if err != nil {
-		os.RemoveAll(tmpPath)
-		return "", err
-	}
-	defer rc.Close()
+	// 4. Upstream registry — retry up to 3 times on stall/error.
+	const maxAttempts = 3
+	const registryMinRate = 512  // bytes/sec — below this after warmup = stalled
+	const registryWarmup = 30 * time.Second
+	var lastErr error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			im.logger.Warn("Retrying upstream layer fetch", "hash", hash, "attempt", attempt+1, "err", lastErr)
+			os.Remove(blobFile)
+			os.RemoveAll(tmpPath)
+			if err := os.MkdirAll(tmpPath, 0755); err != nil {
+				return "", err
+			}
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
+		}
 
-	if err := saveAndExtract(rc, blobFile, tmpPath); err != nil {
-		os.RemoveAll(tmpPath)
-		return "", fmt.Errorf("upstream extraction error: %w", err)
+		im.logger.Info("Pulling layer from upstream", "hash", hash)
+		rc, err := layer.Compressed()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		guarded := &rateGuard{ReadCloser: rc, started: time.Now(), minRate: registryMinRate, warmup: registryWarmup}
+		lastErr = saveAndExtract(guarded, blobFile, tmpPath)
+		rc.Close()
+		if lastErr == nil {
+			return commitLayer(tmpPath, destPath)
+		}
 	}
 
-	return commitLayer(tmpPath, destPath)
+	os.RemoveAll(tmpPath)
+	return "", fmt.Errorf("upstream layer fetch failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // saveAndExtract reads a gzip-compressed tar stream, writes it to blobFile,
@@ -427,6 +459,29 @@ func extractCompressedBlob(blobFile, dst string) error {
 	}
 	defer gz.Close()
 	return extractLayer(dst, tar.NewReader(gz))
+}
+
+// rateGuard wraps a ReadCloser and returns an error if the average download
+// rate drops below minRate bytes/sec after the warmup period.
+// Checked on every Read call so no extra goroutines are needed.
+type rateGuard struct {
+	io.ReadCloser
+	started time.Time
+	total   int64
+	minRate int64
+	warmup  time.Duration
+}
+
+func (r *rateGuard) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.total += int64(n)
+	if err == nil && time.Since(r.started) > r.warmup && r.total > 0 {
+		elapsed := time.Since(r.started).Seconds()
+		if int64(float64(r.total)/elapsed) < r.minRate {
+			return n, fmt.Errorf("download stalled: %.0f B/s (min %d B/s)", float64(r.total)/elapsed, r.minRate)
+		}
+	}
+	return n, err
 }
 
 // commitLayer atomically renames tmpPath to destPath.

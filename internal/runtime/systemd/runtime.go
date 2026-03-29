@@ -1,6 +1,7 @@
 package systemd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -233,34 +234,59 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		})
 	}
 
-	// When the container has stdin enabled (e.g. kubectl run --attach --stdin),
-	// create a PTY pair. The slave becomes nspawn's stdin/stdout so the
-	// container's PID 1 can read/write through it. The master is stored for
-	// AttachToContainer to relay the attach streams.
-	if cfg.Container != nil && cfg.Container.Stdin {
+	// Always allocate a PTY for stdout/stderr of the nspawn wrapper unit.
+	// This ensures that inside the container /proc/self/fd/1 and /proc/self/fd/2
+	// are real TTY character devices rather than journal sockets. Without this,
+	// processes that call open("/dev/stdout") or open("/dev/stderr") — such as
+	// nginx:alpine which symlinks /var/log/nginx/error.log → /dev/stderr →
+	// /proc/self/fd/2 — receive ENXIO because journal sockets are not openable
+	// via /proc/self/fd/N with open(2).
+	{
 		master, slave, err := openPTY()
 		if err != nil {
-			return fmt.Errorf("create attach PTY for %s: %w", machineName, err)
-		}
-		// Set raw mode so the PTY doesn't echo input or do line buffering.
-		if termios, err := unix.IoctlGetTermios(int(slave.Fd()), unix.TCGETS); err == nil {
-			termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
-			termios.Oflag &^= unix.OPOST
-			termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
-			termios.Cflag &^= unix.CSIZE | unix.PARENB
-			termios.Cflag |= unix.CS8
-			_ = unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, termios)
+			return fmt.Errorf("create stdio PTY for %s: %w", machineName, err)
 		}
 		slavePath := slave.Name()
-		slave.Close() // systemd will reopen the slave path directly
+		slave.Close() // systemd reopens the slave by path
 
 		s.attachPTYs.Store(machineName, master)
-		properties = append(properties,
-			dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
-			dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
-			dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
-		)
-		s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
+
+		if cfg.Container != nil && cfg.Container.Stdin {
+			// Interactive container: wire stdin to the same PTY so AttachToContainer
+			// can relay bidirectional I/O through the master.
+			// Set raw mode so the PTY doesn't echo input or do line buffering.
+			if termios, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS); err == nil {
+				termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+				termios.Oflag &^= unix.OPOST
+				termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+				termios.Cflag &^= unix.CSIZE | unix.PARENB
+				termios.Cflag |= unix.CS8
+				_ = unix.IoctlSetTermios(int(master.Fd()), unix.TCSETS, termios)
+			}
+			properties = append(properties,
+				dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
+				dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
+				dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
+			)
+			s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
+		} else {
+			// Non-interactive container: stdout/stderr go to the PTY slave so
+			// /proc/self/fd/1,2 are openable TTYs. Drain the master in a goroutine
+			// and forward lines to the logger. StopMachine closes the master via
+			// attachPTYs, which causes the goroutine to exit on EIO.
+			containerName := cfg.Container.Name
+			clog := s.logger.With("container", containerName)
+			go func() {
+				scanner := bufio.NewScanner(master)
+				for scanner.Scan() {
+					clog.Info(scanner.Text())
+				}
+			}()
+			properties = append(properties,
+				dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
+				dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
+			)
+		}
 	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
@@ -284,6 +310,11 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	//
 	// Instead of waiting for the job signal, the caller's waitForContainer
 	// polls MachineStatus which handles both Running and Exited states.
+	// Belt-and-suspenders: clear any stale unit before creating a new transient
+	// one. StopMachine calls ResetFailedUnit too, but there's a small race window
+	// between StopMachine returning and the unit being fully removed from the table.
+	_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
+
 	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); err != nil {
 		// Clean up PTY on failure.
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
@@ -317,11 +348,13 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	}
 
 	select {
-	case status := <-ch:
-		if status != "done" {
-			if err := s.conn.ResetFailedUnitContext(ctx, wrapperUnit); err != nil {
-				s.logger.Debug("ResetFailedUnit ignored", "err", err)
-			}
+	case <-ch:
+		// Always reset after stopping — clears the unit from systemd's table even
+		// when the container had already failed (stop job returns "done" immediately
+		// for a unit already in failed/inactive state, but without ResetFailedUnit
+		// the unit stays in the table and StartTransientUnit fails on the next restart).
+		if err := s.conn.ResetFailedUnitContext(ctx, wrapperUnit); err != nil {
+			s.logger.Debug("ResetFailedUnit ignored", "unit", wrapperUnit, "err", err)
 		}
 	case <-ctx.Done():
 		return ctx.Err()

@@ -91,7 +91,13 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	if path == "" {
 		path = "/"
 	}
-	url := fmt.Sprintf("%s://%s:%s%s", scheme, podIP, port, path)
+	// When httpGet.host is set, connect to that address (kubelet behaviour).
+	// This is required for hostNetwork pods that bind only on 127.0.0.1.
+	target := podIP
+	if action.Host != "" {
+		target = action.Host
+	}
+	url := fmt.Sprintf("%s://%s:%s%s", scheme, target, port, path)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -99,9 +105,6 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	}
 	for _, h := range action.HTTPHeaders {
 		req.Header.Set(h.Name, h.Value)
-	}
-	if action.Host != "" {
-		req.Host = action.Host
 	}
 
 	resp, err := http.DefaultClient.Do(req)

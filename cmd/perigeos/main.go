@@ -22,6 +22,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/control"
 	"github.com/malformed-c/periapsis/internal/image"
+	"github.com/malformed-c/periapsis/internal/join"
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
@@ -68,6 +69,12 @@ func main() {
 	klog.SetSlogLogger(logger.WithGroup("klog"))
 	vklog.L = vklogger.New(logger.WithGroup("vk"))
 	klog.InitFlags(nil)
+
+	// Subcommand dispatch — must happen before flag.Parse().
+	if len(os.Args) > 1 && os.Args[1] == "join" {
+		runJoin(logger)
+		return
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -634,6 +641,29 @@ func main() {
 	wg.Wait()
 
 	logger.Info("Shutdown complete")
+}
+
+// runJoin parses join flags and runs the join command.
+func runJoin(logger *slog.Logger) {
+	fs := flag.NewFlagSet("perigeos join", flag.ExitOnError)
+	opts := &join.Options{}
+	opts.RegisterFlags(fs)
+	_ = fs.Parse(os.Args[2:])
+
+	if err := opts.Validate(); err != nil {
+		logger.Error("Invalid join options", "err", err)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	runner := join.New(opts, logger)
+	if err := runner.Run(ctx); err != nil {
+		logger.Error("Join failed", "err", err)
+		os.Exit(1)
+	}
 }
 
 // addNoProxy appends addr to the NO_PROXY / no_proxy environment variables

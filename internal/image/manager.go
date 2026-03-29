@@ -2,9 +2,12 @@ package image
 
 import (
 	"archive/tar"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,6 +33,7 @@ type ImageManager struct {
 	baseDir    string
 	layerCache string // <baseDir>/layers/
 	logger     *slog.Logger
+	peers      *PeerConfig // nil until SetPeers is called
 
 	mu            sync.Mutex
 	manifestCache map[string]v1.Image    // image name → resolved manifest
@@ -299,45 +303,143 @@ func (im *ImageManager) loadLayerCache(imageName string) ([]string, error) {
 	return paths, nil
 }
 
-// ensureLayer downloads and extracts a layer if not already cached.
+// blobPath returns the path for the cached compressed blob tarball.
+func (im *ImageManager) blobPath(hash string) string {
+	return filepath.Join(im.layerCache, hash+".tar.gz")
+}
+
+// BlobPath is the exported form for the server.blobProvider interface.
+func (im *ImageManager) BlobPath(hash string) string {
+	return im.blobPath(hash)
+}
+
+// ensureLayer ensures a layer is extracted to {layerCache}/{hash}/.
+// Pull order:
+//  1. Already extracted — return immediately.
+//  2. Blob file exists locally — extract from it (handles mid-extraction crashes).
+//  3. Peer node has blob — fetch compressed stream, tee to local blob file + extract.
+//  4. Upstream registry — fetch compressed stream, tee to local blob file + extract.
 func (im *ImageManager) ensureLayer(hash string, layer v1.Layer) (string, error) {
 	destPath := filepath.Join(im.layerCache, hash)
 
+	// 1. Already extracted.
 	if _, err := os.Stat(destPath); err == nil {
 		abs, _ := filepath.Abs(destPath)
 		return abs, nil
 	}
-
-	im.logger.Info("Pulling layer", "hash", hash)
-
-	rc, err := layer.Uncompressed()
-	if err != nil {
-		return "", err
-	}
-	defer rc.Close()
 
 	tmpPath := filepath.Join(im.layerCache, fmt.Sprintf(".tmp-%s-%d", hash, time.Now().UnixNano()))
 	if err := os.MkdirAll(tmpPath, 0755); err != nil {
 		return "", err
 	}
 
-	if err := extractLayer(tmpPath, tar.NewReader(rc)); err != nil {
+	blobFile := im.blobPath(hash)
+
+	// 2. Local blob file exists — extract from it.
+	if _, err := os.Stat(blobFile); err == nil {
+		im.logger.Info("Extracting layer from local blob", "hash", hash)
+		if err := extractCompressedBlob(blobFile, tmpPath); err == nil {
+			return commitLayer(tmpPath, destPath)
+		}
+		// Corrupt blob — remove and fall through.
+		os.Remove(blobFile)
 		os.RemoveAll(tmpPath)
-		return "", fmt.Errorf("extraction error: %w", err)
+		if err := os.MkdirAll(tmpPath, 0755); err != nil {
+			return "", err
+		}
 	}
 
-	// Final idempotency check before atomic rename
+	// 3. Try a peer node.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if peerBody, ok := im.fetchFromPeers(ctx, hash); ok {
+		im.logger.Info("Pulling layer from peer", "hash", hash)
+		err := saveAndExtract(peerBody, blobFile, tmpPath)
+		peerBody.Close()
+		if err == nil {
+			return commitLayer(tmpPath, destPath)
+		}
+		im.logger.Warn("Peer layer fetch failed, falling back to upstream", "hash", hash, "err", err)
+		os.Remove(blobFile)
+		os.RemoveAll(tmpPath)
+		if err := os.MkdirAll(tmpPath, 0755); err != nil {
+			return "", err
+		}
+	}
+
+	// 4. Upstream registry.
+	im.logger.Info("Pulling layer from upstream", "hash", hash)
+	rc, err := layer.Compressed()
+	if err != nil {
+		os.RemoveAll(tmpPath)
+		return "", err
+	}
+	defer rc.Close()
+
+	if err := saveAndExtract(rc, blobFile, tmpPath); err != nil {
+		os.RemoveAll(tmpPath)
+		return "", fmt.Errorf("upstream extraction error: %w", err)
+	}
+
+	return commitLayer(tmpPath, destPath)
+}
+
+// saveAndExtract reads a gzip-compressed tar stream, writes it to blobFile,
+// and simultaneously decompresses+extracts it into dst.
+func saveAndExtract(compressedStream io.Reader, blobFile, dst string) error {
+	tmpBlob := blobFile + ".tmp"
+	bf, err := os.Create(tmpBlob)
+	if err != nil {
+		return err
+	}
+
+	teeR := io.TeeReader(compressedStream, bf)
+	gz, err := gzip.NewReader(teeR)
+	if err != nil {
+		bf.Close()
+		os.Remove(tmpBlob)
+		return err
+	}
+
+	extractErr := extractLayer(dst, tar.NewReader(gz))
+	gz.Close()
+	bf.Close()
+
+	if extractErr != nil {
+		os.Remove(tmpBlob)
+		return extractErr
+	}
+
+	return os.Rename(tmpBlob, blobFile)
+}
+
+// extractCompressedBlob opens a .tar.gz file and extracts it into dst.
+func extractCompressedBlob(blobFile, dst string) error {
+	f, err := os.Open(blobFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	return extractLayer(dst, tar.NewReader(gz))
+}
+
+// commitLayer atomically renames tmpPath to destPath.
+func commitLayer(tmpPath, destPath string) (string, error) {
 	if _, err := os.Stat(destPath); err == nil {
 		os.RemoveAll(tmpPath)
 		abs, _ := filepath.Abs(destPath)
 		return abs, nil
 	}
-
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.RemoveAll(tmpPath)
 		return "", fmt.Errorf("layer commit failed: %w", err)
 	}
-
 	abs, _ := filepath.Abs(destPath)
 	return abs, nil
 }

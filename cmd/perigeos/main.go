@@ -341,6 +341,15 @@ func main() {
 	sharedIM := image.NewImageManager(perigeoCfg.Global.BaseDir, logger)
 	sharedIM.SweepStaleTmpDirs()
 
+	// P2P blob cache — peers pull layers from each other before hitting upstream.
+	// Blobs are served via /blobs/{digest} on each pawn's HTTPS server.
+	// The primary pawn always uses PerigeosPort; peers probe that port.
+	sharedIM.SetPeers(image.PeerConfig{
+		Client:   kubeClient,
+		SelfIP:   pki.GetOutboundIP().String(),
+		BlobPort: perigeoCfg.Global.PerigeosPort,
+	})
+
 	var (
 		serversMu  sync.Mutex
 		allGambits []*node.Gambit
@@ -527,10 +536,11 @@ func main() {
 			})
 
 			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{
-				CACertPath: perigeoCfg.Global.ServerCAPath,
-				CAKeyPath:  perigeoCfg.Global.ServerCAKeyPath,
-				ConfigDir:  filepath.Dir(*perigeosConfigPath),
-				KubeClient: kubeClient,
+				CACertPath:   perigeoCfg.Global.ServerCAPath,
+				CAKeyPath:    perigeoCfg.Global.ServerCAKeyPath,
+				ConfigDir:    filepath.Dir(*perigeosConfigPath),
+				KubeClient:   kubeClient,
+				ImageManager: sharedIM,
 			})
 			if err != nil {
 				pawnLogger.Error("Error creating PawnServer — port already bound or TLS failure", "port", pawnCfg.Port, "err", err)

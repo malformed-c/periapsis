@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/pki"
@@ -27,10 +29,16 @@ type PawnServer struct {
 
 // PawnServerConfig holds the configuration for creating a PawnServer.
 type PawnServerConfig struct {
-	CACertPath string
-	CAKeyPath  string
-	ConfigDir  string // e.g. /etc/apsis/perigeos — for persisting CSR certs
-	KubeClient kubernetes.Interface
+	CACertPath   string
+	CAKeyPath    string
+	ConfigDir    string // e.g. /etc/apsis/perigeos — for persisting CSR certs
+	KubeClient   kubernetes.Interface
+	ImageManager blobProvider // optional — enables GET /blobs/{digest}
+}
+
+// blobProvider is the subset of image.ImageManager used for blob serving.
+type blobProvider interface {
+	BlobPath(hash string) string
 }
 
 func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
@@ -43,6 +51,37 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		RunInContainer:    g.RunInContainer,
 		AttachToContainer: g.AttachToContainer,
 	}, mux, true)
+
+	// /blobs/{digest} — serves cached compressed OCI layer tarballs to peers.
+	// Content-addressed: the digest is the integrity check; TLS cert is not verified by peers.
+	if cfg.ImageManager != nil {
+		im := cfg.ImageManager
+		mux.HandleFunc("/blobs/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			digest := strings.TrimPrefix(r.URL.Path, "/blobs/")
+			if digest == "" || strings.ContainsAny(digest, "/\\") {
+				http.Error(w, "invalid digest", http.StatusBadRequest)
+				return
+			}
+			blobFile := im.BlobPath(digest)
+			f, err := os.Open(blobFile)
+			if err != nil {
+				if os.IsNotExist(err) {
+					http.Error(w, "not found", http.StatusNotFound)
+				} else {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+				}
+				return
+			}
+			defer f.Close()
+			stat, _ := f.Stat()
+			w.Header().Set("Content-Type", "application/gzip")
+			http.ServeContent(w, r, digest+".tar.gz", stat.ModTime(), f)
+		})
+	}
 
 	// /stats/summary is the endpoint metrics-server scrapes for resource usage.
 	mux.HandleFunc("/stats/summary", func(w http.ResponseWriter, r *http.Request) {

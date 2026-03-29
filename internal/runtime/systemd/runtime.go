@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
+	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	dbusv5 "github.com/godbus/dbus/v5"
 	"github.com/malformed-c/periapsis/internal/image"
@@ -272,14 +273,17 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		} else {
 			// Non-interactive container: stdout/stderr go to the PTY slave so
 			// /proc/self/fd/1,2 are openable TTYs. Drain the master in a goroutine
-			// and forward lines to the logger. StopMachine closes the master via
-			// attachPTYs, which causes the goroutine to exit on EIO.
+			// and forward lines to journald with the container's SyslogIdentifier
+			// so GetLogStream / kubectl logs continues to work.
+			// StopMachine closes the master via attachPTYs, causing the goroutine
+			// to exit on EIO.
 			containerName := cfg.Container.Name
-			clog := s.logger.With("container", containerName)
 			go func() {
 				scanner := bufio.NewScanner(master)
 				for scanner.Scan() {
-					clog.Info(scanner.Text())
+					_ = journal.Send(scanner.Text(), journal.PriInfo, map[string]string{
+						"SYSLOG_IDENTIFIER": containerName,
+					})
 				}
 			}()
 			properties = append(properties,

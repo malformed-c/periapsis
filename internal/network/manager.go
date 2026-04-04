@@ -17,6 +17,11 @@ const (
 	podSubnet  = "/16"
 )
 
+// netnsName returns the network namespace name with the peri- prefix.
+func netnsName(podUID string) string {
+	return "peri-" + podUID
+}
+
 // Ensure compile-time interface compliance
 var _ NetworkManager = (*LinuxNetworkManager)(nil)
 
@@ -50,7 +55,7 @@ func NewLinuxNetworkManager(logger *slog.Logger) *LinuxNetworkManager {
 func (n *LinuxNetworkManager) Setup(ctx context.Context, podUID, namespace, name, nodeName string) (string, string, error) {
 	n.logger.Debug("Setting up network namespace", "pod", podUID)
 
-	netnsPath := filepath.Join(n.baseDir, podUID)
+	netnsPath := filepath.Join(n.baseDir, netnsName(podUID))
 
 	// Idempotency: if netns already exists, recover the IP
 	if _, err := os.Stat(netnsPath); err == nil {
@@ -67,7 +72,7 @@ func (n *LinuxNetworkManager) Setup(ctx context.Context, podUID, namespace, name
 	}
 
 	// Create netns (includes bringing up loopback)
-	if err := createNetns(ctx, podUID); err != nil {
+	if err := createNetns(ctx, netnsName(podUID)); err != nil {
 		return "", "", err
 	}
 
@@ -80,17 +85,18 @@ func (n *LinuxNetworkManager) Setup(ctx context.Context, podUID, namespace, name
 
 	gateway := n.pool.Gateway()
 	vethHost := vethName(podUID)
+	nnsName := netnsName(podUID)
 
 	cmds := [][]string{
 		// Create veth pair, put pod side directly into netns
-		{"ip", "link", "add", vethHost, "type", "veth", "peer", "name", "eth0", "netns", podUID},
+		{"ip", "link", "add", vethHost, "type", "veth", "peer", "name", "eth0", "netns", nnsName},
 		// Host side: attach to bridge, bring up
 		{"ip", "link", "set", vethHost, "master", bridgeName},
 		{"ip", "link", "set", vethHost, "up"},
 		// Pod side: assign IP, bring up loopback and eth0, add default route
-		{"ip", "netns", "exec", podUID, "ip", "addr", "add", podIP + podSubnet, "dev", "eth0"},
-		{"ip", "netns", "exec", podUID, "ip", "link", "set", "eth0", "up"},
-		{"ip", "netns", "exec", podUID, "ip", "route", "add", "default", "via", gateway},
+		{"ip", "netns", "exec", nnsName, "ip", "addr", "add", podIP + podSubnet, "dev", "eth0"},
+		{"ip", "netns", "exec", nnsName, "ip", "link", "set", "eth0", "up"},
+		{"ip", "netns", "exec", nnsName, "ip", "route", "add", "default", "via", gateway},
 	}
 
 	for _, args := range cmds {
@@ -98,7 +104,7 @@ func (n *LinuxNetworkManager) Setup(ctx context.Context, podUID, namespace, name
 			n.logger.Error("Network setup step failed", "cmd", args, "out", out, "err", err)
 			n.pool.Release(podUID)
 			_ = run2(ctx, "ip", "link", "delete", vethHost)
-			_ = deleteNetns(ctx, podUID)
+			_ = deleteNetns(ctx, nnsName)
 			return "", "", fmt.Errorf("network setup %v: %s: %w", args, out, err)
 		}
 	}
@@ -111,7 +117,7 @@ func (n *LinuxNetworkManager) Setup(ctx context.Context, podUID, namespace, name
 func (n *LinuxNetworkManager) Teardown(ctx context.Context, podUID, _, _ string) error {
 	n.logger.Debug("Tearing down network namespace", "pod", podUID)
 
-	netnsPath := filepath.Join(n.baseDir, podUID)
+	netnsPath := filepath.Join(n.baseDir, netnsName(podUID))
 	if _, err := os.Stat(netnsPath); os.IsNotExist(err) {
 		n.pool.Release(podUID)
 		return nil
@@ -125,7 +131,7 @@ func (n *LinuxNetworkManager) Teardown(ctx context.Context, podUID, _, _ string)
 		n.logger.Warn("Failed to delete veth (may already be gone)", "veth", vethHost, "out", out)
 	}
 
-	if err := deleteNetns(ctx, podUID); err != nil {
+	if err := deleteNetns(ctx, netnsName(podUID)); err != nil {
 		n.logger.Error("Failed to delete netns", "pod", podUID, "err", err)
 		n.pool.Release(podUID)
 		return err
@@ -171,7 +177,7 @@ func (n *LinuxNetworkManager) ensureBridge() error {
 
 // recoverPodIP reads the IP assigned to eth0 in the pod's netns.
 func (n *LinuxNetworkManager) recoverPodIP(ctx context.Context, podUID string) (string, error) {
-	out, err := run(ctx, "ip", "netns", "exec", podUID, "ip", "-4", "-o", "addr", "show", "dev", "eth0")
+	out, err := run(ctx, "ip", "netns", "exec", netnsName(podUID), "ip", "-4", "-o", "addr", "show", "dev", "eth0")
 	if err != nil {
 		return "", fmt.Errorf("ip addr show: %s: %w", out, err)
 	}

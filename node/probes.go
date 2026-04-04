@@ -23,6 +23,17 @@ const (
 	ProbeUnknown
 )
 
+func probeResultString(r ProbeResult) string {
+	switch r {
+	case ProbeSuccess:
+		return "success"
+	case ProbeFailure:
+		return "failure"
+	default:
+		return "unknown"
+	}
+}
+
 // ContainerProbeState tracks probe state for a single container.
 type ContainerProbeState struct {
 	// StartedAt records when the container (re)started. Used by isDue to
@@ -106,6 +117,7 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		pr.logger.Debug("HTTP probe request creation failed", "url", url, "err", err)
 		return ProbeFailure
 	}
 	for _, h := range action.HTTPHeaders {
@@ -114,6 +126,7 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		pr.logger.Debug("HTTP probe failed", "url", url, "err", err)
 		return ProbeFailure
 	}
 	defer resp.Body.Close()
@@ -121,8 +134,10 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		pr.logger.Debug("HTTP probe succeeded", "url", url, "status", resp.StatusCode)
 		return ProbeSuccess
 	}
+	pr.logger.Debug("HTTP probe failed (bad status)", "url", url, "status", resp.StatusCode)
 	return ProbeFailure
 }
 
@@ -139,9 +154,11 @@ func (pr *ProbeRunner) runTCPSocketProbe(ctx context.Context, podIP string, acti
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		pr.logger.Debug("TCP probe failed", "addr", addr, "err", err)
 		return ProbeFailure
 	}
 	conn.Close()
+	pr.logger.Debug("TCP probe succeeded", "addr", addr)
 	return ProbeSuccess
 }
 

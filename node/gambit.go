@@ -1126,24 +1126,45 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		return fmt.Errorf("env population: %w", err)
 	}
 
+	// Pod-level image pull cache to avoid re-pulling the same image for multiple containers.
+	type pullCacheEntry struct {
+		layers []string
+		cached bool
+	}
+	pullCache := make(map[string]pullCacheEntry)
+
 	// Run init containers sequentially; each must exit 0 before the next starts.
 	for i := range pod.Spec.InitContainers {
 		ic := &pod.Spec.InitContainers[i]
 		g.Logger.Info("Starting init container", "pod", pod.Name, "container", ic.Name)
 
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for init container %s", ic.Image, ic.Name)
-		layers, cached, err := g.ImageManager.PullWithOptions(ic.Image, string(ic.ImagePullPolicy),
-			image.PullOptions{
-				Progress: pullProgressFunc(g, pod, ic.Image, ic.Name),
-				Event:    podEventFn(g, pod),
-			})
-		if err != nil {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
-			compensate()
-			return fmt.Errorf("pull init container %s: %w", ic.Name, err)
+		// Check pod-level cache first before pulling from registry.
+		var layers []string
+		var cached bool
+		if entry, hit := pullCache[ic.Image]; hit {
+			// Cache hit: reuse layers from previous pull in this pod.
+			layers = entry.layers
+			cached = true
+		} else {
+			// Cache miss: pull normally and store result.
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for init container %s", ic.Image, ic.Name)
+			var pullCached bool
+			var err error
+			layers, pullCached, err = g.ImageManager.PullWithOptions(ic.Image, string(ic.ImagePullPolicy),
+				image.PullOptions{
+					Progress: pullProgressFunc(g, pod, ic.Image, ic.Name),
+					Event:    podEventFn(g, pod),
+				})
+			if err != nil {
+				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
+				compensate()
+				return fmt.Errorf("pull init container %s: %w", ic.Name, err)
+			}
+			// Cache the successful pull result.
+			pullCache[ic.Image] = pullCacheEntry{layers: layers, cached: pullCached}
 		}
 		if cached {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present for init container %s", ic.Image, ic.Name)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present (pod cache) for init container %s", ic.Image, ic.Name)
 		} else {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for init container %s", ic.Image, ic.Name)
 		}
@@ -1186,6 +1207,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			BindMounts:       bindMounts,
 			NetNSPath:        netPath,
 			HostNetwork:      pod.Spec.HostNetwork,
+			HostPID:          pod.Spec.HostPID,
 			Privileged:       isPrivileged(ic),
 			Environment:      resolvedEnv,
 			PodIP:            podIP,
@@ -1231,19 +1253,33 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
 
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
-		layers, cached, err := g.ImageManager.PullWithOptions(c.Image, string(c.ImagePullPolicy),
-			image.PullOptions{
-				Progress: pullProgressFunc(g, pod, c.Image, c.Name),
-				Event:    podEventFn(g, pod),
-			})
-		if err != nil {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
-			compensate()
-			return fmt.Errorf("pull container %s: %w", c.Name, err)
+		// Check pod-level cache first before pulling from registry.
+		var layers []string
+		var cached bool
+		if entry, hit := pullCache[c.Image]; hit {
+			// Cache hit: reuse layers from previous pull in this pod.
+			layers = entry.layers
+			cached = true
+		} else {
+			// Cache miss: pull normally and store result.
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
+			var pullCached bool
+			var err error
+			layers, pullCached, err = g.ImageManager.PullWithOptions(c.Image, string(c.ImagePullPolicy),
+				image.PullOptions{
+					Progress: pullProgressFunc(g, pod, c.Image, c.Name),
+					Event:    podEventFn(g, pod),
+				})
+			if err != nil {
+				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
+				compensate()
+				return fmt.Errorf("pull container %s: %w", c.Name, err)
+			}
+			// Cache the successful pull result.
+			pullCache[c.Image] = pullCacheEntry{layers: layers, cached: pullCached}
 		}
 		if cached {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present for container %s", c.Image, c.Name)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present (pod cache) for container %s", c.Image, c.Name)
 		} else {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s for container %s", c.Image, c.Name)
 		}
@@ -1255,7 +1291,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			return fmt.Errorf("mount container %s: %w", c.Name, err)
 		}
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Created", "Created container %s", c.Name)
-		cname := c.Name // capture for closure
+		cname := c.Name // capture for compensation closure
 		compensations = append(compensations, func() {
 			_ = g.ImageManager.Unmount(uid + "-" + cname)
 			_ = g.Runtime.StopMachine(context.Background(), uid, cname)
@@ -1299,16 +1335,16 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
 		}
 
-		go func(cfg perigeos.PodConfig, cname string) {
+		go func(cfg perigeos.PodConfig, cn string) {
 			if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
-				startResults <- startResult{cname, err}
+				startResults <- startResult{cn, err}
 				return
 			}
-			if err := g.waitForContainer(ctx, uid, cname, machineStartTimeout); err != nil {
-				startResults <- startResult{cname, err}
+			if err := g.waitForContainer(ctx, uid, cn, machineStartTimeout); err != nil {
+				startResults <- startResult{cn, err}
 				return
 			}
-			startResults <- startResult{cname, nil}
+			startResults <- startResult{cn, nil}
 		}(cfg, c.Name)
 	}
 

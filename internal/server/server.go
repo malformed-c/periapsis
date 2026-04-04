@@ -103,8 +103,15 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		return nil, fmt.Errorf("obtain TLS cert for %s: %w", pawnName, err)
 	}
 
+	certHolder, err := pki.NewCertHolder(tlsCert, func() (tls.Certificate, error) {
+		return obtainCertFresh(pawnName, cfg)
+	}, slog.Default())
+	if err != nil {
+		return nil, fmt.Errorf("init cert holder for %s: %w", pawnName, err)
+	}
+
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
+		GetCertificate: certHolder.GetCertificate,
 	}
 
 	// Bind the port eagerly so we can fail fast and report a useful error
@@ -174,4 +181,20 @@ func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) 
 	// Strategy 3: Self-signed fallback.
 	logger.Warn("Using self-signed certificate", "pawn", pawnName)
 	return pki.GenerateCert(pawnName, nil, nil)
+}
+
+// obtainCertFresh forces a new certificate by clearing the disk cache first.
+// Used by CertHolder when the current cert doesn't cover a requested name/IP.
+func obtainCertFresh(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) {
+	logger := slog.Default()
+
+	// Delete cached cert so RequestServingCert issues a fresh CSR.
+	if cfg.ConfigDir != "" {
+		pkiDir := cfg.ConfigDir + "/pki"
+		_ = os.Remove(pkiDir + "/" + pawnName + ".crt")
+		_ = os.Remove(pkiDir + "/" + pawnName + ".key")
+		logger.Info("Cleared cached cert for renewal", "pawn", pawnName)
+	}
+
+	return obtainCert(pawnName, cfg)
 }

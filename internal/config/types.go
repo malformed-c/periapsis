@@ -25,6 +25,10 @@ type RawGlobalConfig struct {
 	// Defaults to the k3s CA key location.
 	ServerCAKeyPath string `toml:"server_ca_key_path"`
 
+	// NodeIP overrides the IP advertised by the primary pawn in
+	// Node.status.addresses. If empty, GetOutboundIP() is used.
+	NodeIP string `toml:"NodeIP"`
+
 	// Primary enables the primary node for this host.
 	// The primary represents the physical host in the cluster — it's where
 	// host-level DaemonSets (e.g. constellation-agent) schedule. For hosts

@@ -38,6 +38,29 @@ spec:
       - operator: Exists
       priorityClassName: system-node-critical
       initContainers:
+      - name: fix-sysctls
+        image: ghcr.io/malformed-c/constellation-agent:main
+        imagePullPolicy: Always
+        command:
+        - sh
+        - -c
+        - |
+          # Disable reverse-path filtering on all interfaces. Arch's
+          # 50-default.conf sets rp_filter=2 which causes the kernel to
+          # drop packets that BPF redirects back to the host stack (the
+          # source IP arrives on an unexpected interface path). The
+          # effective rp_filter is max(all, interface), so both the
+          # default and wildcard must be zeroed.
+          printf '%s\n' \
+            'net.ipv4.conf.default.rp_filter = 0' \
+            'net.ipv4.conf.*.rp_filter = 0' \
+            > /host-etc/sysctl.d/99-constellation-rp-filter.conf
+          sysctl --system >/dev/null 2>&1 || true
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-etc
+          mountPath: /host-etc
       - name: install-cni
         image: ghcr.io/malformed-c/constellation-agent:main
         imagePullPolicy: Always
@@ -60,7 +83,7 @@ spec:
         - --bpf-lb-sock-hostns-only=true
         env:
         - name: KUBERNETES_SERVICE_HOST
-          value: "127.0.0.1"
+          value: "192.168.50.1"
         - name: KUBERNETES_SERVICE_PORT
           value: "6443"
         - name: K8S_NODE_NAME
@@ -89,8 +112,8 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 5
         volumeMounts:
-        # Host API filesystems must come first (MountAPIVFS=no).
-        # /sys before /sys/fs/bpf so the submount isn't covered.
+        # Host API filesystems — triggers MountAPIVFS so mount points exist
+        # in the chroot. Recursive binds carry submounts (e.g. /sys/fs/bpf).
         - name: host-proc
           mountPath: /proc
         - name: host-sys
@@ -148,3 +171,7 @@ spec:
         hostPath:
           path: /var/run/netns
           type: DirectoryOrCreate
+      - name: host-etc
+        hostPath:
+          path: /etc
+          type: Directory

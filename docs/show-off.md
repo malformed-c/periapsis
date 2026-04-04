@@ -1,194 +1,152 @@
-# Perigeos at Scale: 3000 Pods, 30 Virtual Nodes, Single Host
+# Perigeos Show-off: 1,770 Pods Across 2 Hosts
 
-One box. 28 cores, 48 GB RAM. 30 virtual Kubernetes nodes running as a single
-perigeos process. 3000 pods, all Running, all Ready.
-
-No Docker. No containerd. Just systemd-nspawn and a Linux kernel.
+**Date:** 2026-04-04
+**Stack:** Perigeos (virtual-kubelet fork) + Constellation (Cilium fork) + k3s
 
 ---
 
 ## Hardware
 
-```
-Intel Xeon E5-2690 v4 @ 2.60GHz (28 cores)
-48 GB RAM, 12 GB swap
-932 GB NVMe (Arch Linux, kernel 6.19.9)
-```
+| Host | CPU | Cores | RAM | Kernel | Role |
+|------|-----|-------|-----|--------|------|
+| engix99 | Xeon E5-2690 v4 @ 2.60 GHz | 28 | 48 GB | 6.19.11-arch1-1 | Control plane (k3s) + 30 pawns |
+| engifire | Intel N150 | 4 | 16 GB | 6.19.10-zen1-1-zen | 1 primary + 1 pawn |
 
-## Cluster
+Interconnect: direct Ethernet (192.168.50.x), 0.15 ms RTT.
+VXLAN tunnel between hosts runs over the wired link, not WiFi.
 
-31 Kubernetes nodes on a single machine — 1 real k3s control plane + 30 perigeos
-virtual nodes (pawns), each appearing as a full schedulable node:
-
-```
-$ kubectl get nodes
-NAME         STATUS   ROLES                   VERSION          CONTAINER-RUNTIME
-engix99      Ready    control-plane,primary   v1.35.2+k3s1     containerd://2.1.5-k3s1
-compute-00   Ready    pawn                    perigeos://dev   systemd://260-1-arch
-compute-01   Ready    pawn                    perigeos://dev   systemd://260-1-arch
-...
-compute-29   Ready    pawn                    perigeos://dev   systemd://260-1-arch
-```
-
-## All 3000 Running
+## Cluster Topology
 
 ```
-$ kubectl get deployment scale-test
-NAME         READY       UP-TO-DATE   AVAILABLE   AGE
-scale-test   3000/3000   3000         3000        102m
+33 Kubernetes nodes total  (1 real k3s + 32 perigeos virtual nodes)
 
-$ kubectl get pods --field-selector=status.phase=Running --no-headers | wc -l
-3001
+engix99      30 pawns    1,660 pods    365 MiB daemon RSS
+engifire      2 pawns      112 pods     89 MiB daemon RSS
+                          ─────
+                          1,772 pods
 ```
 
-## Even Distribution
+Each pawn is a fully-functional virtual kubelet: own TLS certificate,
+independent pod lifecycle, cgroup tree, and network namespace. Pods run as
+systemd-nspawn machines with overlayfs rootfs and Constellation CNI networking.
 
-100 pods per pawn, balanced by the kube-scheduler across all 30 virtual nodes:
+## Stress Test (k6)
 
-```
-$ kubectl get pods -o wide --no-headers | awk '{print $7}' | sort | uniq -c | sort -rn
-    101 compute-01
-    100 compute-29
-    100 compute-28
-    100 compute-27
-    ...
-    100 compute-00
-```
-
-## Pod Operations Work
-
-### exec
+1,000 concurrent VUs ramping over 3 m 30 s against a ClusterIP service
+fronting nginx-whoami across all 33 nodes.
 
 ```
-$ kubectl exec scale-test-7d48c89997-225b5 -- ps aux
-PID   USER     TIME  COMMAND
-    1 root      0:00 /bin/sh -c while true; do sleep 3600; done
-    2 root      0:00 sleep 3600
-    6 root      0:00 ps aux
+  THRESHOLDS
+
+    errors
+    rate=0.00%                              < 0.01  PASS
+
+    http_req_duration
+    p(95)=4.05ms                            < 500   PASS
+    p(99)=10.04ms                           < 1000  PASS
+
+
+  TOTAL RESULTS
+
+    checks_total........: 7,507,074   35,740/s
+    checks_succeeded....: 100.00%
+    checks_failed.......: 0.00%
+
+    HTTP
+    http_reqs...........: 2,502,358   11,913/s
+    http_req_duration...: avg=998 us  med=257 us  p(90)=1.48 ms  p(95)=4.05 ms  p(99)=10 ms  max=860 ms
+    http_req_failed.....: 0.00%
+
+    NETWORK
+    data_received.......: 4.4 GB      21 MB/s
+    data_sent...........: 170 MB      810 kB/s
+
+    EXECUTION
+    iterations..........: 2,502,358   11,913/s
+    vus_max.............: 1,000
+
+
+  running (3m30.0s), 0/1000 VUs, 2,502,358 complete and 0 interrupted iterations
 ```
 
-### Networking
-
-Each pod gets a unique IP via Constellation CNI:
-
-```
-$ kubectl get pods -l app=scale-test -o wide --no-headers | head -5
-scale-test-7d48c89997-225b5   1/1   Running   0   38m   10.0.126.247   compute-07
-scale-test-7d48c89997-24d5j   1/1   Running   0   18m   10.1.21.95     compute-17
-scale-test-7d48c89997-24dnb   1/1   Running   0   42m   10.0.190.57    compute-11
-scale-test-7d48c89997-24ll5   1/1   Running   0   20m   10.1.42.101    compute-18
-scale-test-7d48c89997-24xwj   1/1   Running   0   39m   10.0.254.67    compute-15
-```
-
-### Pod-to-pod connectivity
-
-Cross-pawn ping — pod on compute-07 reaching pod on compute-27, sub-millisecond:
-
-```
-$ kubectl exec scale-test-7d48c89997-225b5 -- ping -c 3 10.1.180.167
-PING 10.1.180.167 (10.1.180.167): 56 data bytes
-64 bytes from 10.1.180.167: seq=0 ttl=63 time=0.081 ms
-64 bytes from 10.1.180.167: seq=1 ttl=63 time=0.075 ms
-64 bytes from 10.1.180.167: seq=2 ttl=63 time=0.140 ms
-
---- 10.1.180.167 ping statistics ---
-3 packets transmitted, 3 packets received, 0% packet loss
-round-trip min/avg/max = 0.075/0.098/0.140 ms
-```
+**Zero errors. 2.5 million requests. Sub-millisecond median latency at ~12k rps.**
 
 ## Runtime Status
+
+### engix99
 
 ```
 $ apsis status
 Hostname:    engix99
 Version:     dev
-Uptime:      50m46s
+Uptime:      1h47m
 Pawns:       30
-Pods:        3013
-Kernel:      6.19.9-arch1-1
-Arch:        linux/amd64
-Go:          go1.26.1-X:nodwarf5
-Memory:      25931 / 48004 MiB
+Pods:        1,660
+Kernel:      6.19.11-arch1-1
+Memory:      29 / 48 GB
 CPU cores:   28
-Load avg:    8.23 10.59 14.85
 
-Machines:    3013
-Disk dirs:   3013
-Units:       3013
-RSS:         351 MiB
-LXC veths:   3016
-Netns:       3015
+Machines:    1,660
+RSS:         365 MiB
+LXC veths:   1,665
+Netns:       1,665
 ```
 
-## Health Check: All Sources Agree
-
-`apsis doctor` cross-references three independent sources of truth per pawn:
-gambit (in-memory), systemd (running units), and disk (overlay dirs). All match.
+### engifire
 
 ```
-$ apsis doctor
-Status:  HEALTHY
-Sources: gambit=3013  systemd=3013  disk=3013
-Network: lxc_veths=3016  netns=3015
+$ apsis status
+Hostname:    engifire
+Version:     dev
+Uptime:      1h45m
+Pawns:       2
+Pods:        112
+Kernel:      6.19.10-zen1-1-zen
+Memory:      2.7 / 16 GB
+CPU cores:   4
 
-── compute-00 ──
-  gambit=100  systemd=100  disk=100  OK
-── compute-01 ──
-  gambit=101  systemd=101  disk=101  OK
+Machines:    112
+RSS:         89 MiB
+LXC veths:   113
+Netns:       112
+```
+
+## Pawn Distribution (engix99)
+
+```
+$ apsis pawns
+NAME        ROLE  PORT   PODS
+compute-00  pawn  12261  56
+compute-01  pawn  12262  55
+compute-02  pawn  12263  55
+compute-03  pawn  12264  56
 ...
-── compute-29 ──
-  gambit=100  systemd=100  disk=100  OK
-```
+compute-29  pawn  12290  56
 
-## Resource Usage
-
-### Perigeos process
-
-```
-$ ps -p $(pgrep -x perigeos) -o rss,vsz,pcpu,pmem --no-headers
-377128 6822940 33.8 0.7
-
-RSS: 351 MiB for 3000+ pods — ~117 KB per pod.
-```
-
-### Cgroups
-
-```
-$ systemctl status perigeos.slice
-● perigeos.slice
-     Active: active
-     Tasks: 9160
-     Memory: 6.2G (peak: 6.3G)
-     CPU: 19min 44s
-
-$ systemctl status perigeos-compute-00.slice
-● perigeos-compute-00.slice — Perigeos Pawn: compute-00
-     Tasks: 300
-     Memory: ~207 MiB (100 pods)
-```
-
-### System
-
-```
-$ free -h
-              total   used   available
-Mem:           46Gi   25Gi      21Gi
-Swap:          11Gi     0B      11Gi
-
-Host memory with 3000 pods: 25 GB used, 21 GB available.
+30 pawns, ~55 pods each, balanced by kube-scheduler.
 ```
 
 ## The Numbers
 
 | Metric | Value |
 |--------|-------|
-| Pods | 3000, all Running, all Ready |
-| Virtual Nodes | 30 (compute-00 through compute-29) |
-| Distribution | 100 pods per pawn |
-| Perigeos RSS | 351 MiB (~117 KB per pod) |
-| Total slice memory | 6.2 GB for all containers |
-| Per-pawn memory | ~207 MiB (100 pods) |
-| Host memory free | 21 GB of 48 GB |
-| Container runtime | systemd-nspawn (no Docker, no containerd) |
-| CNI | Constellation (eBPF, per-pod netns) |
-| System | 28-core Xeon E5-2690 v4, Arch Linux, kernel 6.19.9 |
+| Total pods | 1,772 across 2 physical hosts |
+| Virtual nodes | 33 (1 k3s + 30 pawns + 1 primary + 1 pawn) |
+| Stress test requests | 2,502,358 (0% failure) |
+| Throughput | 11,913 rps sustained |
+| Median latency | 257 us |
+| p99 latency | 10 ms |
+| Perigeos RSS (engix99) | 365 MiB for 1,660 pods (~220 KB/pod) |
+| Perigeos RSS (engifire) | 89 MiB for 112 pods (~795 KB/pod) |
+| Container runtime | systemd-nspawn |
+| CNI | Constellation (eBPF datapath, VXLAN tunnel) |
+| Cross-host link | Direct Ethernet, 0.15 ms RTT |
+
+## What's Under the Hood
+
+- **Runtime:** systemd-nspawn machines, one per container
+- **Networking:** Constellation CNI (Cilium fork) — VXLAN + BPF datapath, per-pod netns
+- **Images:** OCI pulls with pod-level dedup cache + peer blob serving over TLS
+- **TLS:** Auto-renewing certificates via k8s CSR API with SAN-aware hot reload
+- **Rollout:** `apsis rollout` — stepped scaling with per-step readiness gates
+- **Multi-host:** NodeIP config routes tunnel traffic over dedicated ethernet, not WiFi

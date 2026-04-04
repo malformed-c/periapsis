@@ -544,17 +544,27 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 		if isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
 			// Network I/O outside any lock.
 			result := bw.gambit.probeRunner.RunProbe(ctx, pod, c.Name, c.StartupProbe, podIP)
+			bw.logger.Debug("Startup probe result",
+				"pod", pod.Name, "container", c.Name, "result", probeResultString(result),
+				"failCount", ps.StartupFailCount, "podIP", podIP)
 			// Write results under lock — concurrent with isContainerReady readers.
 			bw.gambit.mu.Lock()
 			markProbed(ps, "startup")
 			restart := EvalStartup(ps, c.StartupProbe, result)
 			bw.gambit.mu.Unlock()
+			if result == ProbeSuccess && ps.StartupPassed {
+				bw.logger.Info("Startup probe passed", "pod", pod.Name, "container", c.Name)
+				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started",
+					"Container %s passed startup probe", c.Name)
+			}
+			if result == ProbeFailure {
+				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+					"Startup probe failed for container %s (%d/%d)",
+					c.Name, ps.StartupFailCount, c.StartupProbe.FailureThreshold)
+			}
 			if restart {
 				bw.logger.Warn("Startup probe failed past threshold, restarting",
 					"pod", pod.Name, "container", c.Name)
-				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
-					"Startup probe failed for container %s (threshold %d)",
-					c.Name, c.StartupProbe.FailureThreshold)
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 			}
 		}
@@ -564,6 +574,8 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 	// 2. Liveness probe — failure past threshold triggers restart.
 	if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
 		result := bw.gambit.probeRunner.RunProbe(ctx, pod, c.Name, c.LivenessProbe, podIP)
+		bw.logger.Debug("Liveness probe result",
+			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
 		bw.gambit.mu.Lock()
 		markProbed(ps, "liveness")
 		restart := EvalLiveness(ps, c.LivenessProbe, result)
@@ -576,11 +588,14 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 			}
 		}
 		bw.gambit.mu.Unlock()
+		if result == ProbeFailure {
+			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+				"Liveness probe failed for container %s (%d/%d)",
+				c.Name, ps.LiveFailCount, c.LivenessProbe.FailureThreshold)
+		}
 		if restart {
 			bw.logger.Warn("Liveness probe failed past threshold, restarting",
 				"pod", pod.Name, "container", c.Name)
-			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
-				"Liveness probe failed for container %s", c.Name)
 			bw.maybeRestart(ctx, uid, pod, c.Name)
 			return
 		}
@@ -589,15 +604,21 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 	// 3. Readiness probe — controls Ready condition on the container.
 	if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
 		result := bw.gambit.probeRunner.RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
+		bw.logger.Debug("Readiness probe result",
+			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
 		bw.gambit.mu.Lock()
 		wasReady := ps.Ready
 		markProbed(ps, "readiness")
 		EvalReadiness(ps, c.ReadinessProbe, result)
 		nowReady := ps.Ready
 		bw.gambit.mu.Unlock()
-		if wasReady && !nowReady {
+		if result == ProbeFailure {
 			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 				"Readiness probe failed for container %s", c.Name)
+		}
+		if !wasReady && nowReady {
+			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ProbeReady",
+				"Container %s passed readiness probe", c.Name)
 		}
 	}
 }

@@ -162,6 +162,7 @@ func (r *RawPerigeosConfig) Process(baseDir string) (*PerigeosConfig, error) {
 			r.Pawns[hostName] = RawPawnConfig{
 				CPU:    r.Global.DefaultCPU,
 				Memory: r.Global.DefaultMemory,
+				NodeIP: r.Global.NodeIP,
 				// Port 0 → auto-assign; uses PerigeosPort (base port) for the primary
 				Port: r.Global.PerigeosPort,
 			}

@@ -143,12 +143,12 @@ func TestWriteConfig_Idempotent(t *testing.T) {
 
 func TestRuntimeConf_Fields(t *testing.T) {
 	m := newTestConstellationManager(t)
-	rt := m.runtimeConf("pod-uid-abc", "kube-system", "coredns", "/var/run/netns/pod-uid-abc", "")
+	rt := m.runtimeConf("pod-uid-abc", "kube-system", "coredns", "/var/run/netns/peri-pod-uid-abc", "")
 
 	if rt.ContainerID != "pod-uid-abc" {
 		t.Errorf("ContainerID = %q", rt.ContainerID)
 	}
-	if rt.NetNS != "/var/run/netns/pod-uid-abc" {
+	if rt.NetNS != "/var/run/netns/peri-pod-uid-abc" {
 		t.Errorf("NetNS = %q", rt.NetNS)
 	}
 	if rt.IfName != "eth0" {
@@ -158,7 +158,7 @@ func TestRuntimeConf_Fields(t *testing.T) {
 
 func TestRuntimeConf_CNIArgs(t *testing.T) {
 	m := newTestConstellationManager(t)
-	rt := m.runtimeConf("uid-1", "my-ns", "my-pod", "/var/run/netns/uid-1", "")
+	rt := m.runtimeConf("uid-1", "my-ns", "my-pod", "/var/run/netns/peri-uid-1", "")
 
 	argMap := make(map[string]string)
 	for _, kv := range rt.Args {
@@ -183,7 +183,7 @@ func TestRuntimeConf_CNIArgs(t *testing.T) {
 
 func TestRuntimeConf_CNIArgs_WithNodeName(t *testing.T) {
 	m := newTestConstellationManager(t)
-	rt := m.runtimeConf("uid-2", "prod", "web", "/var/run/netns/uid-2", "pawn-worker-03")
+	rt := m.runtimeConf("uid-2", "prod", "web", "/var/run/netns/peri-uid-2", "pawn-worker-03")
 
 	argMap := make(map[string]string)
 	for _, kv := range rt.Args {
@@ -211,13 +211,13 @@ func TestRuntimeConf_CNIArgs_NodeNameAffectsArgCount(t *testing.T) {
 	m := newTestConstellationManager(t)
 
 	// Without nodeName: 3 args (namespace, name, uid)
-	rtNoNode := m.runtimeConf("uid-x", "ns", "pod", "/var/run/netns/uid-x", "")
+	rtNoNode := m.runtimeConf("uid-x", "ns", "pod", "/var/run/netns/peri-uid-x", "")
 	if len(rtNoNode.Args) != 3 {
 		t.Errorf("without nodeName: expected 3 args, got %d", len(rtNoNode.Args))
 	}
 
 	// With nodeName: 4 args (namespace, name, uid, node_name)
-	rtWithNode := m.runtimeConf("uid-y", "ns", "pod", "/var/run/netns/uid-y", "pawn-01")
+	rtWithNode := m.runtimeConf("uid-y", "ns", "pod", "/var/run/netns/peri-uid-y", "pawn-01")
 	if len(rtWithNode.Args) != 4 {
 		t.Errorf("with nodeName: expected 4 args, got %d", len(rtWithNode.Args))
 	}

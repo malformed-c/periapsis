@@ -20,6 +20,19 @@ type bindEntry struct {
 	Flags  uint64
 }
 
+// bindsAPIVFS returns true if the bind mounts already include /proc, /sys, or
+// /dev — meaning the pod provides its own API VFS and systemd should not mount
+// fresh ones (MountAPIVFS=no).
+func bindsAPIVFS(mounts []runtime.BindMount) bool {
+	for _, bm := range mounts {
+		switch bm.ContainerPath {
+		case "/proc", "/sys", "/dev":
+			return true
+		}
+	}
+	return false
+}
+
 // runProgram starts a container workload as a plain systemd transient service
 // using RootDirectory= (chroot) instead of systemd-nspawn. This gives the
 // process access to the host PID and cgroup namespaces — required for
@@ -91,6 +104,7 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		entry := bindEntry{
 			Source: bm.HostPath,
 			Dest:   bm.ContainerPath,
+			Flags:  0x4000, // MS_REC — recursive bind so submounts (e.g. bpffs) carry over
 		}
 		if bm.ReadOnly {
 			bindROPaths = append(bindROPaths, entry)
@@ -99,11 +113,9 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		}
 	}
 
-	// Note: stdioLogProps is NOT used here. RootDirectory services resolve
-	// StandardOutputFile inside the chroot, where /proc/<pid>/fd/<n> doesn't
-	// exist (MountAPIVFS=false). The ENXIO issue that stdioLogProps solves is
-	// nspawn-specific (journal sockets passed via --console=pipe). For
-	// RootDirectory services, systemd's default journal output works fine.
+	// Note: stdioLogProps is NOT used here. The ENXIO issue that stdioLogProps
+	// solves is nspawn-specific (journal sockets passed via --console=pipe).
+	// For RootDirectory services, systemd's default journal output works fine.
 	// Logs are readable via journalctl / GetLogStream.
 	properties := []dbus.Property{
 		dbus.PropDescription("Pod " + podUID),
@@ -116,11 +128,11 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		// RootDirectory performs a chroot into the container image rootfs.
 		// systemd creates a private mount namespace automatically when this is set.
 		{Name: "RootDirectory", Value: dbusv5.MakeVariant(cfg.RootFS)},
-		// Disable MountAPIVFS so systemd does not mount fresh /proc, /sys, /dev.
-		// We bind-mount these from the host via BindPaths instead. This avoids
-		// a duplicate bpffs mount at /sys/fs/bpf (one from MountAPIVFS's sysfs,
-		// one from our BindPaths) that causes Cilium's "multiple mount points" error.
-		{Name: "MountAPIVFS", Value: dbusv5.MakeVariant(false)},
+		// Enable MountAPIVFS only when the pod mounts /proc, /sys, or /dev —
+		// this ensures the directories exist in the chroot before BindPaths
+		// overlays the host's filesystems. Recursive binds (Flags=1) then
+		// carry submounts like /sys/fs/bpf sharing the host's superblock.
+		{Name: "MountAPIVFS", Value: dbusv5.MakeVariant(bindsAPIVFS(cfg.BindMounts))},
 		// All env vars (container + meta) go into the unit's Environment property.
 		// The process inherits them from systemd, not via --setenv as in nspawn.
 		{Name: "Environment", Value: dbusv5.MakeVariant(allEnv)},

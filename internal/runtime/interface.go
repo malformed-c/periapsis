@@ -65,6 +65,9 @@ type Runtime interface {
 	// not associated with any known pod UID. Called on startup to clean
 	// up units left behind by a previous crash or restart.
 	CleanupStaleUnits(ctx context.Context, activeUIDs map[string]bool) (cleaned int, err error)
+
+	// SliceActive returns whether this pawn's cgroup slice is active in systemd.
+	SliceActive(ctx context.Context) bool
 }
 
 // UnitEvent is emitted by SubscribeEvents when a managed unit changes state.

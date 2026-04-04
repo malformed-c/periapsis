@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/lmittmann/tint"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/config"
@@ -304,7 +305,7 @@ func main() {
 		sharedNM = cnm
 		logger.Info("Constellation CNI active")
 	} else {
-		logger.Debug("No [global.cni] config, using built-in veth networking per pawn")
+		logger.Warn("No [global.cni] config and constellation-agent socket not found — falling back to built-in veth networking; cross-host pod connectivity will NOT work. Add [global.cni] to perigeos.toml if Constellation is deployed (socket auto-detection fails when the agent is managed by perigeos and not yet started).")
 	}
 
 	// --- Primary node ---
@@ -395,7 +396,7 @@ func main() {
 			})
 			eventRecorder := broadcaster.NewRecorder(
 				clientgoscheme.Scheme,
-				corev1.EventSource{Host: pawnName, Component: "Perigeos"},
+				corev1.EventSource{Host: pawnName, Component: "perigeos"},
 			)
 
 			g := node.NewGambit(pawnCfg, sharedIM, nm, rt, pawnLogger, eventRecorder)
@@ -570,6 +571,32 @@ func main() {
 
 	logger.Info("Perigeos running", "pawns", len(perigeoCfg.Pawns), "base-dir", *baseDirFlag)
 
+	// Notify systemd that startup is complete. With Type=notify, systemd
+	// waits for this before reporting the unit as active.
+	if sent, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
+		logger.Warn("sd_notify READY failed", "err", err)
+	} else if sent {
+		logger.Debug("sd_notify READY sent")
+	}
+
+	// Start watchdog pings if WatchdogSec is configured. The interval
+	// returned by SdWatchdogEnabled is half the configured period.
+	if watchdogInterval, err := daemon.SdWatchdogEnabled(false); err == nil && watchdogInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(watchdogInterval / 2)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					_, _ = daemon.SdNotify(false, daemon.SdNotifyWatchdog)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		logger.Info("Watchdog pings enabled", "interval", watchdogInterval/2)
+	}
+
 	// Sweep stale network namespaces left by ghost pods from previous runs.
 	if cnm, ok := sharedNM.(*network.ConstellationNetworkManager); ok {
 		go func() {
@@ -587,6 +614,7 @@ func main() {
 	<-ctx.Done()
 
 	logger.Info("Shutdown signal received")
+	_, _ = daemon.SdNotify(false, daemon.SdNotifyStopping)
 
 	// Signal all pawns to begin graceful shutdown — Ping returns error,
 	// nodes go NotReady, scheduler stops placing new pods.
@@ -596,20 +624,15 @@ func main() {
 	}
 	gambitsMu.Unlock()
 
-	// Actively drain all pods — stop containers, tear down networking,
-	// clean up volumes. Don't wait passively for apiserver DeletePod calls
-	// since VK's pod controller is no longer processing events.
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer drainCancel()
+	// With KillMode=process, containers survive perigeos restart.
+	// We do NOT drain pods here — HydrateFromRuntime will rediscover
+	// them on next start. For explicit node decommission, use
+	// `perigeos drain` before stopping the service.
 
-	gambitsMu.Lock()
-	for _, g := range allGambits {
-		g.DrainPods(drainCtx)
-	}
-	gambitsMu.Unlock()
-
-	// Wait for any in-progress deletions (from apiserver or drain) to finish.
+	// Wait for any in-progress deletions (from apiserver) to finish.
 	// This prevents the daemon from exiting while containers are still stopping.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer drainCancel()
 	for drainCtx.Err() == nil {
 		anyDeleting := false
 		gambitsMu.Lock()

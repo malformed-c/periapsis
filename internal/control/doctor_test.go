@@ -68,6 +68,9 @@ func (r *doctorMockRuntime) ResetUnit(_ context.Context, _, _ string) error {
 func (r *doctorMockRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
 	return 0, nil
 }
+func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
+	return true
+}
 
 // ─── Mock Network ─────────────────────────────────────────────────────────────
 

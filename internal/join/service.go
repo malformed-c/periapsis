@@ -9,14 +9,15 @@ import (
 )
 
 const unitTemplate = `[Unit]
-Description=Perigeos Virtual Kubelet
+Description=Perigeos - A Kubernetes' Pawn
 Documentation=https://github.com/malformed-c/periapsis
 After=network-online.target
 Wants=network-online.target
 Requires=dbus.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/perigeos \
     --perigeosconfig {{.ConfigDir}}/perigeos.toml \
     --kubeconfig {{.ConfigDir}}/kubeconfig.yaml \
@@ -25,6 +26,7 @@ ExecStart=/usr/local/bin/perigeos \
 
 Restart=on-failure
 RestartSec=5s
+WatchdogSec=120s
 
 StateDirectory=apsis
 RuntimeDirectory=apsis
@@ -41,8 +43,8 @@ LimitNPROC=infinity
 LimitMEMLOCK=infinity
 TasksMax=infinity
 
-KillMode=control-group
-TimeoutStopSec=90s
+KillMode=process
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target

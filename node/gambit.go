@@ -482,6 +482,13 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 	g.mu.Lock()
 	for _, state := range states {
 		uid := string(state.Pod.UID)
+		// Skip terminal pods — they completed before the restart and should
+		// not be resurrected. The PodController will see them as gone.
+		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
+			g.Logger.Info("Skipping terminal pod from disk",
+				"pod", state.Pod.Name, "phase", state.Phase)
+			continue
+		}
 		g.pods[uid] = state.Pod
 		if state.PodIP != "" {
 			g.podIPs[uid] = state.PodIP
@@ -782,7 +789,10 @@ func (g *Gambit) BuildNode() *corev1.Node {
 			},
 		},
 	}
-	node.Status.Allocatable = node.Status.Capacity
+	// Compute Allocatable = Capacity - sum(running pod requests).
+	// This lets the k8s scheduler see real available resources and avoid
+	// overcommitting this node.
+	node.Status.Allocatable = g.computeAllocatable(node.Status.Capacity)
 	return node
 }
 
@@ -859,7 +869,7 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 					if node.Status.Conditions[i].Type == corev1.NodeReady {
 						node.Status.Conditions[i].Status = corev1.ConditionFalse
 						node.Status.Conditions[i].Reason = "Shutdown"
-						node.Status.Conditions[i].Message = "Perigeos shutting down"
+						node.Status.Conditions[i].Message = "perigeos shutting down"
 					}
 				}
 				cb(node)
@@ -873,15 +883,42 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 }
 
 // notifyPodStatus pushes an updated pod to the PodController if a callback
-// is registered. Safe to call when podNotify is nil (no-op).
+// is registered, and persists the pod state to disk so it survives restarts.
+// This is the single funnel for all status changes — persist here rather
+// than scattering writePodState across every call site.
 func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
+	var caller string
+	if _, file, line, ok := runtime.Caller(1); ok {
+		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+	g.Logger.Debug("notifyPodStatus", "pod", pod.Name, "phase", pod.Status.Phase, "caller", caller)
+
 	if g.podNotify != nil {
-		var caller string
-		if _, file, line, ok := runtime.Caller(1); ok {
-			caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
-		}
-		g.Logger.Debug("notifyPodStatus", "pod", pod.Name, "phase", pod.Status.Phase, "caller", caller)
 		g.podNotify(pod)
+	}
+
+	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
+	// so HydrateFromRuntime knows not to resurrect them.
+	uid := string(pod.UID)
+	g.mu.RLock()
+	podIP := g.podIPs[uid]
+	restartMap := g.restarts[uid]
+	g.mu.RUnlock()
+
+	var counts map[string]int32
+	if len(restartMap) > 0 {
+		counts = make(map[string]int32, len(restartMap))
+		for c, r := range restartMap {
+			counts[c] = r.count
+		}
+	}
+	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
+		Pod:      pod,
+		PodIP:    podIP,
+		Phase:    pod.Status.Phase,
+		Restarts: counts,
+	}); err != nil {
+		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
 	}
 }
 
@@ -1313,16 +1350,29 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		updated.Status.PodIP = podIP
 		now := metav1.NewTime(time.Now())
 		updated.Status.StartTime = &now
+		allReady := true
 		for _, c := range pod.Spec.Containers {
+			ready := g.isContainerReady(uid, c.Name)
+			if !ready {
+				allReady = false
+			}
 			updated.Status.ContainerStatuses = append(updated.Status.ContainerStatuses, corev1.ContainerStatus{
 				Name:  c.Name,
 				Image: c.Image,
-				Ready: false,
+				Ready: ready,
 				State: corev1.ContainerState{
 					Running: &corev1.ContainerStateRunning{StartedAt: now},
 				},
 			})
 		}
+		readyCondition := corev1.ConditionFalse
+		if allReady {
+			readyCondition = corev1.ConditionTrue
+		}
+		updated.Status.Conditions = []corev1.PodCondition{{
+			Type:   corev1.PodReady,
+			Status: readyCondition,
+		}}
 		g.notifyPodStatus(updated)
 	}
 
@@ -1340,14 +1390,6 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	// ticker poll (2s, for clean exits). Poking immediately would race
 	// with systemd's ExecMainStatus update, causing exit-1 containers
 	// to be misclassified as Succeeded.
-
-	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-		Pod:   pod,
-		PodIP: podIP,
-		Phase: corev1.PodRunning,
-	}); err != nil {
-		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
-	}
 
 	return nil
 }
@@ -1414,6 +1456,7 @@ func (g *Gambit) initRestartState(pod *corev1.Pod) {
 			lastStarted: time.Now(),
 		}
 		ps[c.Name] = &ContainerProbeState{
+			StartedAt:     time.Now(),
 			Ready:         c.ReadinessProbe == nil, // ready by default only if no readiness probe
 			LastProbeTime: make(map[string]time.Time),
 		}
@@ -1453,25 +1496,6 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 		rs.backoff = restartBackoffMax
 	}
 	g.mu.Unlock()
-
-	// Persist updated restart count.
-	g.mu.RLock()
-	currentPod := g.pods[uid]
-	currentIP := g.podIPs[uid]
-	allRestarts := g.restarts[uid]
-	g.mu.RUnlock()
-	if currentPod != nil {
-		counts := make(map[string]int32, len(allRestarts))
-		for c, r := range allRestarts {
-			counts[c] = r.count
-		}
-		_ = writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-			Pod:      currentPod,
-			PodIP:    currentIP,
-			Phase:    corev1.PodRunning,
-			Restarts: counts,
-		})
-	}
 
 	g.Logger.Info("Restarting container (CrashLoopBackOff)",
 		"pod", pod.Name, "container", containerName,
@@ -1616,7 +1640,11 @@ func (g *Gambit) UpdatePod(_ context.Context, pod *corev1.Pod) error {
 }
 
 func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
-	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
+	var caller string
+	if _, file, line, ok := runtime.Caller(1); ok {
+		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name, "caller", caller)
 	uid := string(pod.UID)
 	g.setKind(pod)
 
@@ -1696,6 +1724,10 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	delete(g.deleting, uid)
 	g.mu.Unlock()
 
+	if err := deletePodState(g.Config.BaseDir, g.Config.Name, uid); err != nil {
+		g.Logger.Warn("Failed to delete pod state", "pod", pod.Name, "err", err)
+	}
+
 	return nil
 }
 
@@ -1745,6 +1777,47 @@ func (g *Gambit) admitPod(pod *corev1.Pod) string {
 			podMem, usedMem, nodeMem)
 	}
 	return ""
+}
+
+// computeAllocatable returns Capacity minus the sum of resource requests from
+// all currently tracked pods. This gives the k8s scheduler visibility into
+// real available resources so it can avoid overcommitting the node.
+func (g *Gambit) computeAllocatable(capacity corev1.ResourceList) corev1.ResourceList {
+	var usedCPU, usedMem int64
+	g.mu.RLock()
+	for _, p := range g.pods {
+		for _, c := range p.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				usedCPU += req.MilliValue()
+			}
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				usedMem += req.Value()
+			}
+		}
+	}
+	g.mu.RUnlock()
+
+	alloc := make(corev1.ResourceList, len(capacity))
+	for k, v := range capacity {
+		alloc[k] = v.DeepCopy()
+	}
+
+	if usedCPU > 0 {
+		if cap := capacity[corev1.ResourceCPU]; cap.MilliValue() > usedCPU {
+			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(cap.MilliValue()-usedCPU, resource.DecimalSI)
+		} else {
+			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(0, resource.DecimalSI)
+		}
+	}
+	if usedMem > 0 {
+		if cap := capacity[corev1.ResourceMemory]; cap.Value() > usedMem {
+			alloc[corev1.ResourceMemory] = *resource.NewQuantity(cap.Value()-usedMem, resource.BinarySI)
+		} else {
+			alloc[corev1.ResourceMemory] = *resource.NewQuantity(0, resource.BinarySI)
+		}
+	}
+
+	return alloc
 }
 
 // pullProgressFunc returns a callback that emits Pulling events at 10% steps.

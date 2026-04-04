@@ -25,6 +25,10 @@ const (
 
 // ContainerProbeState tracks probe state for a single container.
 type ContainerProbeState struct {
+	// StartedAt records when the container (re)started. Used by isDue to
+	// honour InitialDelaySeconds before firing the first probe.
+	StartedAt time.Time
+
 	// Startup probe
 	StartupPassed    bool
 	StartupFailCount int32
@@ -33,8 +37,9 @@ type ContainerProbeState struct {
 	LiveFailCount int32
 
 	// Readiness
-	Ready          bool
-	ReadyFailCount int32
+	Ready             bool
+	ReadyFailCount    int32
+	ReadySuccessCount int32
 
 	// Timing: keyed by "startup", "liveness", "readiness"
 	LastProbeTime map[string]time.Time
@@ -122,9 +127,14 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 }
 
 // runTCPSocketProbe opens a TCP connection to podIP:port.
+// When action.Host is set, connects to that address instead (same as kubelet).
 func (pr *ProbeRunner) runTCPSocketProbe(ctx context.Context, podIP string, action *corev1.TCPSocketAction) ProbeResult {
+	host := podIP
+	if action.Host != "" {
+		host = action.Host
+	}
 	port := action.Port.String()
-	addr := net.JoinHostPort(podIP, port)
+	addr := net.JoinHostPort(host, port)
 
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
@@ -151,12 +161,18 @@ func (pr *ProbeRunner) runExecProbe(ctx context.Context, pod *corev1.Pod, contai
 }
 
 // isDue returns true if enough time has passed since the last probe of this type.
-func isDue(state *ContainerProbeState, probeType string, periodSeconds int32) bool {
+// On the first invocation (no LastProbeTime entry), it respects InitialDelaySeconds
+// measured from the container's start time before allowing the probe to fire.
+func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialDelaySeconds int32) bool {
 	if periodSeconds <= 0 {
 		periodSeconds = 10 // k8s default
 	}
 	last, ok := state.LastProbeTime[probeType]
 	if !ok {
+		// First probe: respect initial delay from container start.
+		if initialDelaySeconds > 0 && !state.StartedAt.IsZero() {
+			return time.Since(state.StartedAt) >= time.Duration(initialDelaySeconds)*time.Second
+		}
 		return true
 	}
 	return time.Since(last) >= time.Duration(periodSeconds)*time.Second
@@ -205,16 +221,17 @@ func EvalLiveness(state *ContainerProbeState, probe *corev1.Probe, result ProbeR
 func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result ProbeResult) {
 	if result == ProbeSuccess {
 		state.ReadyFailCount = 0
+		state.ReadySuccessCount++
 		successThreshold := probe.SuccessThreshold
 		if successThreshold <= 0 {
 			successThreshold = 1
 		}
-		// We track consecutive successes implicitly: if ReadyFailCount is 0
-		// and we're here, it's a success. For simplicity, mark ready on first success
-		// (matches kubelet for default thresholds).
-		state.Ready = true
+		if state.ReadySuccessCount >= successThreshold {
+			state.Ready = true
+		}
 		return
 	}
+	state.ReadySuccessCount = 0
 	state.ReadyFailCount++
 	failThreshold := probe.FailureThreshold
 	if failThreshold <= 0 {

@@ -18,22 +18,8 @@ func (s *SystemdRuntime) InitPawnSlice(ctx context.Context, cfg runtime.PawnSlic
 
 	name := sliceName(cfg.Name)
 
-	// Aggressive cleanup: reset failed state and stop any leftover unit
+	// Reset failed state so a previously-failed slice doesn't block recreation.
 	s.conn.ResetFailedUnitContext(ctx, name)
-
-	chStop := make(chan string, 1)
-	if _, err := s.conn.StopUnitContext(ctx, name, "replace", chStop); err == nil {
-		select {
-		case result := <-chStop:
-			if result != "done" {
-				s.logger.Warn("Slice stop returned unexpected status", "status", result)
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	} else if !strings.Contains(err.Error(), "not loaded") {
-		s.logger.Warn("Failed to stop previous slice", "err", err)
-	}
 
 	properties := []dbus.Property{
 		dbus.PropDescription(fmt.Sprintf("Perigeos Pawn: %s", cfg.Name)),
@@ -149,6 +135,19 @@ func (s *SystemdRuntime) CleanStalePawnSlices(ctx context.Context, activePawns [
 		if _, ok := active[unit.Name]; ok {
 			continue
 		}
+		// Skip parent slices that contain active pawn sub-slices.
+		// e.g. perigeos-compute.slice is parent of perigeos-compute-00.slice
+		isParent := false
+		prefix := strings.TrimSuffix(unit.Name, ".slice") + "-"
+		for activeName := range active {
+			if strings.HasPrefix(activeName, prefix) {
+				isParent = true
+				break
+			}
+		}
+		if isParent {
+			continue
+		}
 		// First stop any pod services under this slice.
 		pawn := strings.TrimPrefix(unit.Name, "perigeos-")
 		pawn = strings.TrimSuffix(pawn, ".slice")
@@ -170,6 +169,16 @@ func (s *SystemdRuntime) CleanStalePawnSlices(ctx context.Context, activePawns [
 		s.logger.Info("Cleaned stale pawn slice", "slice", unit.Name)
 	}
 	return cleaned, nil
+}
+
+// SliceActive returns whether this pawn's cgroup slice is active in systemd.
+func (s *SystemdRuntime) SliceActive(ctx context.Context) bool {
+	name := sliceName(s.pawnName)
+	units, err := s.conn.ListUnitsByPatternsContext(ctx, []string{"active"}, []string{name})
+	if err != nil {
+		return false
+	}
+	return len(units) > 0
 }
 
 // getBackingDevice resolves the block device path for a given filesystem path.

@@ -204,12 +204,18 @@ func cmdDoctor(ctx context.Context, c *control.Client, asJSON bool) error {
 	}
 	fmt.Printf("Sources: gambit=%d  systemd=%d  disk=%d  stale_units=%d\n",
 		d.Summary.TotalGambit, d.Summary.TotalSystemd, d.Summary.TotalDisk, d.Summary.TotalStaleUnits)
+	fmt.Printf("Slices:  active=%d  stale=%d\n",
+		d.Summary.ActiveSlices, d.Summary.StaleSlices)
 	fmt.Printf("Network: lxc_veths=%d  netns=%d\n\n",
 		d.Summary.LxcVeths, d.Summary.NetnsCount)
 
 	for _, p := range d.Pawns {
+		sliceStatus := "active"
+		if !p.SliceActive {
+			sliceStatus = "INACTIVE"
+		}
 		fmt.Printf("── %s ──\n", p.Name)
-		fmt.Printf("  gambit=%d  systemd=%d  disk=%d  stale_units=%d\n", p.GambitPods, p.SystemdUnits, p.DiskDirs, p.StaleUnits)
+		fmt.Printf("  gambit=%d  systemd=%d  disk=%d  stale_units=%d  slice=%s\n", p.GambitPods, p.SystemdUnits, p.DiskDirs, p.StaleUnits, sliceStatus)
 
 		if len(p.GhostPods) > 0 {
 			fmt.Printf("  ghost pods (gambit only, no systemd unit):\n")

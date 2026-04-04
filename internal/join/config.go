@@ -32,12 +32,21 @@ DefaultMemory = "512M"
 # cluster node. Use false when a kubelet (k3s/kubeadm) already owns this host.
 primary = {{.Primary}}
 
-# Constellation CNI is auto-detected via /var/run/cilium/cilium.sock.
-# Uncomment and configure to pin the settings explicitly.
+{{if .ConstellationCNI -}}
+# Constellation CNI detected in the cluster and enabled automatically.
+# Cross-host pod connectivity requires the constellation-agent DaemonSet.
+[global.cni]
+# bin_dir  = "/opt/cni/bin"
+# conf_dir = "/etc/cni/net.d/constellation"
+# debug    = false
+{{- else -}}
+# Constellation CNI was not detected. If you deploy it later, uncomment
+# [global.cni] to enable cross-host pod connectivity.
 # [global.cni]
 # bin_dir  = "/opt/cni/bin"
 # conf_dir = "/etc/cni/net.d/constellation"
 # debug    = false
+{{- end}}
 {{if not .Primary}}
 # primary=false: kubelet already registered {{.Hostname}}, so perigeos runs
 # as a sidecar. Add more [pawns.*] sections to scale up.
@@ -55,7 +64,7 @@ memory = "512M"
 
 // generateConfig writes a default perigeos.toml to {configDir}/perigeos.toml.
 // If the file already exists it is left unchanged to preserve user edits.
-func generateConfig(opts *Options, primary bool, logger *slog.Logger) (string, error) {
+func generateConfig(opts *Options, primary, constellationCNI bool, logger *slog.Logger) (string, error) {
 	configPath := filepath.Join(opts.ConfigDir, "perigeos.toml")
 
 	if _, err := os.Stat(configPath); err == nil {
@@ -79,13 +88,15 @@ func generateConfig(opts *Options, primary bool, logger *slog.Logger) (string, e
 	}
 
 	data := struct {
-		Primary  bool
-		Hostname string
-		PawnName string
+		Primary          bool
+		Hostname         string
+		PawnName         string
+		ConstellationCNI bool
 	}{
-		Primary:  primary,
-		Hostname: hostname,
-		PawnName: pawnName,
+		Primary:          primary,
+		Hostname:         hostname,
+		PawnName:         pawnName,
+		ConstellationCNI: constellationCNI,
 	}
 
 	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)

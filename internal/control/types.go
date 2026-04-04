@@ -102,6 +102,9 @@ type PawnDiagnosis struct {
 	// StaleUnits are dead/failed systemd units not associated with any active pod.
 	// These accumulate when perigeos crashes before BatchWatcher cleans them up.
 	StaleUnits int `json:"stale_units"`
+
+	// SliceActive indicates whether the pawn's cgroup slice is active in systemd.
+	SliceActive bool `json:"slice_active"`
 }
 
 // DoctorEntry identifies a pod in a discrepancy report.
@@ -119,8 +122,10 @@ type DoctorSummary struct {
 	TotalOrphans   int `json:"total_orphans"`
 	TotalStaleDirs int `json:"total_stale_dirs"`
 	TotalStaleUnits int `json:"total_stale_units"`
-	LxcVeths       int `json:"lxc_veths"`
-	NetnsCount     int `json:"netns_count"`
+	ActiveSlices    int `json:"active_slices"`
+	StaleSlices     int `json:"stale_slices"`
+	LxcVeths        int `json:"lxc_veths"`
+	NetnsCount      int `json:"netns_count"`
 }
 
 // VersionResponse from GET /v1/version

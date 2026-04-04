@@ -1,12 +1,13 @@
 [Unit]
-Description=Perigeos Virtual Kubelet
+Description=Perigeos - A Kubernetes' Pawn
 Documentation=https://github.com/malformed-c/periapsis
 After=network-online.target k3s.service
 Wants=network-online.target
 Requires=dbus.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/perigeos \
     --perigeosconfig /etc/apsis/perigeos/perigeos.toml \
     --kubeconfig /etc/rancher/k3s/k3s.yaml \
@@ -15,8 +16,7 @@ ExecStart=/usr/local/bin/perigeos \
 
 Restart=on-failure
 RestartSec=5s
-# WatchdogSec disabled until sd_notify pings are implemented (ADR-0007 scope)
-# WatchdogSec=120s
+WatchdogSec=120s
 
 # State directory
 StateDirectory=apsis
@@ -39,9 +39,10 @@ LimitNPROC=infinity
 LimitMEMLOCK=infinity
 TasksMax=infinity
 
-# Kill all spawned containers on stop
-KillMode=control-group
-TimeoutStopSec=90s
+# Only kill the main perigeos process — nspawn containers survive restarts
+# and are rediscovered via HydrateFromRuntime. See ADR-0009.
+KillMode=process
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=multi-user.target

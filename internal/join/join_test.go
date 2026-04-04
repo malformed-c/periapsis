@@ -3,7 +3,7 @@ package join
 import (
 	"log/slog"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,7 +73,7 @@ func TestGenerateConfig(t *testing.T) {
 
 	logger := slog.Default()
 
-	path, err := generateConfig(opts, true, logger)
+	path, err := generateConfig(opts, true, false, logger)
 	if err != nil {
 		t.Fatalf("generateConfig: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGenerateConfig(t *testing.T) {
 	}
 
 	// Calling again should be a no-op (idempotent).
-	path2, err := generateConfig(opts, false, logger)
+	path2, err := generateConfig(opts, false, false, logger)
 	if err != nil {
 		t.Fatalf("second generateConfig: %v", err)
 	}
@@ -102,6 +102,59 @@ func TestGenerateConfig(t *testing.T) {
 	if string(data2) != content {
 		t.Error("config content changed on second call")
 	}
-	_ = filepath.Join(dir, "perigeos.toml") // suppress unused warning
+}
+
+func TestGenerateConfigCNI(t *testing.T) {
+	t.Run("cni enabled", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := &Options{ConfigDir: dir, BaseDir: "/var/lib/apsis/perigeos"}
+
+		path, err := generateConfig(opts, true, true, slog.Default())
+		if err != nil {
+			t.Fatalf("generateConfig: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		content := string(data)
+
+		// [global.cni] should be uncommented.
+		if !strings.Contains(content, "\n[global.cni]\n") {
+			t.Error("expected uncommented [global.cni] when constellationCNI=true")
+		}
+		if strings.Contains(content, "# [global.cni]") {
+			t.Error("expected no commented-out [global.cni] when constellationCNI=true")
+		}
+		if !strings.Contains(content, "Constellation CNI detected") {
+			t.Error("expected detection comment when constellationCNI=true")
+		}
+	})
+
+	t.Run("cni disabled", func(t *testing.T) {
+		dir := t.TempDir()
+		opts := &Options{ConfigDir: dir, BaseDir: "/var/lib/apsis/perigeos"}
+
+		path, err := generateConfig(opts, true, false, slog.Default())
+		if err != nil {
+			t.Fatalf("generateConfig: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		content := string(data)
+
+		// [global.cni] should be commented out.
+		if !strings.Contains(content, "# [global.cni]") {
+			t.Error("expected commented [global.cni] when constellationCNI=false")
+		}
+		if strings.Contains(content, "Constellation CNI detected") {
+			t.Error("expected no detection comment when constellationCNI=false")
+		}
+		if !strings.Contains(content, "was not detected") {
+			t.Error("expected 'was not detected' comment when constellationCNI=false")
+		}
+	})
 }
 

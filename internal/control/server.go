@@ -420,8 +420,17 @@ func (s *Server) buildDoctor(ctx context.Context) map[string]any {
 		resp.Summary.TotalOrphans += len(diag.OrphanMachines)
 		resp.Summary.TotalStaleDirs += len(diag.StaleDirs)
 		resp.Summary.TotalStaleUnits += diag.StaleUnits
+		if diag.SliceActive {
+			resp.Summary.ActiveSlices++
+		}
 		resp.Pawns = append(resp.Pawns, diag)
 	}
+	// Count stale slices: cgroup dirs that exist but have no active gambit.
+	activePawns := make(map[string]struct{}, len(gambits))
+	for _, g := range gambits {
+		activePawns[g.Config.Name] = struct{}{}
+	}
+	resp.Summary.StaleSlices = countStaleSlices(activePawns)
 	resp.Summary.LxcVeths = countLxcVeths()
 	resp.Summary.NetnsCount = countNetns()
 	pawns := make([]any, 0, len(resp.Pawns))
@@ -603,6 +612,40 @@ func countNetns() int {
 	return len(entries)
 }
 
+// countStaleSlices counts perigeos pawn slice cgroup dirs that have no active gambit.
+func countStaleSlices(activePawns map[string]struct{}) int {
+	// Pawn slices live under /sys/fs/cgroup/perigeos.slice/ as perigeos-<name>.slice
+	entries, err := os.ReadDir("/sys/fs/cgroup/perigeos.slice")
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || !strings.HasPrefix(name, "perigeos-") || !strings.HasSuffix(name, ".slice") {
+			continue
+		}
+		// Extract pawn name: perigeos-compute-00.slice → compute-00
+		pawn := strings.TrimPrefix(name, "perigeos-")
+		pawn = strings.TrimSuffix(pawn, ".slice")
+		// Skip parent slices (e.g. "compute" which is parent of "compute-00")
+		if _, ok := activePawns[pawn]; ok {
+			continue
+		}
+		isParent := false
+		for ap := range activePawns {
+			if strings.HasPrefix(ap, pawn+"-") {
+				isParent = true
+				break
+			}
+		}
+		if !isParent {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis {
 	diag := PawnDiagnosis{Name: g.Config.Name}
 	gambitUIDs := g.PodUIDs()
@@ -624,6 +667,8 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 	diag.SystemdUnits = len(systemdUIDs)
 	diskUIDs := scanDiskPods(g.Config.BaseDir, g.Config.Name)
 	diag.DiskDirs = len(diskUIDs)
+	diag.SliceActive = g.Runtime.SliceActive(ctx)
+
 	for uid, name := range gambitUIDs {
 		if _, ok := systemdUIDs[uid]; !ok {
 			diag.GhostPods = append(diag.GhostPods, DoctorEntry{UID: uid, Name: name})

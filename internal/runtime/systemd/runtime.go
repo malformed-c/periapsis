@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +26,10 @@ import (
 	"github.com/malformed-c/periapsis/node/api"
 	"golang.org/x/sys/unix"
 )
+
+// maxConcurrentStarts limits the number of concurrent StartTransientUnit calls
+// to prevent D-Bus/systemd overload during burst pod creation.
+const maxConcurrentStarts = 8
 
 // SystemdRuntime implements runtime.Runtime by managing transient systemd-nspawn services.
 type SystemdRuntime struct {
@@ -41,6 +47,17 @@ type SystemdRuntime struct {
 	// The slave side is passed to nspawn via StandardInput/Output, and the
 	// master is used by AttachToContainer to relay stdin/stdout.
 	attachPTYs sync.Map
+
+	// startSem limits concurrent StartTransientUnit calls to avoid
+	// overwhelming D-Bus and systemd during burst pod creation.
+	startSem chan struct{}
+
+	// unitWaiters allows WaitForMachineExit to be event-driven instead of
+	// polling. Key: unit name, Value: channel that receives the terminal
+	// SubState ("failed", "exited-success", etc.) from the SubscribeEvents
+	// goroutine. Protected by unitWaitersMu.
+	unitWaitersMu sync.Mutex
+	unitWaiters   map[string]chan string
 }
 
 // Ensure compile-time interface compliance.
@@ -78,6 +95,8 @@ func NewSystemdRuntime(
 		pawnName:     pawnName,
 		slice:        sliceName(pawnName),
 		execStrategy: execStrategy,
+		startSem:     make(chan struct{}, maxConcurrentStarts),
+		unitWaiters:  make(map[string]chan string),
 	}, nil
 }
 
@@ -319,6 +338,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// between StopMachine returning and the unit being fully removed from the table.
 	_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
 
+	// Acquire semaphore to limit concurrent StartTransientUnit calls.
+	select {
+	case s.startSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.startSem }()
+
 	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); err != nil {
 		// Clean up PTY on failure.
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
@@ -332,7 +359,11 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 // StopMachine stops the wrapper service with a context-respecting timeout.
 func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName string) error {
-	s.logger.Info("Stopping Machine", "pod", podUID, "container", containerName)
+	var caller string
+	if _, file, line, ok := goruntime.Caller(1); ok {
+		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+	s.logger.Info("Stopping Machine", "pod", podUID, "container", containerName, "caller", caller)
 	wrapperUnit := wrapperUnitName(s.pawnName, podUID, containerName)
 
 	// Clean up any attach PTY for this container.
@@ -387,7 +418,11 @@ func (s *SystemdRuntime) MachineStatus(ctx context.Context, podUID, containerNam
 
 	prop, err := s.conn.GetUnitPropertyContext(ctx, serviceName, "ActiveState")
 	if err != nil {
-		return runtime.StateExited, nil
+		// D-Bus errors under load should NOT be treated as "exited" — that
+		// causes WaitForMachineExit to think an init container finished when
+		// it hasn't, leading to empty volumes and crash loops. Return Unknown
+		// so callers retry.
+		return runtime.StateUnknown, nil
 	}
 
 	state := strings.Trim(prop.Value.String(), "\"")
@@ -764,26 +799,111 @@ func suppressSignalExit(err error) error {
 	return err
 }
 
-// WaitForMachineExit polls until the container reaches a terminal state or timeout.
-// Used to wait for init containers to complete before starting app containers.
+// registerWaiter creates a channel that will be notified when the given unit
+// reaches a terminal D-Bus SubState. Returns a cleanup function.
+func (s *SystemdRuntime) registerWaiter(unitName string) (<-chan string, func()) {
+	ch := make(chan string, 4) // buffered to avoid blocking the event goroutine
+	s.unitWaitersMu.Lock()
+	s.unitWaiters[unitName] = ch
+	s.unitWaitersMu.Unlock()
+	return ch, func() {
+		s.unitWaitersMu.Lock()
+		delete(s.unitWaiters, unitName)
+		s.unitWaitersMu.Unlock()
+	}
+}
+
+// notifyWaiters is called by the SubscribeEvents goroutine to wake any
+// WaitForMachineExit caller blocked on this unit.
+func (s *SystemdRuntime) notifyWaiters(unitName, subState string) {
+	s.unitWaitersMu.Lock()
+	ch, ok := s.unitWaiters[unitName]
+	s.unitWaitersMu.Unlock()
+	if ok {
+		select {
+		case ch <- subState:
+		default:
+		}
+	}
+}
+
+// WaitForMachineExit blocks until the container reaches a terminal state.
+// It is event-driven via D-Bus unit signals, with a poll fallback for
+// robustness (events can be dropped under load).
+//
+// Race guard: StartTransientUnit with a nil channel returns before systemd
+// actually starts the process. The first status check may see
+// ActiveState=inactive + ExecMainStatus=0, which looks like "exited
+// successfully" but really means "hasn't started yet." To avoid this,
+// we require seeing the unit actually start (Running/Creating/Failed) before
+// accepting StateExited, with a grace period for the unit to be scheduled.
 func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, containerName string, timeout time.Duration) (runtime.MachineState, error) {
+	serviceName := wrapperUnitName(s.pawnName, podUID, containerName)
+	waiterCh, cleanup := s.registerWaiter(serviceName)
+	defer cleanup()
+
 	deadline := time.Now().Add(timeout)
-	for {
+	started := false
+	const startGrace = 5 * time.Second
+	startDeadline := time.Now().Add(startGrace)
+
+	// checkState queries MachineStatus and returns the terminal state if
+	// the unit has reached one, or ("", nil) if it should keep waiting.
+	checkState := func() (runtime.MachineState, error) {
 		state, err := s.MachineStatus(ctx, podUID, containerName)
 		if err != nil {
 			return runtime.StateFailed, err
 		}
 		switch state {
-		case runtime.StateExited, runtime.StateFailed:
-			return state, nil
+		case runtime.StateRunning, runtime.StateCreating:
+			started = true
+		case runtime.StateFailed:
+			return runtime.StateFailed, nil
+		case runtime.StateExited:
+			if started || time.Now().After(startDeadline) {
+				return runtime.StateExited, nil
+			}
+			// Likely "not yet started" — keep waiting.
+		case runtime.StateUnknown:
+			// D-Bus error — keep waiting.
 		}
-		if time.Now().After(deadline) {
-			return runtime.StateUnknown, fmt.Errorf("timeout waiting for container %s/%s to exit", podUID, containerName)
-		}
+		return "", nil
+	}
+
+	// Initial check before entering the event loop.
+	if state, err := checkState(); state != "" || err != nil {
+		return state, err
+	}
+
+	// Poll fallback: if events are dropped or delayed, we still converge.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return runtime.StateUnknown, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case subState := <-waiterCh:
+			// D-Bus event received — check if terminal.
+			switch subState {
+			case "running", "start-pre", "start", "start-post":
+				started = true
+				continue
+			case "failed":
+				return runtime.StateFailed, nil
+			}
+			// For "dead" and other states, do a full status check to
+			// get the authoritative exit code.
+			if state, err := checkState(); state != "" || err != nil {
+				return state, err
+			}
+		case <-ticker.C:
+			if state, err := checkState(); state != "" || err != nil {
+				return state, err
+			}
+		}
+		if time.Now().After(deadline) {
+			return runtime.StateUnknown, fmt.Errorf("timeout waiting for container %s/%s to exit", podUID, containerName)
 		}
 	}
 }
@@ -989,6 +1109,8 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 					continue
 				}
 				s.logger.Debug("D-Bus unit event", "unit", update.UnitName, "substate", subState)
+				// Wake any WaitForMachineExit caller blocked on this unit.
+				s.notifyWaiters(update.UnitName, subState)
 				select {
 				case eventCh <- runtime.UnitEvent{
 					UnitName: update.UnitName,

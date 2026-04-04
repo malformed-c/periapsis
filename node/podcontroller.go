@@ -541,9 +541,9 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	// Check whether the pod has been marked for deletion.
 	// If it does, guarantee it is deleted in the provider and Kubernetes.
 	if pod.DeletionTimestamp != nil {
-		log.G(ctx).Debug("Deleting pod in Perigeos")
+		log.G(ctx).Debug("Deleting pod in perigeos")
 		if err := pc.deletePod(ctx, pod); errdefs.IsNotFound(err) {
-			log.G(ctx).Debug("Pod not found in Perigeos")
+			log.G(ctx).Debug("Pod not found in perigeos")
 		} else if err != nil {
 			err := pkgerrors.Wrapf(err, "failed to delete pod %q in the provider", loggablePodName(pod))
 			span.SetStatus(err)
@@ -633,11 +633,11 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 			// Actually delete the pod.
 			if err := pc.provider.DeletePod(ctx, pod.DeepCopy()); err != nil && !errdefs.IsNotFound(err) {
 				span.SetStatus(err)
-				log.G(ctx).Errorf("failed to delete pod %q in Perigeos", loggablePodName(pod))
+				log.G(ctx).Errorf("failed to delete pod %q in perigeos", loggablePodName(pod))
 				pc.recorder.Event(pod, corev1.EventTypeWarning, "FailedDeleteDangling",
 					fmt.Sprintf("Failed to delete dangling pod from provider: %v", err))
 			} else {
-				log.G(ctx).Infof("deleted leaked pod %q in Perigeos", loggablePodName(pod))
+				log.G(ctx).Infof("deleted leaked pod %q in perigeos", loggablePodName(pod))
 			}
 		}(ctx, pod)
 	}

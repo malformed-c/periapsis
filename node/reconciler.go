@@ -83,6 +83,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ticker.C:
 			r.cleanOrphans(ctx)
 			r.cleanGhosts(ctx)
+			r.cleanStaleDirs()
 		}
 	}
 }
@@ -91,6 +92,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 func (r *Reconciler) RunOnce(ctx context.Context) {
 	r.cleanOrphans(ctx)
 	r.cleanGhosts(ctx)
+	r.cleanStaleDirs()
 }
 
 // cleanOrphans finds systemd machines that have no matching pod in Kubernetes
@@ -217,6 +219,46 @@ func splitNsName(nsName string) (string, string) {
 		return nsName[:i], nsName[i+1:]
 	}
 	return "", nsName
+}
+
+// cleanStaleDirs removes pod directories on disk that have no corresponding
+// pod in Gambit's in-memory state. These accumulate when perigeos crashes
+// after creating the dir but before completing cleanup, or when a pod is
+// evicted without full teardown.
+func (r *Reconciler) cleanStaleDirs() {
+	podsDir := filepath.Join(r.baseDir, "pawns", r.pawnName, "pods")
+	entries, err := os.ReadDir(podsDir)
+	if err != nil {
+		return
+	}
+
+	gambitUIDs := r.tracker.PodUIDs()
+	var cleaned int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		uid := e.Name()
+		// Normalize: some dirs may have uid-suffix
+		if len(uid) > 36 && uid[36] == '-' {
+			uid = uid[:36]
+		}
+		if _, ok := gambitUIDs[uid]; ok {
+			continue
+		}
+		if r.tracker.IsInFlight(uid) {
+			continue
+		}
+		dir := filepath.Join(podsDir, e.Name())
+		r.logger.Warn("Reconciler: removing stale pod dir", "uid", uid, "dir", dir)
+		if err := os.RemoveAll(dir); err != nil {
+			r.logger.Error("Reconciler: failed to remove stale dir", "dir", dir, "err", err)
+		}
+		cleaned++
+	}
+	if cleaned > 0 {
+		r.logger.Info("Reconciler: cleaned stale pod dirs", "count", cleaned)
+	}
 }
 
 func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -63,10 +64,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Step 4: generate default config.
 	r.logger.Info("--- Step 4/7: generate-config")
+	constellationCNI := detectConstellationCNI(ctx, client, r.logger)
 	if r.opts.DryRun {
 		r.logger.Info("[dry-run] would write", "path", r.opts.ConfigDir+"/perigeos.toml")
 	} else {
-		if _, err := generateConfig(r.opts, primary, r.logger); err != nil {
+		if _, err := generateConfig(r.opts, primary, constellationCNI, r.logger); err != nil {
 			return fmt.Errorf("generate-config: %w", err)
 		}
 	}
@@ -111,4 +113,20 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.logger.Info("Edit config to add more pawns:", "path", r.opts.ConfigDir+"/perigeos.toml")
 	r.logger.Info("Then restart:                  systemctl restart perigeos.service")
 	return nil
+}
+
+// detectConstellationCNI checks whether a Constellation (Cilium-based) agent
+// DaemonSet is deployed in the cluster. Returns true if found.
+func detectConstellationCNI(ctx context.Context, client kubernetes.Interface, logger *slog.Logger) bool {
+	if client == nil {
+		return false
+	}
+	// Look for the constellation-agent DaemonSet in kube-system.
+	_, err := client.AppsV1().DaemonSets("kube-system").Get(ctx, "constellation-agent", metav1.GetOptions{})
+	if err == nil {
+		logger.Info("Detected Constellation CNI in cluster — enabling [global.cni]")
+		return true
+	}
+	logger.Debug("Constellation CNI not detected in cluster", "err", err)
+	return false
 }

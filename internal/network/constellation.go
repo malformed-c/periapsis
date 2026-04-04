@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 
 	"github.com/containernetworking/cni/libcni"
 	cniTypes "github.com/containernetworking/cni/pkg/types"
 	types040 "github.com/containernetworking/cni/pkg/types/040"
 )
+
+// uuidRE matches a Kubernetes pod UID (UUID v4 format: 8-4-4-4-12 hex chars).
+// Entries in /var/run/netns/ that don't match this pattern (e.g. podman's
+// "netns-*" names) are foreign and must not be swept.
+var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 
 const (
@@ -166,14 +172,20 @@ func (m *ConstellationNetworkManager) Setup(ctx context.Context, podUID, namespa
 	select {
 	case m.cniSem <- struct{}{}:
 	case <-ctx.Done():
-		_ = deleteNetns(ctx, podUID)
+		_ = deleteNetns(context.Background(), podUID)
 		return "", "", ctx.Err()
 	}
 	result, err := m.cniAPI.AddNetworkList(ctx, m.cniConf, rt)
 	<-m.cniSem
 
 	if err != nil {
-		_ = deleteNetns(ctx, podUID)
+		// CNI ADD may have partially created Cilium endpoint state (lxc interface)
+		// before returning an error. Call DEL to clean up that state before removing
+		// the netns, otherwise the lxc interface leaks until the next process restart.
+		// Use a background context — the original ctx may already be cancelled.
+		cleanCtx := context.Background()
+		_ = m.cniAPI.DelNetworkList(cleanCtx, m.cniConf, rt)
+		_ = deleteNetns(cleanCtx, podUID)
 		return "", "", fmt.Errorf("CNI ADD for pod %s: %w", podUID, err)
 	}
 
@@ -184,11 +196,16 @@ func (m *ConstellationNetworkManager) Setup(ctx context.Context, podUID, namespa
 }
 
 // Teardown calls CNI DEL and removes the network namespace.
+// CNI DEL is always attempted even if the netns is already gone — Cilium
+// maintains endpoint state (lxc interface) independently of the netns file,
+// so skipping DEL when the netns is missing causes a permanent lxc leak.
 func (m *ConstellationNetworkManager) Teardown(ctx context.Context, podUID, namespace, name string) error {
 	netnsPath := netnsDir + "/" + podUID
+	netnsExists := true
 	if _, err := os.Stat(netnsPath); os.IsNotExist(err) {
-		return nil
+		netnsExists = false
 	}
+
 	rt := m.runtimeConf(podUID, namespace, name, netnsPath, "")
 
 	select {
@@ -202,6 +219,10 @@ func (m *ConstellationNetworkManager) Teardown(ctx context.Context, podUID, name
 	if err != nil {
 		m.logger.Warn("CNI DEL failed (proceeding with netns cleanup)",
 			"pod", podUID, "err", err)
+	}
+
+	if !netnsExists {
+		return nil
 	}
 	if err := deleteNetns(ctx, podUID); err != nil {
 		return err
@@ -247,6 +268,12 @@ func (m *ConstellationNetworkManager) SweepStaleNetns(ctx context.Context, activ
 	var cleaned int
 	for _, e := range entries {
 		uid := e.Name()
+		// Only sweep entries that look like pod UIDs. Skip foreign netns entries
+		// (e.g. podman's "netns-*" names) to avoid destroying other consumers
+		// of the shared /var/run/netns directory.
+		if !uuidRE.MatchString(uid) {
+			continue
+		}
 		if _, ok := activeUIDs[uid]; ok {
 			continue
 		}

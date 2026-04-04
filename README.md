@@ -68,27 +68,29 @@ apsis doctor
 
 ## Scale Demo
 
-**3000 pods on 30 virtual nodes, single 28-core machine:**
+**1,772 pods across 2 physical hosts, 33 virtual nodes:**
 
 ```
-$ kubectl get deployment scale-test
-NAME         READY       UP-TO-DATE   AVAILABLE
-scale-test   3000/3000   3000         3000
-
 $ apsis status
-Pods:    3000
-Pawns:   30
-Memory:  351 MiB (perigeos process)
-Per-pod: ~117 KB
+Pods:    1,660          (engix99, 30 pawns)
+         112            (engifire, 2 pawns)
+Memory:  365 MiB        (engix99, ~220 KB/pod)
+          89 MiB        (engifire, ~795 KB/pod)
 ```
 
-- **CPU**: 28-core Xeon E5-2690 v4 @ 2.60 GHz
-- **Memory**: 48 GB host, 6.2 GB in containers, 351 MiB perigeos process
-- **Networking**: Constellation (eBPF per-pod netns), sub-millisecond pod-to-pod latency
+- **Hardware**: 28-core Xeon E5-2690 v4 (engix99) + Intel N150 (engifire)
+- **Networking**: Constellation (eBPF per-pod netns, VXLAN cross-host tunnel)
 - **Runtime**: systemd-nspawn, no external container daemon
-- **Distribution**: 100 pods per virtual node, auto-balanced by kube-scheduler
+- **Stress test**: 2.5 M requests, 11,913 rps sustained, 0% errors, 257 us median latency
 
-See [docs/show-off.md](docs/show-off.md) for full results.
+### Envoy Gateway
+
+L7 ingress via Envoy Gateway (hostNetwork DaemonSet on primary + control-plane nodes):
+
+- 1 M requests through Gateway API HTTPRoute, 4,869 rps, 0% errors
+- p95 = 134 ms, p99 = 151 ms (expected L7 overhead vs kernel ClusterIP DNAT)
+
+See [docs/show-off.md](docs/show-off.md) for full results and comparison tables.
 
 ## How It Works
 
@@ -114,6 +116,7 @@ See [docs/show-off.md](docs/show-off.md) for full results.
 | Runtime | `internal/runtime/systemd/` | systemd-nspawn, transient units, cgroup slices, journald |
 | Kubelet API | `node/api/` | HTTP: exec, attach, logs, port-forward |
 | Control Socket | `internal/control/` | Varlink + TCP for management operations |
+| Envoy Gateway | `deploy/envoy/` | Gateway API ingress (EnvoyProxy, Gateway, HTTPRoute) |
 
 ### Architecture Decisions
 
@@ -158,6 +161,8 @@ Installation: `./deploy/perigeos-install.sh`
 
 For CNI-backed deployments, deploy Constellation manifests from `deploy/constellation/`.
 
+For L7 ingress, deploy Envoy Gateway with the manifests in `deploy/envoy/` (GatewayClass, EnvoyProxy, Gateway, HTTPRoute). The proxy runs as a hostNetwork DaemonSet on primary and control-plane nodes.
+
 ## Key Files
 
 - `cmd/perigeos/main.go` — Entrypoint, wires controllers
@@ -170,7 +175,7 @@ For CNI-backed deployments, deploy Constellation manifests from `deploy/constell
 - `internal/control/` — Varlink control server
 - `internal/podutils/` — Environment, downward API
 - `adr/` — Architecture decisions
-- `deploy/` — Systemd unit, install script, Constellation CNI
+- `deploy/` — Systemd unit, install script, Constellation CNI, Envoy Gateway
 
 ## Requirements
 

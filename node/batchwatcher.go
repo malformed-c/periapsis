@@ -234,8 +234,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 
 	// Index by uid/containerName for O(1) lookup.
 	stateMap := make(map[string]perigeos.MachineState, len(machines))
+	exitCodeMap := make(map[string]int32, len(machines))
 	for _, m := range machines {
-		stateMap[m.UID+"/"+m.ContainerName] = m.State
+		key := m.UID + "/" + m.ContainerName
+		stateMap[key] = m.State
+		exitCodeMap[key] = m.ExitCode
 	}
 
 	// Publish to cache so GetPodStatus can read without per-container D-Bus calls.
@@ -340,7 +343,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			}
 		}
 
-		bw.checkPod(ctx, e.uid, e.pod, e.podIP, stateMap)
+		bw.checkPod(ctx, e.uid, e.pod, e.podIP, stateMap, exitCodeMap)
 	}
 
 	// Coalescer: push status updates only for pods with actual changes.
@@ -391,7 +394,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	}
 }
 
-func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState) {
+func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState, exitCodeMap map[string]int32) {
 	policy := pod.Spec.RestartPolicy
 	if policy == "" {
 		policy = corev1.RestartPolicyAlways
@@ -412,12 +415,21 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// it may be in a brief inactive/dead state during unit startup
 		// (systemd transitions through inactive→active for transient units,
 		// and ExecMainStatus isn't updated until after the unit settles).
-		// Don't make terminal decisions — wait for the unit to settle.
+		//
+		// However, if the machine existed in ListManagedMachines with exit
+		// code 0, the unit genuinely ran and completed (e.g. a Job certgen
+		// that exits in <1s). Accept that as a successful run.
 		if !bw.seenRunning[key] && (state == perigeos.StateExited || state == perigeos.StateUnknown) {
-			bw.logger.Debug("Deferring terminal decision — container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
-			allExited = false
-			allSucceeded = false
-			continue
+			if exists && state == perigeos.StateExited && exitCodeMap[key] == 0 {
+				bw.logger.Debug("Fast-exit container completed successfully (never seen running but exit 0)", "pod", pod.Name, "container", c.Name)
+				bw.seenRunning[key] = true
+				// Fall through to the normal switch below.
+			} else {
+				bw.logger.Debug("Deferring terminal decision — container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
+				allExited = false
+				allSucceeded = false
+				continue
+			}
 		}
 
 		switch state {

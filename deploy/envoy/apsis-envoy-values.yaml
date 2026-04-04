@@ -1,0 +1,30 @@
+# kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/experimental-install.yaml
+# helm template eg oci://docker.io/envoyproxy/gateway-crds-helm --version v1.7.1 --set crds.gatewayAPI.enabled=false --set crds.envoyGateway.enabled=true | kubectl apply --server-side -f -
+# helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.7.1 -n envoy-gateway-system --create-namespace --skip-crds -f apsis-envoy-values.yaml
+
+---
+service:
+  type: ClusterIP
+
+config:
+  envoyGateway:
+    extensionApis:
+      enableBackend: true
+
+# Just in case
+crds:
+  gatewayAPI:
+    enabled: false
+
+  envoyGateway:
+    enabled: false
+
+deployment:
+  pod:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: "true"
+
+    tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule

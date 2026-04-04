@@ -126,6 +126,55 @@ compute-29  pawn  12290  56
 30 pawns, ~55 pods each, balanced by kube-scheduler.
 ```
 
+## Envoy Gateway
+
+Envoy Gateway deployed as a hostNetwork DaemonSet on primary + control-plane
+nodes. HTTPRoute fronts the same nginx-whoami deployment.
+
+```
+$ kubectl -n envoy-gateway-system get pods -o wide
+NAME                                                      READY   NODE
+envoy-envoy-gateway-system-apsis-gateway-fbf4d1d5-rkpmp   2/2     engifire
+envoy-envoy-gateway-system-apsis-gateway-fbf4d1d5-x5hrg   2/2     engix99
+envoy-gateway-59f6cb6596-bs2zt                            1/1     engix99
+```
+
+### Stress Test: Envoy Gateway (k6, 1000 VUs, 3m30s)
+
+```
+  THRESHOLDS
+
+    errors
+    rate=0.00%                              < 0.01  PASS
+
+    http_req_duration
+    p(95)=134.48ms                          < 500   PASS
+    p(99)=151.47ms                          < 1000  PASS
+
+
+  HTTP
+  http_reqs...........: 1,022,563   4,869/s
+  http_req_duration...: avg=76.3 ms  med=72.0 ms  p(90)=125.8 ms  p(95)=134.5 ms  p(99)=151.5 ms  max=215.8 ms
+  http_req_failed.....: 0.00%
+
+  NETWORK
+  data_received.......: 1.8 GB      8.4 MB/s
+  data_sent...........: 70 MB       331 kB/s
+```
+
+### Direct vs Envoy Gateway
+
+| Metric | Direct (ClusterIP) | Envoy Gateway |
+|--------|-------------------|---------------|
+| Throughput | 11,913 rps | 4,869 rps |
+| Median latency | 257 us | 72.0 ms |
+| p95 latency | 4.05 ms | 134.5 ms |
+| p99 latency | 10 ms | 151.5 ms |
+| Error rate | 0.00% | 0.00% |
+
+L7 proxy overhead is expected — Envoy does full HTTP parsing, route matching,
+connection pooling, and load balancing vs kernel-level ClusterIP DNAT.
+
 ## The Numbers
 
 | Metric | Value |

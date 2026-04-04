@@ -33,8 +33,8 @@ const maxConcurrentStarts = 8
 
 // SystemdRuntime implements runtime.Runtime by managing transient systemd-nspawn services.
 type SystemdRuntime struct {
-	conn    *dbus.Conn      // go-systemd wrapper (unit lifecycle)
-	rawConn *dbusv5.Conn    // raw godbus (machine1 interface, unit object properties)
+	conn    systemdDBus  // go-systemd wrapper (unit lifecycle)
+	rawConn machineDBus  // raw godbus (machine1 interface, unit object properties)
 	logger       *slog.Logger
 	imageManager *image.ImageManager
 
@@ -87,6 +87,18 @@ func NewSystemdRuntime(
 		return nil, fmt.Errorf("failed to open raw dbus connection: %w", err)
 	}
 
+	return NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn), nil
+}
+
+// NewSystemdRuntimeWithConns creates a SystemdRuntime with the provided D-Bus connections.
+func NewSystemdRuntimeWithConns(
+	pawnName string,
+	im *image.ImageManager,
+	logger *slog.Logger,
+	execStrategy runtime.ExecStrategy,
+	conn systemdDBus,
+	rawConn machineDBus,
+) *SystemdRuntime {
 	return &SystemdRuntime{
 		conn:         conn,
 		rawConn:      rawConn,
@@ -97,7 +109,7 @@ func NewSystemdRuntime(
 		execStrategy: execStrategy,
 		startSem:     make(chan struct{}, maxConcurrentStarts),
 		unitWaiters:  make(map[string]chan string),
-	}, nil
+	}
 }
 
 // RunMachine creates a transient systemd service running systemd-nspawn.

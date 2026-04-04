@@ -25,6 +25,10 @@ func extractLayer(dst string, tr *tar.Reader) error {
 		// Clean the name first so "./" becomes "" and "../foo" becomes "../foo".
 		// Entries that resolve to exactly dst (e.g. "./" root dir) are harmless — skip them.
 		clean := filepath.Clean(header.Name)
+		if filepath.IsAbs(clean) {
+			return fmt.Errorf("security violation: absolute path %s", header.Name)
+		}
+
 		target := filepath.Join(dst, clean)
 		dstClean := filepath.Clean(dst)
 		if target != dstClean && !strings.HasPrefix(target, dstClean+string(os.PathSeparator)) {

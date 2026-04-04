@@ -124,6 +124,11 @@ func (ps *peerSelector) markBad(ep string) {
 			if ps.next > i {
 				ps.next--
 			}
+			if len(ps.healthy) > 0 {
+				ps.next %= len(ps.healthy)
+			} else {
+				ps.next = 0
+			}
 			return
 		}
 	}

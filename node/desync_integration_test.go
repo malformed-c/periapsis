@@ -86,7 +86,8 @@ func newHarness(t *testing.T) *testHarness {
 	}
 	nm := &stubNetwork{}
 	rec := record.NewFakeRecorder(100)
-	g := NewGambit(cfg, im, nm, rt, logger, rec)
+	store := NewPodStore(rt, 5, logger)
+	g := NewGambit(cfg, store, im, nm, rt, logger, rec)
 
 	return &testHarness{
 		t:        t,

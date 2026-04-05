@@ -101,7 +101,8 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodM
 	nm := &doctorMockNetwork{}
 	im := image.NewImageManager(baseDir, logger)
 	rec := record.NewFakeRecorder(100)
-	return node.NewGambit(cfg, im, nm, rt, logger, rec), rt
+	store := node.NewPodStore(rt, 5, logger)
+	return node.NewGambit(cfg, store, im, nm, rt, logger, rec), rt
 }
 
 // makeDiskPodDir creates the on-disk directory for a pod UID under the gambit's BaseDir.
@@ -559,7 +560,8 @@ func TestDoctorFuzz(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		im := image.NewImageManager(baseDir, logger)
 		rec := record.NewFakeRecorder(100)
-		g := node.NewGambit(cfg, im, nm, rt, logger, rec)
+		store := node.NewPodStore(rt, 5, logger)
+		g := node.NewGambit(cfg, store, im, nm, rt, logger, rec)
 
 		if err := g.HydrateFromRuntime(context.Background()); err != nil {
 			t.Fatalf("iter %d: HydrateFromRuntime: %v", iter, err)

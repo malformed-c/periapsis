@@ -399,7 +399,9 @@ func main() {
 				corev1.EventSource{Host: pawnName, Component: "perigeos"},
 			)
 
-			g := node.NewGambit(pawnCfg, sharedIM, nm, rt, pawnLogger, eventRecorder)
+			// Create PodStore for this pawn
+		store := node.NewPodStore(rt, max(5, pawnCfg.CreateConcurrency), pawnLogger)
+		g := node.NewGambit(pawnCfg, store, sharedIM, nm, rt, pawnLogger, eventRecorder)
 			controlSrv.RegisterGambit(g)
 
 			if err := g.HydrateFromRuntime(ctx); err != nil {

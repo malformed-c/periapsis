@@ -29,7 +29,6 @@ import (
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/malformed-c/periapsis/internal/volume"
-	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -111,20 +110,10 @@ type Gambit struct {
 	volRefs    map[string][]volumeMount
 	// volRefsByPod maps podUID → list of volRef keys for cleanup on delete.
 	volRefsByPod map[string][]string
+	volMu        sync.RWMutex // mutex for volRefs and volRefsByPod
 
-	mu           sync.RWMutex
-	pods         map[string]*corev1.Pod                       // UID → Pod
-	podIPs       map[string]string                            // UID → IP
-	podPhases    map[string]corev1.PodPhase                   // UID → last known phase
-	hydratedUIDs map[string]bool                              // UIDs from HydrateFromRuntime, cleared after purge
-	inFlight     map[string]*podSaga                          // UID → active creation saga (nil = not creating)
-	batchWatcher *BatchWatcher                                // single watcher per pawn (replaces per-pod watchers)
-	restarts     map[string]map[string]*containerRestartState // UID → container → restart state
-	probeStates    map[string]map[string]*ContainerProbeState // UID → container → probe state
-	probeRunner    *ProbeRunner
-	completedPods  map[string]string                         // "namespace/name" → UID for recently-deleted pods (log fallback)
-	deleting       map[string]bool                            // UIDs with DeletePod in progress — suppresses restarts
-	createSem    chan struct{}                                 // limits concurrent pod creation sagas
+	store        *PodStore    // pod state maps and mutex
+	batchWatcher *BatchWatcher // single watcher per pawn (replaces per-pod watchers)
 
 	// podNotify is the callback registered by NotifyPods. When set, Gambit
 	// pushes pod status changes to the PodController instead of relying on
@@ -198,6 +187,7 @@ func createConcurrency(cfg config.PawnConfig) int {
 
 func NewGambit(
 	cfg config.PawnConfig,
+	store *PodStore,
 	im *image.ImageManager,
 	nm network.NetworkManager,
 	rt perigeos.Runtime,
@@ -215,19 +205,9 @@ func NewGambit(
 		Tidal:          downward.NewTidal(cfg.Name, nodeIP),
 		EventRecorder:  eRec,
 
-		pods:         make(map[string]*corev1.Pod),
-		podIPs:       make(map[string]string),
-		podPhases:    make(map[string]corev1.PodPhase),
-		hydratedUIDs: make(map[string]bool),
-		inFlight:     make(map[string]*podSaga),
-		restarts:     make(map[string]map[string]*containerRestartState),
-		probeStates:   make(map[string]map[string]*ContainerProbeState),
-		probeRunner:   NewProbeRunner(rt, logger),
-		completedPods: make(map[string]string),
-		deleting:      make(map[string]bool),
+		store:        store,
 		volRefs:      make(map[string][]volumeMount),
 		volRefsByPod: make(map[string][]string),
-		createSem:    make(chan struct{}, createConcurrency(cfg)),
 		shutdownCh:   make(chan struct{}),
 		startTime:    time.Now(),
 	}
@@ -276,10 +256,10 @@ func (g *Gambit) RequestSync(namespace, name string) {
 // refreshConfigMapVolumes rewrites ConfigMap volume files using the updated object directly.
 func (g *Gambit) refreshConfigMapVolumes(cm *corev1.ConfigMap) {
 	key := "configmap:" + cm.Namespace + "/" + cm.Name
-	g.mu.RLock()
+	g.volMu.RLock()
 	mounts := make([]volumeMount, len(g.volRefs[key]))
 	copy(mounts, g.volRefs[key])
-	g.mu.RUnlock()
+	g.volMu.RUnlock()
 
 	if len(mounts) == 0 {
 		return
@@ -297,10 +277,10 @@ func (g *Gambit) refreshConfigMapVolumes(cm *corev1.ConfigMap) {
 // refreshSecretVolumes rewrites Secret volume files using the updated object directly.
 func (g *Gambit) refreshSecretVolumes(secret *corev1.Secret) {
 	key := "secret:" + secret.Namespace + "/" + secret.Name
-	g.mu.RLock()
+	g.volMu.RLock()
 	mounts := make([]volumeMount, len(g.volRefs[key]))
 	copy(mounts, g.volRefs[key])
-	g.mu.RUnlock()
+	g.volMu.RUnlock()
 
 	if len(mounts) == 0 {
 		return
@@ -317,7 +297,7 @@ func (g *Gambit) refreshSecretVolumes(secret *corev1.Secret) {
 
 // trackVolumeRefs scans a pod's volumes for ConfigMap and Secret types,
 // populating the volRefs reverse index for live refresh. Must be called
-// with g.mu held.
+// with g.volMu held.
 func (g *Gambit) trackVolumeRefs(uid string, pod *corev1.Pod) {
 	var keys []string
 	for i := range pod.Spec.Volumes {
@@ -348,7 +328,7 @@ func (g *Gambit) trackVolumeRefs(uid string, pod *corev1.Pod) {
 }
 
 // untrackVolumeRefs removes all volume reference entries for a pod.
-// Must be called with g.mu held.
+// Must be called with g.volMu held.
 func (g *Gambit) untrackVolumeRefs(uid string) {
 	keys := g.volRefsByPod[uid]
 	for _, key := range keys {
@@ -385,23 +365,14 @@ func (g *Gambit) SetAPIServer(host, port string) {
 // IsInFlight reports whether a pod creation goroutine is currently active for uid.
 // Used by the Reconciler to avoid killing machines mid-creation.
 func (g *Gambit) IsInFlight(uid string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.inFlight[uid] != nil
+	return g.store.IsInFlight(uid)
 }
 
 // cancelInFlight cancels the in-flight saga for uid (if any) and waits for
 // its compensations to finish. Returns immediately if nothing is in flight.
 // Called by DeletePod so the delete path never races with a create in progress.
 func (g *Gambit) cancelInFlight(uid string) {
-	g.mu.RLock()
-	saga := g.inFlight[uid]
-	g.mu.RUnlock()
-	if saga == nil {
-		return
-	}
-	saga.cancel()
-	<-saga.done
+	g.store.CancelInFlight(uid)
 }
 
 // StopBatchWatcher stops the batch watcher. Called during graceful shutdown.
@@ -413,23 +384,17 @@ func (g *Gambit) StopBatchWatcher() {
 
 // PodCount returns the number of pods known to this pawn.
 func (g *Gambit) PodCount() int {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return len(g.pods)
+	return g.store.PodCount()
 }
 
 // PodIP returns the IP allocated to a pod, or "" if unknown.
 func (g *Gambit) PodIP(uid string) string {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.podIPs[uid]
+	return g.store.PodIP(uid)
 }
 
 // PodPhase returns the last known phase for a pod, or "" if unknown.
 func (g *Gambit) PodPhase(uid string) corev1.PodPhase {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.podPhases[uid]
+	return g.store.PodPhase(uid)
 }
 
 // NodeIP returns the IP this pawn advertises to the apiserver.
@@ -439,21 +404,12 @@ func (g *Gambit) NodeIP() string {
 
 // PodUIDs returns a snapshot of all pod UIDs known to this gambit.
 func (g *Gambit) PodUIDs() map[string]string {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	uids := make(map[string]string, len(g.pods))
-	for uid, pod := range g.pods {
-		uids[uid] = pod.Namespace + "/" + pod.Name
-	}
-	return uids
+	return g.store.PodUIDs()
 }
 
 // HasPod reports whether Gambit's in-memory state knows about a pod.
 func (g *Gambit) HasPod(uid string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	_, ok := g.pods[uid]
-	return ok
+	return g.store.HasPod(uid)
 }
 
 // EvictGhost removes a pod from Gambit's in-memory state without running
@@ -461,11 +417,7 @@ func (g *Gambit) HasPod(uid string) bool {
 // Used by the Reconciler for ghost pods — pods in gambit's map that have
 // no systemd unit and are no longer desired by Kubernetes.
 func (g *Gambit) EvictGhost(uid string) {
-	g.mu.Lock()
-	delete(g.pods, uid)
-	delete(g.podIPs, uid)
-	delete(g.podPhases, uid)
-	g.mu.Unlock()
+	g.store.EvictGhost(uid)
 }
 
 // HydrateFromRuntime re-populates in-memory state from persisted pod-state.json
@@ -479,7 +431,9 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		g.Logger.Warn("Failed to load pod states from disk", "err", err)
 	}
 
-	g.mu.Lock()
+	// Filter out terminal pods and prepare batch entries.
+	var entries []hydratedEntry
+	diskUIDs := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		uid := string(state.Pod.UID)
 		// Skip terminal pods — they completed before the restart and should
@@ -489,32 +443,29 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 				"pod", state.Pod.Name, "phase", state.Phase)
 			continue
 		}
-		g.pods[uid] = state.Pod
-		if state.PodIP != "" {
-			g.podIPs[uid] = state.PodIP
-		}
-		g.podPhases[uid] = corev1.PodRunning
-		g.hydratedUIDs[uid] = true
+		entries = append(entries, hydratedEntry{
+			uid: uid,
+			pod: state.Pod,
+			ip:  state.PodIP,
+		})
+		diskUIDs[uid] = struct{}{}
 	}
-	diskUIDs := make(map[string]struct{}, len(states))
-	for _, s := range states {
-		diskUIDs[string(s.Pod.UID)] = struct{}{}
-	}
-	g.mu.Unlock()
+
+	// Bulk register all disk-restored pods in a single lock.
+	g.store.RegisterHydratedBatch(entries)
 
 	// Initialize probe states for disk-restored pods (must happen outside the lock).
 	for _, state := range states {
-		g.initRestartState(state.Pod)
-		// initRestartState resets restarts — re-apply the persisted counts.
+		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
+			continue
+		}
+		g.store.InitRestartState(state.Pod)
+		// InitRestartState resets restarts — re-apply the persisted counts.
 		if len(state.Restarts) > 0 {
 			uid := string(state.Pod.UID)
-			g.mu.Lock()
 			for cname, count := range state.Restarts {
-				if rs, ok := g.restarts[uid][cname]; ok {
-					rs.count = count
-				}
+				g.store.PatchRestartCount(uid, cname, count)
 			}
-			g.mu.Unlock()
 		}
 	}
 
@@ -525,7 +476,6 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		machines = nil
 	}
 
-	g.mu.Lock()
 	for _, m := range machines {
 		if m.UID == "" {
 			continue
@@ -533,36 +483,30 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if _, onDisk := diskUIDs[m.UID]; onDisk {
 			continue // already restored from disk
 		}
-		if m.PodIP != "" {
-			g.podIPs[m.UID] = m.PodIP
-		}
+		// Construct a minimal stub pod for fallback registration.
 		if m.Name != "" && m.Namespace != "" {
-			g.pods[m.UID] = &corev1.Pod{
+			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      m.Name,
 					Namespace: m.Namespace,
 					UID:       types.UID(m.UID),
 				},
 			}
-			g.podPhases[m.UID] = corev1.PodRunning
-			g.hydratedUIDs[m.UID] = true
+			g.store.RegisterHydrated(m.UID, pod, m.PodIP)
+			g.store.InitRestartState(pod)
 		}
 	}
-	g.mu.Unlock()
 
-	g.Logger.Info("Hydrated in-memory state", "from_disk", len(states), "from_systemd", len(machines))
+	g.Logger.Info("Hydrated in-memory state", "from_disk", len(entries), "from_systemd", len(machines))
 
 	// Sweep disk for orphan overlay dirs that have no corresponding systemd
 	// unit. This handles the case where a pod was mid-deletion (systemd unit
 	// stopped) when perigeos restarted, leaving the overlay dir behind.
 	podsDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods")
-	entries, err := os.ReadDir(podsDir)
+	entries2, err := os.ReadDir(podsDir)
 	if err == nil {
-		hydratedSet := make(map[string]struct{}, len(g.pods))
-		for uid := range g.pods {
-			hydratedSet[uid] = struct{}{}
-		}
-		for _, e := range entries {
+		hydratedUIDs := g.store.HydratedUIDs()
+		for _, e := range entries2 {
 			if !e.IsDir() {
 				continue
 			}
@@ -571,7 +515,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 			if len(name) > 36 && name[36] == '-' {
 				uid = name[:36]
 			}
-			if _, ok := hydratedSet[uid]; !ok {
+			if _, ok := hydratedUIDs[uid]; !ok {
 				dirPath := filepath.Join(podsDir, name)
 				// Unmount overlayfs if it's an overlay dir (uid-container).
 				var cleanErr error
@@ -597,15 +541,17 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 // Call this after the informer caches sync and the PodController has had a
 // chance to call CreatePod for all real pods.
 func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
-	g.mu.Lock()
+	hydratedUIDs := g.store.HydratedUIDs()
 	g.Logger.Info("PurgeStaleHydrated: checking hydrated pods",
-		"pawn", g.Config.Name, "hydrated", len(g.hydratedUIDs), "total_pods", len(g.pods))
+		"pawn", g.Config.Name, "hydrated", len(hydratedUIDs), "total_pods", g.store.PodCount())
+
 	stale := make([]string, 0)
-	for uid := range g.hydratedUIDs {
+	for uid := range hydratedUIDs {
 		// If CreatePod was called for this UID, it's confirmed — skip.
 		// (CreatePod replaces the hydration stub with the full pod object,
 		// which has Spec.Containers populated.)
-		if pod, ok := g.pods[uid]; ok && len(pod.Spec.Containers) > 0 {
+		pod := g.store.GetPodCopy(uid)
+		if pod != nil && len(pod.Spec.Containers) > 0 {
 			continue
 		}
 		// Check the informer cache — if k8s doesn't know about it, it's stale.
@@ -626,9 +572,11 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 		}
 		stale = append(stale, uid)
 	}
-	// Clear tracking map — hydration window is over.
-	g.hydratedUIDs = nil
-	g.mu.Unlock()
+
+	// Purge stale UIDs from the store.
+	if len(stale) > 0 {
+		g.store.PurgeHydrated(stale)
+	}
 
 	for _, uid := range stale {
 		g.Logger.Warn("Purging stale hydrated pod", "uid", uid)
@@ -646,12 +594,8 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 				}
 			}
 		}
-		g.mu.Lock()
-		delete(g.pods, uid)
-		delete(g.podIPs, uid)
-		delete(g.podPhases, uid)
-		g.mu.Unlock()
 	}
+
 	if len(stale) > 0 {
 		g.Logger.Info("Purged stale hydrated pods", "count", len(stale))
 	}
@@ -808,22 +752,14 @@ func (g *Gambit) Shutdown() {
 
 // DeletionsInProgress returns true if any pods are currently being deleted.
 func (g *Gambit) DeletionsInProgress() bool {
-	g.mu.RLock()
-	n := len(g.deleting)
-	g.mu.RUnlock()
-	return n > 0
+	return g.store.DeletionsInProgress()
 }
 
 // DrainPods actively stops all running pods on this pawn. Unlike the passive
 // drain (waiting for apiserver DeletePod calls), this directly stops containers
 // and cleans up resources. Call after Shutdown().
 func (g *Gambit) DrainPods(ctx context.Context) {
-	g.mu.RLock()
-	pods := make([]*corev1.Pod, 0, len(g.pods))
-	for _, pod := range g.pods {
-		pods = append(pods, pod)
-	}
-	g.mu.RUnlock()
+	pods := g.store.GetPods()
 
 	for _, pod := range pods {
 		g.Logger.Info("Draining pod", "pawn", g.Config.Name, "pod", pod.Name)
@@ -900,18 +836,8 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
 	// so HydrateFromRuntime knows not to resurrect them.
 	uid := string(pod.UID)
-	g.mu.RLock()
-	podIP := g.podIPs[uid]
-	restartMap := g.restarts[uid]
-	g.mu.RUnlock()
-
-	var counts map[string]int32
-	if len(restartMap) > 0 {
-		counts = make(map[string]int32, len(restartMap))
-		for c, r := range restartMap {
-			counts[c] = r.count
-		}
-	}
+	podIP := g.store.PodIP(uid)
+	counts := g.store.RestartCounts(uid)
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
 		Pod:      pod,
 		PodIP:    podIP,
@@ -946,62 +872,47 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	uid := string(pod.UID)
 
-	g.mu.Lock()
-	if g.inFlight[uid] != nil {
-		g.mu.Unlock()
+	// Check if already in-flight
+	if g.store.AlreadyInFlight(uid) {
 		g.Logger.Info("CreatePod: already in-flight, skipping", "pod", pod.Name)
 		return nil
 	}
-	// After a restart HydrateFromRuntime re-populates g.pods from running
+
+	// After a restart HydrateFromRuntime re-populates store from running
 	// systemd units. When the informer reconnects it calls CreatePod for
 	// every pod it knows about — skip pods that are already running so we
 	// don't tear down and recreate a healthy machine.
-	if existing, exists := g.pods[uid]; exists {
-		// If the existing entry is a hydration stub (no Spec.Containers),
-		// replace it with the full pod object from the informer so that
-		// GetPodStatus, GetContainerLogs etc. have the real spec.
-		if len(existing.Spec.Containers) == 0 {
-			g.pods[uid] = pod
-			delete(g.hydratedUIDs, uid) // k8s confirmed this pod; show it in snapshots
-			g.mu.Unlock()
+	if exists, wasStub := g.store.AlreadyRunning(uid, pod); exists {
+		if wasStub {
 			// Also initialize probe state — it was never set because
 			// createPodSync was skipped for already-running pods.
-			g.initRestartState(pod)
-		} else {
-			delete(g.hydratedUIDs, uid)
-			g.mu.Unlock()
+			g.store.InitRestartState(pod)
 		}
 		g.Logger.Info("CreatePod: already running (hydrated from runtime), skipping", "pod", pod.Name)
 		return nil
 	}
+
 	sagaCtx, cancel := context.WithCancel(context.Background())
 	saga := &podSaga{cancel: cancel, done: make(chan struct{})}
-	g.inFlight[uid] = saga
 	// Register immediately as Pending so GetPodStatus never returns NotFound
 	// while the pod is queued waiting for a createSem slot. Without this,
 	// VK interprets NotFound as the pod not existing and may issue DeletePod,
 	// cancelling the saga and causing a create/cancel loop.
-	g.pods[uid] = pod
-	g.podPhases[uid] = corev1.PodPending
-	g.mu.Unlock()
+	g.store.RegisterPending(uid, pod, saga)
 
 	go func() {
 		defer close(saga.done)
-		defer func() {
-			g.mu.Lock()
-			delete(g.inFlight, uid)
-			g.mu.Unlock()
-		}()
 		defer cancel()
 
 		// Wait for a creation slot. If the saga is cancelled (DeletePod
 		// arrived while we were queued) bail out without starting work.
+		createSem := g.store.CreateSem()
 		select {
-		case g.createSem <- struct{}{}:
+		case createSem <- struct{}{}:
 		case <-sagaCtx.Done():
 			return
 		}
-		defer func() { <-g.createSem }()
+		defer func() { <-createSem }()
 
 		neverRestart := pod.Spec.RestartPolicy == corev1.RestartPolicyNever
 		backoff := createBackoffInit
@@ -1363,13 +1274,13 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		return startErr
 	}
 
-	g.mu.Lock()
-	g.pods[uid] = pod
-	g.podIPs[uid] = podIP
-	g.podPhases[uid] = corev1.PodRunning
+	// Promote pod from Pending to Running and record IP.
+	g.store.PromoteRunning(uid, pod, podIP)
+
 	// Index volume-mounted ConfigMaps/Secrets for live refresh.
+	g.volMu.Lock()
 	g.trackVolumeRefs(uid, pod)
-	g.mu.Unlock()
+	g.volMu.Unlock()
 
 	g.Logger.Info("Pod started successfully", "pod", pod.Name, "ip", podIP,
 		"containers", len(pod.Spec.Containers))
@@ -1467,50 +1378,21 @@ func (g *Gambit) waitForMachine(ctx context.Context, uid string, timeout time.Du
 // markPodFailed records a pod as Failed in the internal maps and pushes
 // the terminal status to the PodController.
 func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
-	failedPod := pod.DeepCopy()
-	failedPod.Status.Phase = corev1.PodFailed
-	failedPod.Status.Reason = "CreateFailed"
-	failedPod.Status.Message = err.Error()
 	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "pod creation failed: %v", err)
-	g.mu.Lock()
-	g.pods[uid] = failedPod
-	g.podPhases[uid] = corev1.PodFailed
-	g.mu.Unlock()
+	failedPod := g.store.MarkFailed(uid, pod, "CreateFailed", err.Error())
 	g.notifyPodStatus(failedPod)
 }
 
 // initRestartState initializes CrashLoopBackOff tracking for a newly created pod.
 // Called after successful pod creation so the batch watcher can manage restarts.
 func (g *Gambit) initRestartState(pod *corev1.Pod) {
-	uid := string(pod.UID)
-	g.mu.Lock()
-	rs := make(map[string]*containerRestartState, len(pod.Spec.Containers))
-	ps := make(map[string]*ContainerProbeState, len(pod.Spec.Containers))
-	for _, c := range pod.Spec.Containers {
-		rs[c.Name] = &containerRestartState{
-			backoff:     restartBackoffInit,
-			lastStarted: time.Now(),
-		}
-		ps[c.Name] = &ContainerProbeState{
-			StartedAt:     time.Now(),
-			Ready:         c.ReadinessProbe == nil, // ready by default only if no readiness probe
-			LastProbeTime: make(map[string]time.Time),
-		}
-	}
-	g.restarts[uid] = rs
-	g.probeStates[uid] = ps
-	g.mu.Unlock()
+	g.store.InitRestartState(pod)
 }
 
 // isContainerReady returns whether a container should be reported as Ready.
 // If no readiness probe is defined, defaults to true (set in initRestartState).
 func (g *Gambit) isContainerReady(uid, containerName string) bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	if ps, ok := g.probeStates[uid][containerName]; ok {
-		return ps.Ready
-	}
-	return true // no probe state → default ready
+	return g.store.IsContainerReady(uid, containerName)
 }
 
 // restartContainer implements a single container restart with CrashLoopBackOff.
@@ -1519,25 +1401,18 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	if g.shuttingDown.Load() {
 		return
 	}
-	g.mu.Lock()
-	rs, ok := g.restarts[uid][containerName]
-	if !ok {
-		g.mu.Unlock()
+
+	count, backoff := g.store.BumpBackoff(uid, containerName)
+	if count == 0 {
+		// No restart state found
 		return
 	}
-	rs.count++
-	backoff := rs.backoff
-	rs.backoff *= 2
-	if rs.backoff > restartBackoffMax {
-		rs.backoff = restartBackoffMax
-	}
-	g.mu.Unlock()
 
 	g.Logger.Info("Restarting container (CrashLoopBackOff)",
 		"pod", pod.Name, "container", containerName,
-		"restartCount", rs.count, "backoff", backoff)
+		"restartCount", count, "backoff", backoff)
 	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "BackOff",
-		"Back-off restarting container %s (count: %d)", containerName, rs.count)
+		"Back-off restarting container %s (count: %d)", containerName, count)
 
 	select {
 	case <-time.After(backoff):
@@ -1577,9 +1452,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 		return
 	}
 
-	g.mu.RLock()
-	podIP := g.podIPs[uid]
-	g.mu.RUnlock()
+	podIP := g.store.PodIP(uid)
 
 	var netPath string
 	if pod.Spec.HostNetwork {
@@ -1643,19 +1516,13 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 		return
 	}
 
-	g.mu.Lock()
-	if rs, ok := g.restarts[uid][containerName]; ok {
-		rs.lastStarted = time.Now()
-	}
-	g.mu.Unlock()
+	g.store.MarkRestarted(uid, containerName)
 
 	g.Logger.Info("Container restarted successfully", "pod", pod.Name, "container", containerName)
 
 	// Push updated status immediately so restartCount is visible in k8s
 	// without waiting for the next batch watcher cycle.
-	g.mu.RLock()
-	restartedPod := g.pods[uid]
-	g.mu.RUnlock()
+	restartedPod := g.store.GetPodCopy(uid)
 	if restartedPod != nil {
 		status := g.buildPodStatus(restartedPod, func(u, cn string) perigeos.MachineState {
 			state, err := g.Runtime.MachineStatus(ctx, u, cn)
@@ -1685,9 +1552,7 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	g.setKind(pod)
 
 	// Mark pod as deleting so the batch watcher won't restart its containers.
-	g.mu.Lock()
-	g.deleting[uid] = true
-	g.mu.Unlock()
+	g.store.MarkDeleting(uid)
 
 	// If a CreatePod saga is running, cancel it and wait for its compensations
 	// to finish before proceeding. This closes the race where DeletePod arrives
@@ -1746,19 +1611,10 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		g.Logger.Warn("Failed to remove pod directory", "uid", uid, "err", err)
 	}
 
-	g.mu.Lock()
+	g.volMu.Lock()
 	g.untrackVolumeRefs(uid)
-	// Retain UID mapping for completed pods so GetContainerLogs can still
-	// retrieve journal entries after the pod is removed from g.pods.
-	key := pod.Namespace + "/" + pod.Name
-	g.completedPods[key] = uid
-	delete(g.pods, uid)
-	delete(g.podIPs, uid)
-	delete(g.podPhases, uid)
-	delete(g.restarts, uid)
-	delete(g.probeStates, uid)
-	delete(g.deleting, uid)
-	g.mu.Unlock()
+	g.volMu.Unlock()
+	g.store.Unregister(uid, pod.Namespace, pod.Name)
 
 	if err := deletePodState(g.Config.BaseDir, g.Config.Name, uid); err != nil {
 		g.Logger.Warn("Failed to delete pod state", "pod", pod.Name, "err", err)
@@ -1770,90 +1626,14 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 // admitPod checks if the pod's resource requests fit within remaining node capacity.
 // Returns an empty string if admitted, or a reason string if rejected.
 func (g *Gambit) admitPod(pod *corev1.Pod) string {
-	// Sum resource requests for the incoming pod.
-	var podCPU, podMem int64
-	for _, c := range pod.Spec.Containers {
-		if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-			podCPU += req.MilliValue()
-		}
-		if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-			podMem += req.Value()
-		}
-	}
-	// No requests specified — always admit (best-effort QoS).
-	if podCPU == 0 && podMem == 0 {
-		return ""
-	}
-
-	// Sum requests from all currently running pods.
-	g.mu.RLock()
-	var usedCPU, usedMem int64
-	for _, p := range g.pods {
-		for _, c := range p.Spec.Containers {
-			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				usedCPU += req.MilliValue()
-			}
-			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				usedMem += req.Value()
-			}
-		}
-	}
-	g.mu.RUnlock()
-
-	// Check against node capacity.
-	nodeCPU := g.Config.CPU.MilliValue()
-	nodeMem := g.Config.Memory.Value()
-
-	if nodeCPU > 0 && usedCPU+podCPU > nodeCPU {
-		return fmt.Sprintf("Insufficient cpu: requested %dm, used %dm, capacity %dm",
-			podCPU, usedCPU, nodeCPU)
-	}
-	if nodeMem > 0 && usedMem+podMem > nodeMem {
-		return fmt.Sprintf("Insufficient memory: requested %d, used %d, capacity %d",
-			podMem, usedMem, nodeMem)
-	}
-	return ""
+	return g.store.AdmitPod(pod, g.Config.CPU, g.Config.Memory)
 }
 
 // computeAllocatable returns Capacity minus the sum of resource requests from
 // all currently tracked pods. This gives the k8s scheduler visibility into
 // real available resources so it can avoid overcommitting the node.
 func (g *Gambit) computeAllocatable(capacity corev1.ResourceList) corev1.ResourceList {
-	var usedCPU, usedMem int64
-	g.mu.RLock()
-	for _, p := range g.pods {
-		for _, c := range p.Spec.Containers {
-			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				usedCPU += req.MilliValue()
-			}
-			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				usedMem += req.Value()
-			}
-		}
-	}
-	g.mu.RUnlock()
-
-	alloc := make(corev1.ResourceList, len(capacity))
-	for k, v := range capacity {
-		alloc[k] = v.DeepCopy()
-	}
-
-	if usedCPU > 0 {
-		if cap := capacity[corev1.ResourceCPU]; cap.MilliValue() > usedCPU {
-			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(cap.MilliValue()-usedCPU, resource.DecimalSI)
-		} else {
-			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(0, resource.DecimalSI)
-		}
-	}
-	if usedMem > 0 {
-		if cap := capacity[corev1.ResourceMemory]; cap.Value() > usedMem {
-			alloc[corev1.ResourceMemory] = *resource.NewQuantity(cap.Value()-usedMem, resource.BinarySI)
-		} else {
-			alloc[corev1.ResourceMemory] = *resource.NewQuantity(0, resource.BinarySI)
-		}
-	}
-
-	return alloc
+	return g.store.ComputeAllocatable(capacity)
 }
 
 // pullProgressFunc returns a callback that emits Pulling events at 10% steps.
@@ -1922,9 +1702,7 @@ func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid strin
 
 // runHTTPPreStopHook executes an HTTP GET PreStop hook against the container.
 func (g *Gambit) runHTTPPreStopHook(ctx context.Context, pod *corev1.Pod, containerName, uid string, httpGet *corev1.HTTPGetAction) {
-	g.mu.RLock()
-	podIP := g.podIPs[uid]
-	g.mu.RUnlock()
+	podIP := g.store.PodIP(uid)
 
 	host := httpGet.Host
 	if host == "" {
@@ -1967,39 +1745,20 @@ func (g *Gambit) runHTTPPreStopHook(ctx context.Context, pod *corev1.Pod, contai
 // ─── Pod Queries ─────────────────────────────────────────────────────────────
 
 func (g *Gambit) GetPod(_ context.Context, namespace, name string) (*corev1.Pod, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	for _, pod := range g.pods {
-		if pod.Namespace == namespace && pod.Name == name {
-			return pod, nil
-		}
-	}
-	return nil, errdefs.NotFoundf("pod %s/%s not found", namespace, name)
+	return g.store.GetPod(namespace, name)
 }
 
 func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
-	g.mu.RLock()
-	var targetPod *corev1.Pod
-	for _, pod := range g.pods {
-		if pod.Namespace == namespace && pod.Name == name {
-			targetPod = pod
-			break
-		}
-	}
-	g.mu.RUnlock()
-
-	if targetPod == nil {
-		return nil, errdefs.NotFoundf("pod %s/%s not found", namespace, name)
+	targetPod, err := g.store.GetPod(namespace, name)
+	if err != nil {
+		return nil, err
 	}
 
 	uid := string(targetPod.UID)
 
 	// Pod is queued, waiting for a createSem slot — no machine exists yet.
 	// Return Pending so VK doesn't interpret NotFound as a missing pod.
-	g.mu.RLock()
-	phase := g.podPhases[uid]
-	g.mu.RUnlock()
+	phase := g.store.PodPhase(uid)
 	if phase == corev1.PodPending {
 		return &corev1.PodStatus{Phase: corev1.PodPending}, nil
 	}
@@ -2048,9 +1807,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 	podPhase := corev1.PodRunning
 	allReady := true
 
-	g.mu.RLock()
-	podRestarts := g.restarts[uid]
-	g.mu.RUnlock()
+	podRestarts := g.store.RestartCounts(uid)
 
 	policy := pod.Spec.RestartPolicy
 	if policy == "" {
@@ -2060,10 +1817,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 	for _, c := range pod.Spec.Containers {
 		state := stateLookup(uid, c.Name)
 
-		var restartCount int32
-		if rs, ok := podRestarts[c.Name]; ok {
-			restartCount = rs.count
-		}
+		restartCount := podRestarts[c.Name]
 
 		cs := corev1.ContainerStatus{
 			Name:         c.Name,
@@ -2122,9 +1876,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 		readyCondition = corev1.ConditionTrue
 	}
 
-	g.mu.RLock()
-	ip := g.podIPs[uid]
-	g.mu.RUnlock()
+	ip := g.store.PodIP(uid)
 
 	return &corev1.PodStatus{
 		Phase:     podPhase,
@@ -2141,15 +1893,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 
 func (g *Gambit) GetPods(_ context.Context) ([]*corev1.Pod, error) {
 	g.Logger.Debug("GetPods", "pawn", g.Config.Name)
-
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	list := make([]*corev1.Pod, 0, len(g.pods))
-	for _, pod := range g.pods {
-		list = append(list, pod)
-	}
-	return list, nil
+	return g.store.GetPods(), nil
 }
 
 // PodSnapshot holds pod info captured under a single lock acquisition.
@@ -2166,27 +1910,7 @@ type PodSnapshot struct {
 // Designed for the control API to avoid per-pod lock acquisitions.
 // Returns nil if the lock cannot be acquired immediately (heavy write churn).
 func (g *Gambit) SnapshotPods() []PodSnapshot {
-	if !g.mu.TryRLock() {
-		return nil
-	}
-	defer g.mu.RUnlock()
-
-	snaps := make([]PodSnapshot, 0, len(g.pods))
-	for uid, pod := range g.pods {
-		// Skip hydrated-only pods that k8s hasn't confirmed yet.
-		if g.hydratedUIDs[uid] {
-			continue
-		}
-		snaps = append(snaps, PodSnapshot{
-			Name:       pod.Name,
-			Namespace:  pod.Namespace,
-			UID:        uid,
-			IP:         g.podIPs[uid],
-			Phase:      g.podPhases[uid],
-			Containers: len(pod.Spec.Containers),
-		})
-	}
-	return snaps
+	return g.store.SnapshotPods()
 }
 
 // ─── Logs & Exec ─────────────────────────────────────────────────────────────
@@ -2200,23 +1924,15 @@ func (g *Gambit) GetContainerLogs(
 ) (io.ReadCloser, error) {
 	g.Logger.Info("GetContainerLogs", "pawn", g.Config.Name, "namespace", namespace, "pod", podName, "container", containerName)
 
-	g.mu.RLock()
-	var uid string
-	for _, pod := range g.pods {
-		if pod.Namespace == namespace && pod.Name == podName {
-			uid = string(pod.UID)
-			break
+	// Try to find the pod by namespace and name.
+	uid, err := g.store.FindPodUID(namespace, podName)
+	if err != nil {
+		// Fall back to completed pods — journal entries survive after DeletePod
+		// removes the pod from the store.
+		uid = g.store.CompletedPodUID(namespace, podName)
+		if uid == "" {
+			return nil, fmt.Errorf("pod %s/%s not found", namespace, podName)
 		}
-	}
-	// Fall back to completed pods — journal entries survive after DeletePod
-	// removes the pod from g.pods.
-	if uid == "" {
-		uid = g.completedPods[namespace+"/"+podName]
-	}
-	g.mu.RUnlock()
-
-	if uid == "" {
-		return nil, fmt.Errorf("pod %s/%s not found", namespace, podName)
 	}
 
 	return g.Runtime.GetLogStream(ctx, uid, containerName, opts)
@@ -2249,15 +1965,7 @@ func (g *Gambit) RunInContainer(
 }
 
 func (g *Gambit) findPodUID(namespace, podName string) (string, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
-	for _, pod := range g.pods {
-		if pod.Namespace == namespace && pod.Name == podName {
-			return string(pod.UID), nil
-		}
-	}
-	return "", fmt.Errorf("pod %s/%s not found", namespace, podName)
+	return g.store.FindPodUID(namespace, podName)
 }
 
 // ─── Node Conditions ─────────────────────────────────────────────────────────
@@ -2454,12 +2162,7 @@ func (g *Gambit) GetStatsSummary(_ context.Context) (*pawstats.Summary, error) {
 		}
 	}
 
-	g.mu.RLock()
-	pods := make([]*corev1.Pod, 0, len(g.pods))
-	for _, p := range g.pods {
-		pods = append(pods, p)
-	}
-	g.mu.RUnlock()
+	pods := g.store.GetPods()
 
 	podStats := make([]pawstats.PodStats, 0, len(pods))
 	for _, pod := range pods {

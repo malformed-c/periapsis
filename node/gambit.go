@@ -18,7 +18,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
-	pawstats "github.com/malformed-c/periapsis/internal/stats"
+	pawnstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/volume"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
@@ -1670,7 +1670,7 @@ func (g *Gambit) setKind(pod *corev1.Pod) {
 
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.
-func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawstats.Summary, error) {
+func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawnstats.Summary, error) {
 	return g.node.GetStatsSummary(ctx)
 }
 

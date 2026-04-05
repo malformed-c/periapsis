@@ -21,7 +21,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/config"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
-	pawstats "github.com/malformed-c/periapsis/internal/stats"
+	pawnstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/malformed-c/periapsis/node"
 	"github.com/varlink/go/varlink"
@@ -344,10 +344,10 @@ func (s *Server) buildPawns() map[string]any {
 			Name: g.Config.Name, IsPrimary: g.Config.IsPrimary,
 			Port: g.Config.Port, NodeIP: g.NodeIP(), PodCount: g.PodCount(),
 		}
-		if cpuNs, err := pawstats.ReadSliceCPU(g.Config.Name); err == nil {
+		if cpuNs, err := pawnstats.ReadSliceCPU(g.Config.Name); err == nil {
 			info.CPUUsageMs = int64(cpuNs / 1_000_000)
 		}
-		if usage, _, err := pawstats.ReadSliceMemory(g.Config.Name); err == nil {
+		if usage, _, err := pawnstats.ReadSliceMemory(g.Config.Name); err == nil {
 			info.MemoryMiB = int64(usage / (1024 * 1024))
 		}
 		if qp, ok := queues[g.Config.Name]; ok {
@@ -385,10 +385,10 @@ func (s *Server) buildTop() map[string]any {
 	pawns := make([]any, 0, len(gambits))
 	for _, g := range gambits {
 		info := PawnTopInfo{Name: g.Config.Name, IsPrimary: g.Config.IsPrimary, PodCount: g.PodCount()}
-		if cpuNs, err := pawstats.ReadSliceCPU(g.Config.Name); err == nil {
+		if cpuNs, err := pawnstats.ReadSliceCPU(g.Config.Name); err == nil {
 			info.CPUUsageNs = cpuNs
 		}
-		if usage, ws, err := pawstats.ReadSliceMemory(g.Config.Name); err == nil {
+		if usage, ws, err := pawnstats.ReadSliceMemory(g.Config.Name); err == nil {
 			info.MemoryBytes, info.MemoryWSBytes = usage, ws
 		}
 		pawns = append(pawns, toMap(info))

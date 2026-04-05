@@ -18,7 +18,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
-	pawstats "github.com/malformed-c/periapsis/internal/stats"
+	pawnstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -394,23 +394,23 @@ func (pn *PawnNode) getPIDPressureCondition(now metav1.Time) corev1.NodeConditio
 }
 
 // GetStatsSummary gathers statistics for the pawn and its pods.
-func (pn *PawnNode) GetStatsSummary(_ context.Context) (*pawstats.Summary, error) {
+func (pn *PawnNode) GetStatsSummary(_ context.Context) (*pawnstats.Summary, error) {
 	now := metav1.Now()
 	pawnName := pn.cfg.Name
 
 	// Node-level stats from the pawn's cgroup slice.
-	nodeStats := pawstats.NodeStats{
+	nodeStats := pawnstats.NodeStats{
 		NodeName:  pawnName,
 		StartTime: now,
 	}
-	if cpuNs, err := pawstats.ReadSliceCPU(pawnName); err == nil {
-		nodeStats.CPU = &pawstats.CPUStats{
+	if cpuNs, err := pawnstats.ReadSliceCPU(pawnName); err == nil {
+		nodeStats.CPU = &pawnstats.CPUStats{
 			Time:                 now,
 			UsageCoreNanoSeconds: &cpuNs,
 		}
 	}
-	if usage, ws, err := pawstats.ReadSliceMemory(pawnName); err == nil {
-		nodeStats.Memory = &pawstats.MemoryStats{
+	if usage, ws, err := pawnstats.ReadSliceMemory(pawnName); err == nil {
+		nodeStats.Memory = &pawnstats.MemoryStats{
 			Time:            now,
 			UsageBytes:      &usage,
 			WorkingSetBytes: &ws,
@@ -419,10 +419,10 @@ func (pn *PawnNode) GetStatsSummary(_ context.Context) (*pawstats.Summary, error
 
 	pods := pn.store.GetPods()
 
-	podStats := make([]pawstats.PodStats, 0, len(pods))
+	podStats := make([]pawnstats.PodStats, 0, len(pods))
 	for _, pod := range pods {
-		ps := pawstats.PodStats{
-			PodRef: pawstats.PodReference{
+		ps := pawnstats.PodStats{
+			PodRef: pawnstats.PodReference{
 				Name:      pod.Name,
 				Namespace: pod.Namespace,
 				UID:       string(pod.UID),
@@ -432,19 +432,19 @@ func (pn *PawnNode) GetStatsSummary(_ context.Context) (*pawstats.Summary, error
 
 		var podCPUNs, podMemUsage, podMemWS uint64
 		for _, c := range pod.Spec.Containers {
-			cs := pawstats.ContainerStats{
+			cs := pawnstats.ContainerStats{
 				Name:      c.Name,
 				StartTime: now,
 			}
-			if cpuNs, err := pawstats.ReadContainerCPU(pawnName, string(pod.UID), c.Name); err == nil {
-				cs.CPU = &pawstats.CPUStats{
+			if cpuNs, err := pawnstats.ReadContainerCPU(pawnName, string(pod.UID), c.Name); err == nil {
+				cs.CPU = &pawnstats.CPUStats{
 					Time:                 now,
 					UsageCoreNanoSeconds: &cpuNs,
 				}
 				podCPUNs += cpuNs
 			}
-			if usage, ws, err := pawstats.ReadContainerMemory(pawnName, string(pod.UID), c.Name); err == nil {
-				cs.Memory = &pawstats.MemoryStats{
+			if usage, ws, err := pawnstats.ReadContainerMemory(pawnName, string(pod.UID), c.Name); err == nil {
+				cs.Memory = &pawnstats.MemoryStats{
 					Time:            now,
 					UsageBytes:      &usage,
 					WorkingSetBytes: &ws,
@@ -456,15 +456,15 @@ func (pn *PawnNode) GetStatsSummary(_ context.Context) (*pawstats.Summary, error
 		}
 
 		if podCPUNs > 0 {
-			ps.CPU = &pawstats.CPUStats{Time: now, UsageCoreNanoSeconds: &podCPUNs}
+			ps.CPU = &pawnstats.CPUStats{Time: now, UsageCoreNanoSeconds: &podCPUNs}
 		}
 		if podMemUsage > 0 {
-			ps.Memory = &pawstats.MemoryStats{Time: now, UsageBytes: &podMemUsage, WorkingSetBytes: &podMemWS}
+			ps.Memory = &pawnstats.MemoryStats{Time: now, UsageBytes: &podMemUsage, WorkingSetBytes: &podMemWS}
 		}
 		podStats = append(podStats, ps)
 	}
 
-	return &pawstats.Summary{
+	return &pawnstats.Summary{
 		Node: nodeStats,
 		Pods: podStats,
 	}, nil

@@ -1,22 +1,15 @@
 package node
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
@@ -26,11 +19,9 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawstats "github.com/malformed-c/periapsis/internal/stats"
-	"github.com/malformed-c/periapsis/internal/version"
 	"github.com/malformed-c/periapsis/internal/volume"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -44,12 +35,6 @@ import (
 )
 
 const (
-	diskPressureThresholdPercent  = 85.0
-	inodePressureThresholdPercent = 95.0
-	memoryPressureThreshold       = 95.0
-	pidPressureThreshold          = 98.0
-	nodeStatusUpdateInterval      = 30 * time.Second
-
 	// machineStartTimeout is how long CreatePod waits for the machine to become
 	// active in systemd before giving up. Keeps inFlight alive for this window.
 	machineStartTimeout  = 60 * time.Second
@@ -113,10 +98,7 @@ type Gambit struct {
 	// check prevents infinite loops.
 	syncRequester func(namespace, name string)
 
-	shuttingDown atomic.Bool
-	shutdownCh   chan struct{} // closed when Shutdown() is called
-
-	startTime time.Time
+	node *PawnNode
 }
 
 // podSaga tracks an in-flight pod creation or a running watcher.
@@ -176,6 +158,7 @@ func NewGambit(
 	cfg config.PawnConfig,
 	store *PodStore,
 	volumes *VolumeTracker,
+	node *PawnNode,
 	im *image.ImageManager,
 	nm network.NetworkManager,
 	rt perigeos.Runtime,
@@ -193,8 +176,7 @@ func NewGambit(
 		EventRecorder:  eRec,
 		store:          store,
 		volumes:        volumes,
-		shutdownCh:     make(chan struct{}),
-		startTime:      time.Now(),
+		node:           node,
 	}
 }
 
@@ -493,151 +475,15 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 
 // ─── Node ────────────────────────────────────────────────────────────────────
 
-// systemdVersion returns the systemd version (e.g. "systemd://259.3-1-arch").
-func systemdVersion() string {
-	out, err := exec.Command("systemctl", "--version").Output()
-	if err != nil {
-		return "systemd://"
-	}
-	// First line: "systemd 259 (259.3-1-arch)" — extract the parenthesized version.
-	line := strings.SplitN(string(out), "\n", 2)[0]
-	if start := strings.IndexByte(line, '('); start >= 0 {
-		if end := strings.IndexByte(line[start:], ')'); end >= 0 {
-			return "systemd://" + line[start+1:start+end]
-		}
-	}
-	// Fallback: use the bare version number.
-	fields := strings.Fields(line)
-	if len(fields) >= 2 {
-		return "systemd://" + fields[1]
-	}
-	return "systemd://"
-}
-
-// kernelVersion returns the running kernel version via uname.
-func kernelVersion() string {
-	var buf syscall.Utsname
-	if err := syscall.Uname(&buf); err != nil {
-		return ""
-	}
-	b := make([]byte, 0, len(buf.Release))
-	for _, c := range buf.Release {
-		if c == 0 {
-			break
-		}
-		b = append(b, byte(c))
-	}
-	return string(b)
-}
-
-// osImage returns PRETTY_NAME from /etc/os-release.
-func osImage() string {
-	f, err := os.Open("/etc/os-release")
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		if after, ok := strings.CutPrefix(s.Text(), "PRETTY_NAME="); ok {
-			return strings.Trim(after, "\"")
-		}
-	}
-	return ""
-}
-
 func (g *Gambit) BuildNode() *corev1.Node {
-	hostName, _ := os.Hostname()
-	pawnName := g.Config.Name
-	outBoundIP := net.ParseIP(resolveNodeIP(g.Config))
-	swapCapacity := int64(1)
-
-	var stat syscall.Statfs_t
-	workspacePath := g.ImageManager.GetLayerCachePath()
-	if err := syscall.Statfs(workspacePath, &stat); err != nil {
-		g.Logger.Error("Could not stat workspace filesystem", "path", workspacePath, "err", err)
-	}
-
-	totalBytes := stat.Blocks * uint64(stat.Bsize)
-	ephemeralStorage := *resource.NewQuantity(int64(totalBytes), resource.BinarySI)
-
-	// All nodes carry the host topology label so the constellation agent
-	// can discover all nodes sharing a physical host via label selector.
-	// Primary nodes get the primary role; regular pawns get the pawn role.
-	labels := make(map[string]string, len(g.Config.Labels)+7)
-	maps.Copy(labels, g.Config.Labels)
-	labels["periapsis.io/host"] = hostName
-	labels["kubernetes.io/hostname"] = pawnName
-	labels["kubernetes.io/os"] = "linux"
-	labels["kubernetes.io/arch"] = runtime.GOARCH
-	labels["beta.kubernetes.io/os"] = "linux"
-	labels["beta.kubernetes.io/arch"] = runtime.GOARCH
-	if g.Config.IsPrimary {
-		labels["periapsis.io/primary"] = "true"
-		labels["node-role.kubernetes.io/primary"] = ""
-	} else {
-		labels["node-role.kubernetes.io/pawn"] = ""
-	}
-
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   pawnName,
-			Labels: labels,
-		},
-		Spec: corev1.NodeSpec{
-			Unschedulable: false,
-			// Pawns carry their configured taints (typically
-			// node.periapsis.io/type=pawn:NoSchedule). DaemonSets schedule
-			// on the primary node instead.
-			Taints:     g.Config.Taints,
-			ProviderID: fmt.Sprintf("perigeos://%s/%s", hostName, pawnName),
-		},
-		Status: corev1.NodeStatus{
-			NodeInfo: corev1.NodeSystemInfo{
-				ContainerRuntimeVersion: systemdVersion(),
-				KubeletVersion:          "perigeos://" + version.Version,
-				KernelVersion:           kernelVersion(),
-				OSImage:                 osImage(),
-				OperatingSystem:         "linux",
-				Architecture:            runtime.GOARCH,
-				Swap: &corev1.NodeSwapStatus{
-					Capacity: &swapCapacity,
-				},
-			},
-			Capacity: corev1.ResourceList{
-				corev1.ResourceCPU:              g.Config.CPU,
-				corev1.ResourceMemory:           g.Config.Memory,
-				corev1.ResourcePods:             resource.MustParse("110"),
-				corev1.ResourceStorage:          ephemeralStorage,
-				corev1.ResourceEphemeralStorage: ephemeralStorage,
-			},
-			Conditions: g.nodeConditions(),
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeHostName, Address: pawnName},
-				{Type: corev1.NodeInternalIP, Address: outBoundIP.String()},
-			},
-			DaemonEndpoints: corev1.NodeDaemonEndpoints{
-				KubeletEndpoint: corev1.DaemonEndpoint{
-					Port: int32(g.Config.Port),
-				},
-			},
-		},
-	}
-	// Compute Allocatable = Capacity - sum(running pod requests).
-	// This lets the k8s scheduler see real available resources and avoid
-	// overcommitting this node.
-	node.Status.Allocatable = g.computeAllocatable(node.Status.Capacity)
-	return node
+	return g.node.BuildNode()
 }
 
 // Shutdown signals this pawn to begin graceful shutdown. Ping will return an
 // error, causing VK to stop renewing the lease. The node becomes NotReady
 // after ~40s, and the scheduler stops placing pods on it.
 func (g *Gambit) Shutdown() {
-	if g.shuttingDown.CompareAndSwap(false, true) {
-		close(g.shutdownCh)
-		g.Logger.Info("Shutdown initiated", "pawn", g.Config.Name)
-	}
+	g.node.Shutdown()
 }
 
 // DeletionsInProgress returns true if any pods are currently being deleted.
@@ -649,14 +495,7 @@ func (g *Gambit) DeletionsInProgress() bool {
 // drain (waiting for apiserver DeletePod calls), this directly stops containers
 // and cleans up resources. Call after Shutdown().
 func (g *Gambit) DrainPods(ctx context.Context) {
-	pods := g.store.GetPods()
-
-	for _, pod := range pods {
-		g.Logger.Info("Draining pod", "pawn", g.Config.Name, "pod", pod.Name)
-		if err := g.DeletePod(ctx, pod); err != nil {
-			g.Logger.Error("Failed to drain pod", "pod", pod.Name, "err", err)
-		}
-	}
+	g.node.DrainPods(ctx)
 }
 
 // NotifyPods registers a callback for asynchronous pod status updates.
@@ -666,46 +505,12 @@ func (g *Gambit) NotifyPods(_ context.Context, cb func(*corev1.Pod)) {
 	g.podNotify = cb
 }
 
-func (g *Gambit) Ping(context.Context) error {
-	if g.shuttingDown.Load() {
-		return fmt.Errorf("pawn %s is shutting down", g.Config.Name)
-	}
-	return nil
+func (g *Gambit) Ping(ctx context.Context) error {
+	return g.node.Ping(ctx)
 }
 
 func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
-	g.Logger.Info("Starting pawn status notifier", "pawn", g.Config.Name)
-	go func() {
-		g.Logger.Info("Sending initial pawn registration", "pawn", g.Config.Name)
-		cb(g.BuildNode())
-
-		ticker := time.NewTicker(nodeStatusUpdateInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				g.Logger.Info("Stopping pawn status notifier")
-				return
-			case <-g.shutdownCh:
-				g.Logger.Info("Shutdown signal received, marking node NotReady+Unschedulable", "pawn", g.Config.Name)
-				node := g.BuildNode()
-				node.Spec.Unschedulable = true
-				for i := range node.Status.Conditions {
-					if node.Status.Conditions[i].Type == corev1.NodeReady {
-						node.Status.Conditions[i].Status = corev1.ConditionFalse
-						node.Status.Conditions[i].Reason = "Shutdown"
-						node.Status.Conditions[i].Message = "perigeos shutting down"
-					}
-				}
-				cb(node)
-				return
-			case <-ticker.C:
-				g.Logger.Info("Updating node status", "pawn", g.Config.Name)
-				cb(g.BuildNode())
-			}
-		}
-	}()
+	g.node.NotifyNodeStatus(ctx, cb)
 }
 
 // notifyPodStatus pushes an updated pod to the PodController if a callback
@@ -1286,7 +1091,7 @@ func (g *Gambit) isContainerReady(uid, containerName string) bool {
 // restartContainer implements a single container restart with CrashLoopBackOff.
 func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.Pod, containerName string) {
 	// Don't start new machines during graceful shutdown.
-	if g.shuttingDown.Load() {
+	if g.node.IsShuttingDown() {
 		return
 	}
 
@@ -1716,7 +1521,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 		case perigeos.StateRunning:
 			cs.Ready = g.isContainerReady(uid, c.Name)
 			cs.State = corev1.ContainerState{
-				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.startTime)},
+				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.node.StartTime())},
 			}
 		case perigeos.StateCreating, perigeos.StateUnknown:
 			podPhase = corev1.PodPending
@@ -1856,166 +1661,6 @@ func (g *Gambit) findPodUID(namespace, podName string) (string, error) {
 
 // ─── Node Conditions ─────────────────────────────────────────────────────────
 
-func (g *Gambit) nodeConditions() []corev1.NodeCondition {
-	now := metav1.Now()
-	return []corev1.NodeCondition{
-		{
-			Type:               corev1.NodeReady,
-			Status:             corev1.ConditionTrue,
-			LastHeartbeatTime:  now,
-			LastTransitionTime: now,
-			Reason:             "PawnReady",
-			Message:            "pawn is ready",
-		},
-		g.getMemoryPressureCondition(now),
-		g.getDiskPressureCondition(now, g.ImageManager.GetLayerCachePath()),
-		g.getPIDPressureCondition(now),
-		{
-			Type:               corev1.NodeNetworkUnavailable,
-			Status:             corev1.ConditionFalse,
-			LastHeartbeatTime:  now,
-			LastTransitionTime: now,
-			Reason:             "RouteCreated",
-			Message:            "RouteController created a route",
-		},
-	}
-}
-
-func (g *Gambit) getMemoryPressureCondition(now metav1.Time) corev1.NodeCondition {
-	cond := corev1.NodeCondition{
-		Type:               corev1.NodeMemoryPressure,
-		LastHeartbeatTime:  now,
-		LastTransitionTime: now,
-	}
-
-	file, err := os.Open("/proc/meminfo")
-	if err != nil {
-		cond.Status = corev1.ConditionUnknown
-		cond.Reason = "ProcMeminfoUnavailable"
-		cond.Message = "Could not read /proc/meminfo"
-		return cond
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	var memTotal, memAvailable uint64
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 {
-			continue
-		}
-		val, _ := strconv.ParseUint(fields[1], 10, 64)
-		switch fields[0] {
-		case "MemTotal:":
-			memTotal = val
-		case "MemAvailable:":
-			memAvailable = val
-		}
-	}
-
-	if memTotal == 0 {
-		cond.Status = corev1.ConditionUnknown
-		cond.Reason = "MeminfoParsingFailed"
-		cond.Message = "Could not parse MemTotal from /proc/meminfo"
-		return cond
-	}
-
-	usagePercent := (float64(memTotal-memAvailable) / float64(memTotal)) * 100.0
-	if usagePercent > memoryPressureThreshold {
-		cond.Status = corev1.ConditionTrue
-		cond.Reason = "PawnHasHighMemoryUsage"
-		cond.Message = fmt.Sprintf("Memory usage %.2f%% exceeds threshold %.2f%%", usagePercent, memoryPressureThreshold)
-	} else {
-		cond.Status = corev1.ConditionFalse
-		cond.Reason = "PawnHasSufficientMemory"
-		cond.Message = "pawn has sufficient memory available"
-	}
-	return cond
-}
-
-func (g *Gambit) getDiskPressureCondition(now metav1.Time, path string) corev1.NodeCondition {
-	cond := corev1.NodeCondition{
-		Type:               corev1.NodeDiskPressure,
-		LastHeartbeatTime:  now,
-		LastTransitionTime: now,
-	}
-
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		cond.Status = corev1.ConditionUnknown
-		cond.Reason = "StatfsFailed"
-		cond.Message = fmt.Sprintf("Could not stat filesystem at %s: %v", path, err)
-		return cond
-	}
-
-	if stat.Files > 0 {
-		inodeUsage := (float64(stat.Files-stat.Ffree) / float64(stat.Files)) * 100.0
-		if inodeUsage > inodePressureThresholdPercent {
-			cond.Status = corev1.ConditionTrue
-			cond.Reason = "PawnHasHighInodeUsage"
-			cond.Message = fmt.Sprintf("Inode usage %.2f%% exceeds threshold", inodeUsage)
-			return cond
-		}
-
-		blockUsage := (float64(stat.Blocks-stat.Bfree) / float64(stat.Blocks)) * 100.0
-		if blockUsage > diskPressureThresholdPercent {
-			cond.Status = corev1.ConditionTrue
-			cond.Reason = "PawnHasHighDiskUsage"
-			cond.Message = fmt.Sprintf("Disk usage %.2f%% exceeds threshold", blockUsage)
-			return cond
-		}
-	}
-
-	cond.Status = corev1.ConditionFalse
-	cond.Reason = "PawnHasNoDiskPressure"
-	cond.Message = "pawn has no disk pressure"
-	return cond
-}
-
-func (g *Gambit) getPIDPressureCondition(now metav1.Time) corev1.NodeCondition {
-	cond := corev1.NodeCondition{
-		Type:               corev1.NodePIDPressure,
-		LastHeartbeatTime:  now,
-		LastTransitionTime: now,
-	}
-
-	pidMaxBytes, err := os.ReadFile("/proc/sys/kernel/pid_max")
-	if err != nil {
-		cond.Status = corev1.ConditionUnknown
-		cond.Reason = "PidMaxUnavailable"
-		cond.Message = "Could not read /proc/sys/kernel/pid_max"
-		return cond
-	}
-	pidMax, _ := strconv.ParseFloat(strings.TrimSpace(string(pidMaxBytes)), 64)
-
-	procFiles, err := os.ReadDir("/proc")
-	if err != nil {
-		cond.Status = corev1.ConditionUnknown
-		cond.Reason = "ProcUnavailable"
-		cond.Message = "Could not read /proc"
-		return cond
-	}
-
-	pidCount := 0
-	for _, f := range procFiles {
-		if _, err := strconv.Atoi(f.Name()); err == nil {
-			pidCount++
-		}
-	}
-
-	pidUsage := (float64(pidCount) / pidMax) * 100.0
-	if pidUsage > pidPressureThreshold {
-		cond.Status = corev1.ConditionTrue
-		cond.Reason = "PawnHasHighPIDUsage"
-		cond.Message = fmt.Sprintf("PID usage %.2f%% exceeds threshold", pidUsage)
-	} else {
-		cond.Status = corev1.ConditionFalse
-		cond.Reason = "PawnHasSufficientPID"
-		cond.Message = "Pawn has sufficient PIDs available"
-	}
-	return cond
-}
-
 // setKind restores Pod TypeMeta stripped by client-go informers.
 // Required for the EventRecorder to construct object references correctly.
 func (g *Gambit) setKind(pod *corev1.Pod) {
@@ -2025,80 +1670,8 @@ func (g *Gambit) setKind(pod *corev1.Pod) {
 
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.
-func (g *Gambit) GetStatsSummary(_ context.Context) (*pawstats.Summary, error) {
-	now := metav1.Now()
-	pawnName := g.Config.Name
-
-	// Node-level stats from the pawn's cgroup slice.
-	nodeStats := pawstats.NodeStats{
-		NodeName:  pawnName,
-		StartTime: now,
-	}
-	if cpuNs, err := pawstats.ReadSliceCPU(pawnName); err == nil {
-		nodeStats.CPU = &pawstats.CPUStats{
-			Time:                 now,
-			UsageCoreNanoSeconds: &cpuNs,
-		}
-	}
-	if usage, ws, err := pawstats.ReadSliceMemory(pawnName); err == nil {
-		nodeStats.Memory = &pawstats.MemoryStats{
-			Time:            now,
-			UsageBytes:      &usage,
-			WorkingSetBytes: &ws,
-		}
-	}
-
-	pods := g.store.GetPods()
-
-	podStats := make([]pawstats.PodStats, 0, len(pods))
-	for _, pod := range pods {
-		ps := pawstats.PodStats{
-			PodRef: pawstats.PodReference{
-				Name:      pod.Name,
-				Namespace: pod.Namespace,
-				UID:       string(pod.UID),
-			},
-			StartTime: pod.CreationTimestamp,
-		}
-
-		var podCPUNs, podMemUsage, podMemWS uint64
-		for _, c := range pod.Spec.Containers {
-			cs := pawstats.ContainerStats{
-				Name:      c.Name,
-				StartTime: now,
-			}
-			if cpuNs, err := pawstats.ReadContainerCPU(pawnName, string(pod.UID), c.Name); err == nil {
-				cs.CPU = &pawstats.CPUStats{
-					Time:                 now,
-					UsageCoreNanoSeconds: &cpuNs,
-				}
-				podCPUNs += cpuNs
-			}
-			if usage, ws, err := pawstats.ReadContainerMemory(pawnName, string(pod.UID), c.Name); err == nil {
-				cs.Memory = &pawstats.MemoryStats{
-					Time:            now,
-					UsageBytes:      &usage,
-					WorkingSetBytes: &ws,
-				}
-				podMemUsage += usage
-				podMemWS += ws
-			}
-			ps.Containers = append(ps.Containers, cs)
-		}
-
-		if podCPUNs > 0 {
-			ps.CPU = &pawstats.CPUStats{Time: now, UsageCoreNanoSeconds: &podCPUNs}
-		}
-		if podMemUsage > 0 {
-			ps.Memory = &pawstats.MemoryStats{Time: now, UsageBytes: &podMemUsage, WorkingSetBytes: &podMemWS}
-		}
-		podStats = append(podStats, ps)
-	}
-
-	return &pawstats.Summary{
-		Node: nodeStats,
-		Pods: podStats,
-	}, nil
+func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawstats.Summary, error) {
+	return g.node.GetStatsSummary(ctx)
 }
 
 // writeResolvConf writes a cluster-aware /etc/resolv.conf into the container

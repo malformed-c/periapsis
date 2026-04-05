@@ -103,7 +103,10 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodM
 	rec := record.NewFakeRecorder(100)
 	store := node.NewPodStore(rt, 5, logger)
 	volumes := node.NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
-	return node.NewGambit(cfg, store, volumes, im, nm, rt, logger, rec), rt
+	pawnNode := node.NewPawnNode(cfg, store, im, logger)
+	g := node.NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+	pawnNode.SetDeletePod(g.DeletePod)
+	return g, rt
 }
 
 // makeDiskPodDir creates the on-disk directory for a pod UID under the gambit's BaseDir.
@@ -563,7 +566,9 @@ func TestDoctorFuzz(t *testing.T) {
 		rec := record.NewFakeRecorder(100)
 		store := node.NewPodStore(rt, 5, logger)
 		volumes := node.NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
-		g := node.NewGambit(cfg, store, volumes, im, nm, rt, logger, rec)
+		pawnNode := node.NewPawnNode(cfg, store, im, logger)
+		g := node.NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+		pawnNode.SetDeletePod(g.DeletePod)
 
 		if err := g.HydrateFromRuntime(context.Background()); err != nil {
 			t.Fatalf("iter %d: HydrateFromRuntime: %v", iter, err)

@@ -88,7 +88,9 @@ func newHarness(t *testing.T) *testHarness {
 	rec := record.NewFakeRecorder(100)
 	store := NewPodStore(rt, 5, logger)
 	volumes := NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
-	g := NewGambit(cfg, store, volumes, im, nm, rt, logger, rec)
+	pawnNode := NewPawnNode(cfg, store, im, logger)
+	g := NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+	pawnNode.SetDeletePod(g.DeletePod)
 
 	return &testHarness{
 		t:        t,

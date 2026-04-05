@@ -402,7 +402,9 @@ func main() {
 			// Create PodStore for this pawn
 		store := node.NewPodStore(rt, max(5, pawnCfg.CreateConcurrency), pawnLogger)
 		volumes := node.NewVolumeTracker(pawnCfg.BaseDir, pawnCfg.Name, pawnLogger)
-		g := node.NewGambit(pawnCfg, store, volumes, sharedIM, nm, rt, pawnLogger, eventRecorder)
+		pawnNode := node.NewPawnNode(pawnCfg, store, sharedIM, pawnLogger)
+		g := node.NewGambit(pawnCfg, store, volumes, pawnNode, sharedIM, nm, rt, pawnLogger, eventRecorder)
+		pawnNode.SetDeletePod(g.DeletePod)
 			controlSrv.RegisterGambit(g)
 
 			if err := g.HydrateFromRuntime(ctx); err != nil {

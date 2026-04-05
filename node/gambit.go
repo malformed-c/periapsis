@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -78,13 +77,6 @@ const (
 	DefaultCreateConcurrency = 5
 )
 
-// volumeMount tracks a single mounted ConfigMap/Secret for a running pod.
-type volumeMount struct {
-	podUID  string
-	hostDir string         // host path where files were written
-	vol     *corev1.Volume // original volume spec (for Items filtering)
-}
-
 // Gambit is the periapsis provider. It implements the PodProvider interface
 // and orchestrates image pulling, overlayfs mounting, network setup,
 // and systemd-nspawn machine management for each pod.
@@ -105,12 +97,7 @@ type Gambit struct {
 	kubeClient   kubernetes.Interface
 	clusterDNS   string // ClusterIP of kube-dns, written to container resolv.conf
 
-	// volRefs indexes mounted ConfigMaps/Secrets by "kind:namespace/name"
-	// for O(1) lookup when an informer fires an update event.
-	volRefs    map[string][]volumeMount
-	// volRefsByPod maps podUID → list of volRef keys for cleanup on delete.
-	volRefsByPod map[string][]string
-	volMu        sync.RWMutex // mutex for volRefs and volRefsByPod
+	volumes *VolumeTracker // live ConfigMap/Secret volume refresh
 
 	store        *PodStore    // pod state maps and mutex
 	batchWatcher *BatchWatcher // single watcher per pawn (replaces per-pod watchers)
@@ -188,6 +175,7 @@ func createConcurrency(cfg config.PawnConfig) int {
 func NewGambit(
 	cfg config.PawnConfig,
 	store *PodStore,
+	volumes *VolumeTracker,
 	im *image.ImageManager,
 	nm network.NetworkManager,
 	rt perigeos.Runtime,
@@ -195,7 +183,6 @@ func NewGambit(
 	eRec record.EventRecorder,
 ) *Gambit {
 	nodeIP := resolveNodeIP(cfg)
-
 	return &Gambit{
 		Config:         cfg,
 		ImageManager:   im,
@@ -204,12 +191,10 @@ func NewGambit(
 		Logger:         logger,
 		Tidal:          downward.NewTidal(cfg.Name, nodeIP),
 		EventRecorder:  eRec,
-
-		store:        store,
-		volRefs:      make(map[string][]volumeMount),
-		volRefsByPod: make(map[string][]string),
-		shutdownCh:   make(chan struct{}),
-		startTime:    time.Now(),
+		store:          store,
+		volumes:        volumes,
+		shutdownCh:     make(chan struct{}),
+		startTime:      time.Now(),
 	}
 }
 
@@ -228,13 +213,13 @@ func (g *Gambit) SetInformers(cmInformer, secretInformer cache.SharedIndexInform
 	cmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(_, obj interface{}) {
 			cm := obj.(*corev1.ConfigMap)
-			g.refreshConfigMapVolumes(cm)
+			g.volumes.RefreshConfigMap(cm)
 		},
 	})
 	secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(_, obj interface{}) {
 			s := obj.(*corev1.Secret)
-			g.refreshSecretVolumes(s)
+			g.volumes.RefreshSecret(s)
 		},
 	})
 }
@@ -251,101 +236,6 @@ func (g *Gambit) RequestSync(namespace, name string) {
 	if g.syncRequester != nil {
 		g.syncRequester(namespace, name)
 	}
-}
-
-// refreshConfigMapVolumes rewrites ConfigMap volume files using the updated object directly.
-func (g *Gambit) refreshConfigMapVolumes(cm *corev1.ConfigMap) {
-	key := "configmap:" + cm.Namespace + "/" + cm.Name
-	g.volMu.RLock()
-	mounts := make([]volumeMount, len(g.volRefs[key]))
-	copy(mounts, g.volRefs[key])
-	g.volMu.RUnlock()
-
-	if len(mounts) == 0 {
-		return
-	}
-
-	g.Logger.Info("Refreshing volume", "kind", "configmap", "name", cm.Name, "pods", len(mounts))
-	for _, m := range mounts {
-		err := volume.RefreshConfigMapDirect(cm, m.vol, m.hostDir)
-		if err != nil {
-			g.Logger.Warn("Failed to refresh volume", "kind", "configmap", "name", cm.Name, "pod", m.podUID, "err", err)
-		}
-	}
-}
-
-// refreshSecretVolumes rewrites Secret volume files using the updated object directly.
-func (g *Gambit) refreshSecretVolumes(secret *corev1.Secret) {
-	key := "secret:" + secret.Namespace + "/" + secret.Name
-	g.volMu.RLock()
-	mounts := make([]volumeMount, len(g.volRefs[key]))
-	copy(mounts, g.volRefs[key])
-	g.volMu.RUnlock()
-
-	if len(mounts) == 0 {
-		return
-	}
-
-	g.Logger.Info("Refreshing volume", "kind", "secret", "name", secret.Name, "pods", len(mounts))
-	for _, m := range mounts {
-		err := volume.RefreshSecretDirect(secret, m.vol, m.hostDir)
-		if err != nil {
-			g.Logger.Warn("Failed to refresh volume", "kind", "secret", "name", secret.Name, "pod", m.podUID, "err", err)
-		}
-	}
-}
-
-// trackVolumeRefs scans a pod's volumes for ConfigMap and Secret types,
-// populating the volRefs reverse index for live refresh. Must be called
-// with g.volMu held.
-func (g *Gambit) trackVolumeRefs(uid string, pod *corev1.Pod) {
-	var keys []string
-	for i := range pod.Spec.Volumes {
-		vol := &pod.Spec.Volumes[i]
-		var kind, name string
-		switch {
-		case vol.ConfigMap != nil:
-			kind = "configmap"
-			name = vol.ConfigMap.Name
-		case vol.Secret != nil:
-			kind = "secret"
-			name = vol.Secret.SecretName
-		default:
-			continue
-		}
-		key := kind + ":" + pod.Namespace + "/" + name
-		hostDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid, "volumes", kind, vol.Name)
-		g.volRefs[key] = append(g.volRefs[key], volumeMount{
-			podUID:  uid,
-			hostDir: hostDir,
-			vol:     vol,
-		})
-		keys = append(keys, key)
-	}
-	if len(keys) > 0 {
-		g.volRefsByPod[uid] = keys
-	}
-}
-
-// untrackVolumeRefs removes all volume reference entries for a pod.
-// Must be called with g.volMu held.
-func (g *Gambit) untrackVolumeRefs(uid string) {
-	keys := g.volRefsByPod[uid]
-	for _, key := range keys {
-		mounts := g.volRefs[key]
-		filtered := mounts[:0]
-		for _, m := range mounts {
-			if m.podUID != uid {
-				filtered = append(filtered, m)
-			}
-		}
-		if len(filtered) == 0 {
-			delete(g.volRefs, key)
-		} else {
-			g.volRefs[key] = filtered
-		}
-	}
-	delete(g.volRefsByPod, uid)
 }
 
 func (g *Gambit) SetKubeClient(client kubernetes.Interface) {
@@ -1278,9 +1168,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	g.store.PromoteRunning(uid, pod, podIP)
 
 	// Index volume-mounted ConfigMaps/Secrets for live refresh.
-	g.volMu.Lock()
-	g.trackVolumeRefs(uid, pod)
-	g.volMu.Unlock()
+	g.volumes.Track(uid, pod)
 
 	g.Logger.Info("Pod started successfully", "pod", pod.Name, "ip", podIP,
 		"containers", len(pod.Spec.Containers))
@@ -1611,9 +1499,7 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		g.Logger.Warn("Failed to remove pod directory", "uid", uid, "err", err)
 	}
 
-	g.volMu.Lock()
-	g.untrackVolumeRefs(uid)
-	g.volMu.Unlock()
+	g.volumes.Untrack(uid)
 	g.store.Unregister(uid, pod.Namespace, pod.Name)
 
 	if err := deletePodState(g.Config.BaseDir, g.Config.Name, uid); err != nil {

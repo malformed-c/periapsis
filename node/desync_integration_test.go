@@ -89,7 +89,17 @@ func newHarness(t *testing.T) *testHarness {
 	store := NewPodStore(rt, 5, logger)
 	volumes := NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
 	pawnNode := NewPawnNode(cfg, store, im, logger)
-	g := NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+	g := NewGambit(GambitDeps{
+		Config:         cfg,
+		Store:          store,
+		Volumes:        volumes,
+		Node:           pawnNode,
+		ImageManager:   im,
+		NetworkManager: nm,
+		Runtime:        rt,
+		Logger:         logger,
+		EventRecorder:  rec,
+	})
 	pawnNode.SetDeletePod(g.DeletePod)
 
 	return &testHarness{

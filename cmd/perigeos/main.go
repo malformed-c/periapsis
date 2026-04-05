@@ -400,11 +400,30 @@ func main() {
 			)
 
 			// Create PodStore for this pawn
-		store := node.NewPodStore(rt, max(5, pawnCfg.CreateConcurrency), pawnLogger)
-		volumes := node.NewVolumeTracker(pawnCfg.BaseDir, pawnCfg.Name, pawnLogger)
-		pawnNode := node.NewPawnNode(pawnCfg, store, sharedIM, pawnLogger)
-		g := node.NewGambit(pawnCfg, store, volumes, pawnNode, sharedIM, nm, rt, pawnLogger, eventRecorder)
-		pawnNode.SetDeletePod(g.DeletePod)
+			store := node.NewPodStore(rt, max(5, pawnCfg.CreateConcurrency), pawnLogger)
+			volumes := node.NewVolumeTracker(pawnCfg.BaseDir, pawnCfg.Name, pawnLogger)
+			pawnNode := node.NewPawnNode(pawnCfg, store, sharedIM, pawnLogger)
+			g := node.NewGambit(node.GambitDeps{
+				Config:         pawnCfg,
+				Store:          store,
+				Volumes:        volumes,
+				Node:           pawnNode,
+				ImageManager:   sharedIM,
+				NetworkManager: nm,
+				Runtime:        rt,
+				Logger:         pawnLogger,
+				EventRecorder:  eventRecorder,
+				CMLister:       cmInformer.Lister(),
+				SecretLister:   secretInformer.Lister(),
+				SvcLister:      svcInformer.Lister(),
+				KubeClient:     kubeClient,
+				ClusterDNS:     clusterDNS,
+				APIServerHost:  apiServerHost,
+				APIServerPort:  apiServerPort,
+				CMInformer:     cmInformer.Informer(),
+				SecretInformer: secretInformer.Informer(),
+			})
+			pawnNode.SetDeletePod(g.DeletePod)
 			controlSrv.RegisterGambit(g)
 
 			if err := g.HydrateFromRuntime(ctx); err != nil {
@@ -432,9 +451,9 @@ func main() {
 			})
 			wg.Go(func() { <-ctx.Done(); bw.Stop() })
 
-				nodeController, err := node.NewNodeController(
-				g,
-				g.BuildNode(),
+			nodeController, err := node.NewNodeController(
+				pawnNode,
+				pawnNode.BuildNode(),
 				kubeClient.CoreV1().Nodes(),
 				node.WithNodeEnableLeaseV1(
 					kubeClient.CoordinationV1().Leases(corev1.NamespaceNodeLease),
@@ -496,17 +515,8 @@ func main() {
 			podLister := localInformer.Core().V1().Pods().Lister().Pods(corev1.NamespaceAll)
 			reconciler := node.NewReconciler(g, rt, nm, sharedIM, podLister, pawnLogger.With("component", "reconciler"))
 
-			// Wire listers for env population and volume resolution.
-			g.SetListers(cmInformer.Lister(), secretInformer.Lister(), svcInformer.Lister())
-			g.SetInformers(cmInformer.Informer(), secretInformer.Informer())
+			// Wire the forward reconciler callback (the only setter that stays).
 			g.SetSyncRequester(podController.RequestSync)
-			g.SetKubeClient(kubeClient)
-			if clusterDNS != "" {
-				g.SetClusterDNS(clusterDNS)
-			}
-			if apiServerHost != "" {
-				g.SetAPIServer(apiServerHost, apiServerPort)
-			}
 
 			// Pre-create CiliumNode so the operator allocates a CIDR before
 			// the agent finishes booting. Eliminates the race where the agent

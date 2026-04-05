@@ -104,7 +104,17 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodM
 	store := node.NewPodStore(rt, 5, logger)
 	volumes := node.NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
 	pawnNode := node.NewPawnNode(cfg, store, im, logger)
-	g := node.NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+	g := node.NewGambit(node.GambitDeps{
+		Config:         cfg,
+		Store:          store,
+		Volumes:        volumes,
+		Node:           pawnNode,
+		ImageManager:   im,
+		NetworkManager: nm,
+		Runtime:        rt,
+		Logger:         logger,
+		EventRecorder:  rec,
+	})
 	pawnNode.SetDeletePod(g.DeletePod)
 	return g, rt
 }
@@ -567,7 +577,17 @@ func TestDoctorFuzz(t *testing.T) {
 		store := node.NewPodStore(rt, 5, logger)
 		volumes := node.NewVolumeTracker(cfg.BaseDir, cfg.Name, logger)
 		pawnNode := node.NewPawnNode(cfg, store, im, logger)
-		g := node.NewGambit(cfg, store, volumes, pawnNode, im, nm, rt, logger, rec)
+		g := node.NewGambit(node.GambitDeps{
+			Config:         cfg,
+			Store:          store,
+			Volumes:        volumes,
+			Node:           pawnNode,
+			ImageManager:   im,
+			NetworkManager: nm,
+			Runtime:        rt,
+			Logger:         logger,
+			EventRecorder:  rec,
+		})
 		pawnNode.SetDeletePod(g.DeletePod)
 
 		if err := g.HydrateFromRuntime(context.Background()); err != nil {

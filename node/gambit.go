@@ -75,7 +75,7 @@ type Gambit struct {
 	EventRecorder  record.EventRecorder
 
 	// Listers for env population and volume resolution.
-	// Set via SetListers after construction.
+	// Set via GambitDeps during construction.
 	cmLister     listersv1.ConfigMapLister
 	secretLister listersv1.SecretLister
 	svcLister    listersv1.ServiceLister
@@ -156,56 +156,73 @@ func createConcurrency(cfg config.PawnConfig) int {
 	return DefaultCreateConcurrency
 }
 
-func NewGambit(
-	cfg config.PawnConfig,
-	store *PodStore,
-	volumes *VolumeTracker,
-	node *PawnNode,
-	im *image.ImageManager,
-	nm network.NetworkManager,
-	rt perigeos.Runtime,
-	logger *slog.Logger,
-	eRec record.EventRecorder,
-) *Gambit {
-	nodeIP := resolveNodeIP(cfg)
-	return &Gambit{
-		Config:         cfg,
-		ImageManager:   im,
-		NetworkManager: nm,
-		Runtime:        rt,
-		Logger:         logger,
-		Tidal:          downward.NewTidal(cfg.Name, nodeIP),
-		EventRecorder:  eRec,
-		store:          store,
-		volumes:        volumes,
-		node:           node,
+// GambitDeps holds all dependencies for Gambit. Passed to NewGambit.
+type GambitDeps struct {
+	Config         config.PawnConfig
+	Store          *PodStore
+	Volumes        *VolumeTracker
+	Node           *PawnNode
+	ImageManager   *image.ImageManager
+	NetworkManager network.NetworkManager
+	Runtime        perigeos.Runtime
+	Logger         *slog.Logger
+	EventRecorder  record.EventRecorder
+
+	// K8s listers for env population and volume resolution.
+	CMLister     listersv1.ConfigMapLister
+	SecretLister listersv1.SecretLister
+	SvcLister    listersv1.ServiceLister
+	KubeClient   kubernetes.Interface
+	ClusterDNS   string
+
+	// API server address injected into pods (optional).
+	APIServerHost string
+	APIServerPort string
+
+	// Informers for live ConfigMap/Secret volume refresh (optional).
+	CMInformer     cache.SharedIndexInformer
+	SecretInformer cache.SharedIndexInformer
+}
+
+func NewGambit(deps GambitDeps) *Gambit {
+	nodeIP := resolveNodeIP(deps.Config)
+	g := &Gambit{
+		Config:         deps.Config,
+		ImageManager:   deps.ImageManager,
+		NetworkManager: deps.NetworkManager,
+		Runtime:        deps.Runtime,
+		Logger:         deps.Logger,
+		Tidal:          downward.NewTidal(deps.Config.Name, nodeIP),
+		EventRecorder:  deps.EventRecorder,
+		store:          deps.Store,
+		volumes:        deps.Volumes,
+		node:           deps.Node,
+		cmLister:       deps.CMLister,
+		secretLister:   deps.SecretLister,
+		svcLister:      deps.SvcLister,
+		kubeClient:     deps.KubeClient,
+		clusterDNS:     deps.ClusterDNS,
 	}
-}
-
-// SetListers provides the listers needed for env population and volume resolution.
-// Called after construction once informers are synced.
-func (g *Gambit) SetListers(cmLister listersv1.ConfigMapLister, secretLister listersv1.SecretLister, svcLister listersv1.ServiceLister) {
-	g.cmLister = cmLister
-	g.secretLister = secretLister
-	g.svcLister = svcLister
-}
-
-// SetInformers registers event handlers on ConfigMap and Secret informers
-// to refresh volume-mounted files in running pods when the underlying
-// objects are updated. Uses in-place file writes so inotify fires.
-func (g *Gambit) SetInformers(cmInformer, secretInformer cache.SharedIndexInformer) {
-	cmInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(_, obj interface{}) {
-			cm := obj.(*corev1.ConfigMap)
-			g.volumes.RefreshConfigMap(cm)
-		},
-	})
-	secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(_, obj interface{}) {
-			s := obj.(*corev1.Secret)
-			g.volumes.RefreshSecret(s)
-		},
-	})
+	if deps.APIServerHost != "" {
+		g.Tidal.SetAPIServer(deps.APIServerHost, deps.APIServerPort)
+	}
+	if deps.CMInformer != nil {
+		deps.CMInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			UpdateFunc: func(_, obj interface{}) {
+				cm := obj.(*corev1.ConfigMap)
+				g.volumes.RefreshConfigMap(cm)
+			},
+		})
+	}
+	if deps.SecretInformer != nil {
+		deps.SecretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			UpdateFunc: func(_, obj interface{}) {
+				s := obj.(*corev1.Secret)
+				g.volumes.RefreshSecret(s)
+			},
+		})
+	}
+	return g
 }
 
 // SetSyncRequester registers the forward reconciler callback. The provider
@@ -220,20 +237,6 @@ func (g *Gambit) RequestSync(namespace, name string) {
 	if g.syncRequester != nil {
 		g.syncRequester(namespace, name)
 	}
-}
-
-func (g *Gambit) SetKubeClient(client kubernetes.Interface) {
-	g.kubeClient = client
-}
-
-func (g *Gambit) SetClusterDNS(ip string) {
-	g.clusterDNS = ip
-}
-
-// SetAPIServer configures the Kubernetes API server address injected into pods
-// as KUBERNETES_SERVICE_HOST / KUBERNETES_SERVICE_PORT.
-func (g *Gambit) SetAPIServer(host, port string) {
-	g.Tidal.SetAPIServer(host, port)
 }
 
 // IsInFlight reports whether a pod creation goroutine is currently active for uid.

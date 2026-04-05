@@ -118,8 +118,10 @@ type containerRestartState struct {
 // parseUnitName extracts (uid, containerName) from a systemd unit name.
 // Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 // Returns ("", "") if the unit name doesn't match this pawn's prefix.
-func (g *Gambit) parseUnitName(unitName string) (uid, containerName string) {
-	prefix := "perigeos-" + g.Config.Name + "-pod-"
+// ParseUnitName extracts the pod UID and container name from a systemd unit name.
+// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
+func ParseUnitName(pawnName, unitName string) (uid, containerName string) {
+	prefix := "perigeos-" + pawnName + "-pod-"
 	suffix := ".service"
 	if !strings.HasPrefix(unitName, prefix) || !strings.HasSuffix(unitName, suffix) {
 		return "", ""
@@ -541,6 +543,21 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	}); err != nil {
 		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
 	}
+}
+
+// NotifyPodStatus is the exported wrapper for notifyPodStatus, used as a BatchWatcher callback.
+func (g *Gambit) NotifyPodStatus(pod *corev1.Pod) {
+	g.notifyPodStatus(pod)
+}
+
+// RestartContainerCB is the exported wrapper for restartContainer callback.
+func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1.Pod, containerName string) {
+	g.restartContainer(ctx, uid, pod, containerName)
+}
+
+// BuildPodStatusCB is the exported wrapper for buildPodStatus callback.
+func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus {
+	return g.buildPodStatus(pod, stateLookup)
 }
 
 // ─── Pod Lifecycle ───────────────────────────────────────────────────────────

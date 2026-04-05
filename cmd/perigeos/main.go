@@ -417,7 +417,19 @@ func main() {
 
 			// Start the batch watcher — single goroutine per pawn that monitors
 			// all containers and handles restarts + probes.
-			bw := node.StartBatchWatcher(g)
+			bw := node.StartBatchWatcher(node.BatchWatcherDeps{
+				Store:            store,
+				Runtime:          rt,
+				EventRecorder:    eventRecorder,
+				Logger:           pawnLogger,
+				PawnName:         pawnCfg.Name,
+				NotifyStatus:     g.NotifyPodStatus,
+				RestartContainer: g.RestartContainerCB,
+				BuildPodStatus:   g.BuildPodStatusCB,
+				ParseUnitName: func(unitName string) (string, string) {
+					return node.ParseUnitName(pawnCfg.Name, unitName)
+				},
+			})
 			wg.Go(func() { <-ctx.Done(); bw.Stop() })
 
 				nodeController, err := node.NewNodeController(

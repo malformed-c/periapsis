@@ -9,7 +9,24 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 )
+
+// BatchWatcherDeps holds all external dependencies for the BatchWatcher,
+// replacing the direct *Gambit reference.
+type BatchWatcherDeps struct {
+	Store         *PodStore
+	Runtime       perigeos.Runtime
+	EventRecorder record.EventRecorder
+	Logger        *slog.Logger
+	PawnName      string
+
+	// Callbacks into Gambit (avoids circular import).
+	NotifyStatus     func(*corev1.Pod)
+	RestartContainer func(ctx context.Context, uid string, pod *corev1.Pod, containerName string)
+	BuildPodStatus   func(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus
+	ParseUnitName    func(unitName string) (uid, containerName string)
+}
 
 // maxConcurrentProbes is the maximum number of probe HTTP/TCP/exec calls
 // that may be in-flight simultaneously. Keeps file-descriptor and goroutine
@@ -30,7 +47,7 @@ const maxConcurrentProbes = 50
 // via Runtime.SubscribeEvents so container exits are detected immediately,
 // with the ticker as a consistency fallback.
 type BatchWatcher struct {
-	gambit *Gambit
+	deps   BatchWatcherDeps
 	logger *slog.Logger
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -69,11 +86,11 @@ type BatchWatcher struct {
 }
 
 // StartBatchWatcher creates and starts the batch watcher for a Gambit pawn.
-func StartBatchWatcher(g *Gambit) *BatchWatcher {
+func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	bw := &BatchWatcher{
-		gambit:       g,
-		logger:       g.Logger.With("component", "batchwatcher"),
+		deps:         deps,
+		logger:       deps.Logger.With("component", "batchwatcher"),
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		pokeCh:       make(chan struct{}, 1),
@@ -88,10 +105,10 @@ func StartBatchWatcher(g *Gambit) *BatchWatcher {
 	// even though it never observed the Running transition. Without this,
 	// containers killed by KillMode=control-group appear as Exited-never-ran
 	// and the restart/terminal logic defers forever.
-	pods := g.store.GetPods()
+	pods := deps.Store.GetPods()
 	for _, pod := range pods {
 		uid := string(pod.UID)
-		if g.store.PodPhase(uid) == corev1.PodRunning {
+		if deps.Store.PodPhase(uid) == corev1.PodRunning {
 			for _, c := range pod.Spec.Containers {
 				bw.seenRunning[uid+"/"+c.Name] = true
 			}
@@ -148,7 +165,7 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Subscribe to D-Bus unit state events for reactive detection.
-	eventCh := bw.gambit.Runtime.SubscribeEvents(ctx)
+	eventCh := bw.deps.Runtime.SubscribeEvents(ctx)
 
 	for {
 		select {
@@ -171,7 +188,7 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// Parse uid and containerName from the unit name.
 	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
-	uid, containerName := bw.gambit.parseUnitName(ev.UnitName)
+	uid, containerName := bw.deps.ParseUnitName(ev.UnitName)
 	if uid == "" {
 		return
 	}
@@ -223,7 +240,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 }
 
 func (bw *BatchWatcher) poll(ctx context.Context) {
-	machines, err := bw.gambit.Runtime.ListManagedMachines(ctx)
+	machines, err := bw.deps.Runtime.ListManagedMachines(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -253,7 +270,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		phase  corev1.PodPhase
 		podIP  string
 	}
-	storeEntries := bw.gambit.store.Snapshot()
+	storeEntries := bw.deps.Store.Snapshot()
 	entries := make([]podEntry, len(storeEntries))
 	for i, e := range storeEntries {
 		entries[i] = podEntry{uid: e.UID, pod: e.Pod, phase: e.Phase, podIP: e.PodIP}
@@ -334,7 +351,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			}
 			// Check readiness changes (probe transitions don't change machine state).
 			if cur == perigeos.StateRunning {
-				ready := bw.gambit.isContainerReady(e.uid, c.Name)
+				ready := bw.deps.Store.IsContainerReady(e.uid, c.Name)
 				if prev, ok := bw.prevReady[key]; !ok || prev != ready {
 					changedPods[e.uid] = true
 					bw.prevReady[key] = ready
@@ -359,14 +376,14 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		}
 		// Re-read podPhases under lock — checkPod may have set a terminal
 		// phase during *this* poll cycle, after the entries snapshot was taken.
-		currentPhase := bw.gambit.store.PodPhase(e.uid)
+		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
 			continue
 		}
-		status := bw.gambit.buildPodStatus(e.pod, stateLookup)
+		status := bw.deps.BuildPodStatus(e.pod, stateLookup)
 		updated := e.pod.DeepCopy()
 		status.DeepCopyInto(&updated.Status)
-		bw.gambit.notifyPodStatus(updated)
+		bw.deps.NotifyStatus(updated)
 	}
 
 	// Rotate state maps for next cycle.
@@ -440,7 +457,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 
 			// Reset backoff if container has been running long enough.
 			if state == perigeos.StateRunning {
-				rs := bw.gambit.store.RestartState(uid, c.Name)
+				rs := bw.deps.Store.RestartState(uid, c.Name)
 				if rs != nil && time.Since(rs.lastStarted) > restartBackoffReset {
 					rs.backoff = restartBackoffInit
 				}
@@ -497,21 +514,21 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	// Update both the phase map AND the pod's Status in-place so that
 	// GetPodStatus returns the terminal status even after the systemd
 	// unit is cleaned up.
-	bw.gambit.store.SetPhase(uid, terminalPhase)
+	bw.deps.Store.SetPhase(uid, terminalPhase)
 	// Also update the pod's status in the store for GetPodStatus consistency.
 	// Note: This modifies the existing pod reference.
-	if existingPod := bw.gambit.store.GetPodCopy(uid); existingPod != nil {
+	if existingPod := bw.deps.Store.GetPodCopy(uid); existingPod != nil {
 		updated.Status.DeepCopyInto(&existingPod.Status)
 		// Update the store with the modified pod.
-		bw.gambit.store.PromoteRunning(uid, existingPod, bw.gambit.store.PodIP(uid))
+		bw.deps.Store.PromoteRunning(uid, existingPod, bw.deps.Store.PodIP(uid))
 	}
 
-	bw.gambit.notifyPodStatus(updated)
+	bw.deps.NotifyStatus(updated)
 
 	// Clean up dead/failed systemd units now that we've read their state.
 	// Without this, transient units accumulate in systemd's listing.
 	for _, c := range pod.Spec.Containers {
-		if err := bw.gambit.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
+		if err := bw.deps.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
 			bw.logger.Debug("ResetUnit failed (unit may already be collected)", "pod", pod.Name, "container", c.Name, "err", err)
 		}
 	}
@@ -520,9 +537,9 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 // cleanupStaleUnits removes dead/failed systemd units from a previous
 // perigeos lifetime that never got cleaned up (e.g. after a crash).
 func (bw *BatchWatcher) cleanupStaleUnits(ctx context.Context) {
-	activeUIDs := bw.gambit.store.ActiveUIDs()
+	activeUIDs := bw.deps.Store.ActiveUIDs()
 
-	cleaned, err := bw.gambit.Runtime.CleanupStaleUnits(ctx, activeUIDs)
+	cleaned, err := bw.deps.Runtime.CleanupStaleUnits(ctx, activeUIDs)
 	if err != nil {
 		bw.logger.Error("Startup stale unit cleanup failed", "err", err)
 		return
@@ -535,7 +552,7 @@ func (bw *BatchWatcher) cleanupStaleUnits(ctx context.Context) {
 // runProbes executes startup, liveness, and readiness probes for a running
 // container, respecting each probe's PeriodSeconds cadence.
 func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.Pod, c *corev1.Container, podIP string) {
-	ps := bw.gambit.store.ProbeState(uid, c.Name)
+	ps := bw.deps.Store.ProbeState(uid, c.Name)
 	if ps == nil {
 		return
 	}
@@ -544,24 +561,24 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 	if c.StartupProbe != nil && !ps.StartupPassed {
 		if isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
 			// Network I/O outside any lock.
-			result := bw.gambit.store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.StartupProbe, podIP)
+			result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.StartupProbe, podIP)
 			bw.logger.Debug("Startup probe result",
 				"pod", pod.Name, "container", c.Name, "result", probeResultString(result),
 				"failCount", ps.StartupFailCount, "podIP", podIP)
 			// Write results under lock — concurrent with isContainerReady readers.
 			var restart bool
-			bw.gambit.store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
+			bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 				markProbed(ps, "startup")
 				restart = EvalStartup(ps, c.StartupProbe, result)
 			})
-			ps = bw.gambit.store.ProbeState(uid, c.Name)
+			ps = bw.deps.Store.ProbeState(uid, c.Name)
 			if result == ProbeSuccess && ps != nil && ps.StartupPassed {
 				bw.logger.Info("Startup probe passed", "pod", pod.Name, "container", c.Name)
-				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started",
+				bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started",
 					"Container %s passed startup probe", c.Name)
 			}
 			if result == ProbeFailure && ps != nil {
-				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+				bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 					"Startup probe failed for container %s (%d/%d)",
 					c.Name, ps.StartupFailCount, c.StartupProbe.FailureThreshold)
 			}
@@ -576,22 +593,22 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 
 	// 2. Liveness probe — failure past threshold triggers restart.
 	if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
-		result := bw.gambit.store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.LivenessProbe, podIP)
+		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.LivenessProbe, podIP)
 		bw.logger.Debug("Liveness probe result",
 			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
 		var restart bool
-		bw.gambit.store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
+		bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 			markProbed(ps, "liveness")
 			restart = EvalLiveness(ps, c.LivenessProbe, result)
 		})
 		if restart {
 			// Reset probe state so the restarted container starts fresh.
-			bw.gambit.store.ResetProbeState(uid, c.Name)
+			bw.deps.Store.ResetProbeState(uid, c.Name)
 		}
 		if result == ProbeFailure {
-			ps = bw.gambit.store.ProbeState(uid, c.Name)
+			ps = bw.deps.Store.ProbeState(uid, c.Name)
 			if ps != nil {
-				bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+				bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 					"Liveness probe failed for container %s (%d/%d)",
 					c.Name, ps.LiveFailCount, c.LivenessProbe.FailureThreshold)
 			}
@@ -606,22 +623,22 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 
 	// 3. Readiness probe — controls Ready condition on the container.
 	if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
-		result := bw.gambit.store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
+		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
 		bw.logger.Debug("Readiness probe result",
 			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
 		wasReady := ps.Ready
-		bw.gambit.store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
+		bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 			markProbed(ps, "readiness")
 			EvalReadiness(ps, c.ReadinessProbe, result)
 		})
-		ps = bw.gambit.store.ProbeState(uid, c.Name)
+		ps = bw.deps.Store.ProbeState(uid, c.Name)
 		nowReady := ps != nil && ps.Ready
 		if result == ProbeFailure {
-			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 				"Readiness probe failed for container %s", c.Name)
 		}
 		if !wasReady && nowReady {
-			bw.gambit.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ProbeReady",
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ProbeReady",
 				"Container %s passed readiness probe", c.Name)
 		}
 	}
@@ -634,7 +651,7 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 	key := uid + "/" + containerName
 
 	// Don't restart containers for pods that are being deleted.
-	if bw.gambit.store.IsDeleting(uid) {
+	if bw.deps.Store.IsDeleting(uid) {
 		return
 	}
 
@@ -652,6 +669,6 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 			delete(bw.restarting, key)
 			bw.restartingMu.Unlock()
 		}()
-		bw.gambit.restartContainer(ctx, uid, pod, containerName)
+		bw.deps.RestartContainer(ctx, uid, pod, containerName)
 	}()
 }

@@ -51,7 +51,7 @@ type Queue struct {
 	name    string
 	handler ItemHandler
 
-	ratelimiter workqueue.RateLimiter
+	ratelimiter workqueue.TypedRateLimiter[any]
 	// items are items that are marked dirty waiting for processing.
 	items *list.List
 	// itemInQueue is a map of (string) key -> item while it is in the items list
@@ -97,7 +97,7 @@ func (q *Queue) OnForget(fn func(key string, err error)) {
 //
 // It expects to get a item rate limiter, and a friendly name which is used in logs, and in the internal kubernetes
 // metrics. If retryFunc is nil, the default retry function.
-func New(ratelimiter workqueue.RateLimiter, name string, handler ItemHandler, retryFunc ShouldRetryFunc) *Queue {
+func New(ratelimiter workqueue.TypedRateLimiter[any], name string, handler ItemHandler, retryFunc ShouldRetryFunc) *Queue {
 	if retryFunc == nil {
 		retryFunc = DefaultRetryFunc
 	}
@@ -295,7 +295,25 @@ func (q *Queue) Len() int {
 	return q.items.Len() + len(q.itemsBeingProcessed)
 }
 
-// Run starts the workers
+// UnprocessedLen returns the count of items yet to be processed in the queue
+func (q *Queue) UnprocessedLen() int {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+	if q.items.Len() != len(q.itemsInQueue) {
+		panic("Internally inconsistent state")
+	}
+
+	return len(q.itemsInQueue)
+}
+
+// ItemsBeingProcessedLen returns the count of items that are being processed
+func (q *Queue) ItemsBeingProcessedLen() int {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+	return len(q.itemsBeingProcessed)
+}
+
+
 //
 // It blocks until context is cancelled, and all of the workers exit.
 func (q *Queue) Run(ctx context.Context, workers int) {

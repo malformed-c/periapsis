@@ -123,6 +123,7 @@ func podsEqual(pod1, pod2 *corev1.Pod) bool {
 
 	return cmp.Equal(pod1.Spec.Containers, pod2.Spec.Containers) &&
 		cmp.Equal(pod1.Spec.InitContainers, pod2.Spec.InitContainers) &&
+		cmp.Equal(pod1.Spec.EphemeralContainers, pod2.Spec.EphemeralContainers) &&
 		cmp.Equal(pod1.Spec.ActiveDeadlineSeconds, pod2.Spec.ActiveDeadlineSeconds) &&
 		cmp.Equal(pod1.Spec.Tolerations, pod2.Spec.Tolerations) &&
 		cmp.Equal(pod1.ObjectMeta.Labels, pod2.Labels) &&
@@ -245,6 +246,11 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 	kPod.Lock()
 	podFromProvider := kPod.lastPodStatusReceivedFromProvider.DeepCopy()
 	kPod.Unlock()
+	if podFromProvider == nil {
+		// there is a small period of time between when we have a known pod initialized but it hasn't
+		// been fully hydrated from the provider.
+		return nil
+	}
 	// Pod deleted by provider due some reasons. e.g. a K8s provider, pod created by deployment would be evicted when node is not ready.
 	// If we do not delete pod in K8s, deployment would not create a new one.
 	if podFromProvider.DeletionTimestamp != nil && podFromKubernetes.DeletionTimestamp == nil {

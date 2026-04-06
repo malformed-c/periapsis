@@ -104,6 +104,11 @@ type PodController struct {
 	// This is used since `pc.Run()` is typically called in a goroutine and managing
 	// this can be non-trivial for callers.
 	err error
+
+	// skipDownwardAPIResolution can be used to skip any attempts at resolving downward API references
+	// in pods before calling CreatePod on the provider.
+	// Providers need this if they need to do their own custom resolving
+	skipDownwardAPIResolution bool
 }
 
 type knownPod struct {
@@ -140,17 +145,17 @@ type PodControllerConfig struct {
 	ServiceInformer   corev1informers.ServiceInformer
 
 	// SyncPodsFromKubernetesRateLimiter defines the rate limit for the SyncPodsFromKubernetes queue
-	SyncPodsFromKubernetesRateLimiter workqueue.RateLimiter
+	SyncPodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[any]
 	// SyncPodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	SyncPodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// DeletePodsFromKubernetesRateLimiter defines the rate limit for the DeletePodsFromKubernetesRateLimiter queue
-	DeletePodsFromKubernetesRateLimiter workqueue.RateLimiter
+	DeletePodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[any]
 	// DeletePodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	DeletePodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// SyncPodStatusFromProviderRateLimiter defines the rate limit for the SyncPodStatusFromProviderRateLimiter queue
-	SyncPodStatusFromProviderRateLimiter workqueue.RateLimiter
+	SyncPodStatusFromProviderRateLimiter workqueue.TypedRateLimiter[any]
 	// SyncPodStatusFromProviderShouldRetryFunc allows for a custom retry policy for the SyncPodStatusFromProvider queue
 	SyncPodStatusFromProviderShouldRetryFunc ShouldRetryFunc
 
@@ -160,6 +165,11 @@ type PodControllerConfig struct {
 	// For example, if the pod informer is not filtering based on pod.Spec.NodeName, you should
 	// set that filter here so the pod controller does not handle events for pods assigned to other nodes.
 	PodEventFilterFunc PodEventFilterFunc
+
+	// SkipDownwardAPIResolution can be used to skip any attempts at resolving downward API references
+	// in pods before calling CreatePod on the provider.
+	// Providers need this if they need to do their own custom resolving
+	SkipDownwardAPIResolution bool
 }
 
 // NewPodController creates a new pod controller with the provided config.
@@ -186,13 +196,13 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		return nil, errdefs.InvalidInput("missing provider")
 	}
 	if cfg.SyncPodsFromKubernetesRateLimiter == nil {
-		cfg.SyncPodsFromKubernetesRateLimiter = workqueue.DefaultControllerRateLimiter()
+		cfg.SyncPodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
 	}
 	if cfg.DeletePodsFromKubernetesRateLimiter == nil {
-		cfg.DeletePodsFromKubernetesRateLimiter = workqueue.DefaultControllerRateLimiter()
+		cfg.DeletePodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
 	}
 	if cfg.SyncPodStatusFromProviderRateLimiter == nil {
-		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultControllerRateLimiter()
+		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
 	}
 	pc := &PodController{
 		client:             cfg.PodClient,
@@ -202,7 +212,8 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		ready:              make(chan struct{}),
 		done:               make(chan struct{}),
 		recorder:           cfg.EventRecorder,
-		podEventFilterFunc: cfg.PodEventFilterFunc,
+		podEventFilterFunc:        cfg.PodEventFilterFunc,
+		skipDownwardAPIResolution: cfg.SkipDownwardAPIResolution,
 	}
 
 	pc.syncPodsFromKubernetes = queue.New(cfg.SyncPodsFromKubernetesRateLimiter, "syncPodsFromKubernetes", pc.syncPodFromKubernetesHandler, cfg.SyncPodsFromKubernetesShouldRetryFunc)
@@ -421,19 +432,49 @@ func (pc *PodController) RequestSync(namespace, name string) {
 	pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 }
 
-// SyncPodsFromKubernetesQueueLen returns the length of the SyncPodsFromKubernetes queue
+// SyncPodsFromKubernetesQueueLen returns the length of the SyncPodsFromKubernetes queue, which include items being processed and unprocessed
 func (pc *PodController) SyncPodsFromKubernetesQueueLen() int {
 	return pc.syncPodsFromKubernetes.Len()
 }
 
-// DeletePodsFromKubernetesQueueLen returns the length of the DeletePodsFromKubernetes queue
+// SyncPodsFromKubernetesQueueUnprocessedLen returns the length of the unprocessed items in the SyncPodsFromKubernetes queue
+func (pc *PodController) SyncPodsFromKubernetesQueueUnprocessedLen() int {
+	return pc.syncPodsFromKubernetes.UnprocessedLen()
+}
+
+// SyncPodsFromKubernetesQueueItemsBeingProcessedLen returns the length of the items being processed in the SyncPodsFromKubernetes queue
+func (pc *PodController) SyncPodsFromKubernetesQueueItemsBeingProcessedLen() int {
+	return pc.syncPodsFromKubernetes.ItemsBeingProcessedLen()
+}
+
+// DeletePodsFromKubernetesQueueLen returns the length of the DeletePodsFromKubernetes queue, which include items being processed and unprocessed
 func (pc *PodController) DeletePodsFromKubernetesQueueLen() int {
 	return pc.deletePodsFromKubernetes.Len()
 }
 
-// SyncPodStatusFromProviderQueueLen returns the length of the SyncPodStatusFromProvider queue
+// DeletePodsFromKubernetesQueueUnprocessedLen returns the length of the unprocessed items in the DeletePodsFromKubernetes queue
+func (pc *PodController) DeletePodsFromKubernetesQueueUnprocessedLen() int {
+	return pc.deletePodsFromKubernetes.UnprocessedLen()
+}
+
+// DeletePodsFromKubernetesQueueItemsBeingProcessedLen returns the length of the items being processed in the DeletePodsFromKubernetes queue
+func (pc *PodController) DeletePodsFromKubernetesQueueItemsBeingProcessedLen() int {
+	return pc.deletePodsFromKubernetes.ItemsBeingProcessedLen()
+}
+
+// SyncPodStatusFromProviderQueueLen returns the length of the SyncPodStatusFromProvider queue, which include items being processed and unprocessed
 func (pc *PodController) SyncPodStatusFromProviderQueueLen() int {
 	return pc.syncPodStatusFromProvider.Len()
+}
+
+// SyncPodStatusFromProviderQueueUnprocessedLen returns the length of the unprocessed items in the SyncPodStatusFromProvider queue
+func (pc *PodController) SyncPodStatusFromProviderQueueUnprocessedLen() int {
+	return pc.syncPodStatusFromProvider.UnprocessedLen()
+}
+
+// SyncPodStatusFromProviderQueueItemsBeingProcessedLen returns the length of the items being processed in the SyncPodStatusFromProvider queue
+func (pc *PodController) SyncPodStatusFromProviderQueueItemsBeingProcessedLen() int {
+	return pc.syncPodStatusFromProvider.ItemsBeingProcessedLen()
 }
 
 // syncPodFromKubernetesHandler compares the actual state with the desired, and attempts to converge the two.

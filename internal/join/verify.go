@@ -8,7 +8,9 @@ import (
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -64,24 +66,54 @@ func waitForSocket(ctx context.Context, path string) error {
 
 func waitForPawnNodes(ctx context.Context, client kubernetes.Interface, hostname string, logger *slog.Logger) error {
 	labelSel := "periapsis.io/host=" + hostname
-	for {
-		nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-			LabelSelector: labelSel,
-		})
-		if err == nil && len(nodes.Items) > 0 {
-			names := make([]string, len(nodes.Items))
-			for i, n := range nodes.Items {
-				names[i] = n.Name
-			}
-			logger.Info("Pawn nodes registered", "nodes", names)
-			return nil
-		}
 
+	// First, check if any nodes already exist with the label.
+	// This handles the case where nodes were registered before we started watching.
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: labelSel,
+	})
+	if err == nil && len(nodes.Items) > 0 {
+		names := make([]string, len(nodes.Items))
+		for i, n := range nodes.Items {
+			names[i] = n.Name
+		}
+		logger.Info("Pawn nodes already registered", "nodes", names)
+		return nil
+	}
+
+	// No nodes found yet, start watching for new nodes with the label.
+	logger.Debug("Starting watch for nodes with label", "label", labelSel)
+	watcher, err := client.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{
+		LabelSelector: labelSel,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to watch nodes: %w", err)
+	}
+	defer watcher.Stop()
+
+	// Watch for ADDED or MODIFIED events that indicate a node with the label was created or updated.
+	for {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timeout waiting for pawn nodes with label %s", labelSel)
-		case <-time.After(verifyPollInterval):
-			logger.Debug("No pawn nodes yet, retrying...")
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				// Channel closed, try again.
+				return fmt.Errorf("watch channel closed while waiting for pawn nodes with label %s", labelSel)
+			}
+
+			// Only care about ADDED and MODIFIED events; DELETED is not relevant.
+			if event.Type != watch.Added && event.Type != watch.Modified {
+				continue
+			}
+
+			node, ok := event.Object.(*corev1.Node)
+			if !ok {
+				continue
+			}
+
+			logger.Info("Pawn node registered", "node", node.Name)
+			return nil
 		}
 	}
 }

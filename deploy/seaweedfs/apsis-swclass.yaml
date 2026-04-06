@@ -1,0 +1,42 @@
+---
+apiVersion: seaweed.seaweedfs.com/v1
+kind: Seaweed
+metadata:
+  name: seaweed
+  namespace: seaweedfs
+
+spec:
+  image: chrislusf/seaweedfs:latest
+  volumeServerDiskCount: 1
+  master:
+    replicas: 1
+    volumeSizeLimitMB: 10000
+    nodeSelector:
+      periapsis.io/primary: "true"
+    tolerations:
+      - operator: Exists
+
+  volume:
+    replicas: 1
+    requests:
+      storage: 10Gi
+    nodeSelector:
+      periapsis.io/primary: "true"
+    tolerations:
+      - operator: Exists
+
+  filer:
+    replicas: 1
+    config: |
+      [leveldb2]
+      enabled = true
+      dir = "/data/filerldb2"
+    nodeSelector:
+      periapsis.io/primary: "true"
+    tolerations:
+      - operator: Exists
+    persistence:
+      enabled: true
+      resources:
+        requests:
+          storage: 10Gi

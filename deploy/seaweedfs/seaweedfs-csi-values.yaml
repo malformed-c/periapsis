@@ -1,0 +1,40 @@
+# helm upgrade --install --create-namespace seaweedfs-csi seaweedfs-csi-driver/seaweedfs-csi-driver --namespace seaweedfs -f seaweedfs-csi-values.yaml
+
+---
+seaweedfsFiler: seaweed-filer.seaweedfs.svc.cluster.local:8888
+
+controller:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: periapsis.io/primary
+                operator: In
+                values: ["true"]
+  tolerations:
+    - operator: Exists
+
+node:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: periapsis.io/primary
+                operator: In
+                values: ["true"]
+  tolerations:
+    - operator: Exists
+
+mountService:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: periapsis.io/primary
+                operator: In
+                values: ["true"]
+  tolerations:
+    - operator: Exists

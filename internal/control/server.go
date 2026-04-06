@@ -78,9 +78,6 @@ type Server struct {
 	gambits []*node.Gambit
 	queues  map[string]QueueProvider // pawn name → PodController
 
-	snapMu   sync.RWMutex
-	snapPods []PodInfo
-
 	varlinkSrv *varlink.Service
 	tcpLn      net.Listener
 }
@@ -154,7 +151,6 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.listenTCP(ctx)
 	}
 
-	go s.refreshLoop()
 	s.logger.Info("Varlink socket listening", "path", s.socketPath)
 	return svc.Listen(ctx, fmt.Sprintf("unix:%s", s.socketPath), 0)
 }
@@ -273,32 +269,7 @@ func (s *Server) Stop(_ context.Context) error {
 	return nil
 }
 
-func (s *Server) refreshLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.mu.RLock()
-		gambits := s.gambits
-		s.mu.RUnlock()
-		if len(gambits) == 0 {
-			continue
-		}
-		var pods []PodInfo
-		for _, g := range gambits {
-			snaps := g.SnapshotPods()
-			for _, snap := range snaps {
-				pods = append(pods, PodInfo{
-					Name: snap.Name, Namespace: snap.Namespace, UID: snap.UID,
-					PawnName: g.Config.Name, PodIP: snap.IP,
-					Phase: string(snap.Phase), Containers: snap.Containers,
-				})
-			}
-		}
-		s.snapMu.Lock()
-		s.snapPods = pods
-		s.snapMu.Unlock()
-	}
-}
+
 
 // ── Response builders (shared by varlink handlers and TCP dispatch) ───────────
 
@@ -361,12 +332,18 @@ func (s *Server) buildPawns() map[string]any {
 }
 
 func (s *Server) buildPods() map[string]any {
-	s.snapMu.RLock()
-	pods := s.snapPods
-	s.snapMu.RUnlock()
-	out := make([]any, 0, len(pods))
-	for _, p := range pods {
-		out = append(out, toMap(p))
+	s.mu.RLock()
+	gambits := s.gambits
+	s.mu.RUnlock()
+	var out []any
+	for _, g := range gambits {
+		for _, snap := range g.SnapshotPods() {
+			out = append(out, toMap(PodInfo{
+				Name: snap.Name, Namespace: snap.Namespace, UID: snap.UID,
+				PawnName: g.Config.Name, PodIP: snap.IP,
+				Phase: string(snap.Phase), Containers: snap.Containers,
+			}))
+		}
 	}
 	return map[string]any{"pods": out}
 }

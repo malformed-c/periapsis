@@ -2,6 +2,8 @@
 
 A Kubernetes kubelet that runs pods as systemd-nspawn containers. One process, one machine, scales to thousands of pods with minimal overhead.
 
+**Why Periapsis?** Standard kubelets carry Docker or containerd with them. Periapsis skips all of that — it wires Kubernetes directly to `systemd-nspawn`, dropping daemon overhead to ~220 KB per pod. It is distribution-agnostic: works with k3s, vanilla Kubernetes, or anything that speaks the kubelet API. A single physical host can be sliced into many independent virtual nodes ("pawns"), each with its own TLS cert, pod lifecycle, and cgroup tree — useful for edge fleets and high-density testing environments. Host slicing into multiple pawns with proper network namespace isolation requires the Constellation CNI.
+
 **What it does:** Periapsis is a fork of virtual-kubelet v1.11.0 that registers as a virtual Kubernetes node, accepts pod assignments from the control plane, manages container lifecycle (image pull, network setup, resource limits, exec, logging), and reports status back to the API server.
 
 **The perigeos binary** runs as a systemd service and orchestrates pod execution through systemd-nspawn containers. No Docker, no containerd — just systemd, cgroups, and the Linux kernel.
@@ -74,8 +76,8 @@ apsis doctor
 $ apsis status
 Pods:    1,660          (engix99, 30 pawns)
          112            (engifire, 2 pawns)
-Memory:  365 MiB        (engix99, ~220 KB/pod)
-          89 MiB        (engifire, ~795 KB/pod)
+Memory:  365 MiB        (engix99, daemon RSS ~220 KB/pod)
+          89 MiB        (engifire, daemon RSS ~795 KB/pod)
 ```
 
 - **Hardware**: 28-core Xeon E5-2690 v4 (engix99) + Intel N150 (engifire)
@@ -88,7 +90,7 @@ Memory:  365 MiB        (engix99, ~220 KB/pod)
 L7 ingress via Envoy Gateway (hostNetwork DaemonSet on primary + control-plane nodes):
 
 - 1 M requests through Gateway API HTTPRoute, 4,869 rps, 0% errors
-- p95 = 134 ms, p99 = 151 ms (expected L7 overhead vs kernel ClusterIP DNAT)
+- p95 = 134 ms, p99 = 151 ms — engix99 was at load average 100–200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
 
 See [docs/show-off.md](docs/show-off.md) for full results and comparison tables.
 
@@ -194,6 +196,9 @@ Optional: Constellation for eBPF CNI (default: veth bridges)
 - Linux + systemd required (no Windows, no containerd)
 - Memory pressure based on cgroup limits (ADR-0005 tracks multi-tenancy)
 - Disk pressure thresholds: 85% (inode 95%, memory 95%)
+- **Security:** Pods run unprivileged by default. Resource isolation uses cgroups v2 (CPU, memory, and IO limits supported). Not all Kubernetes `SecurityContext` fields map 1:1 to `systemd-nspawn`; full SecurityContext coverage is incomplete.
+- **Storage:** PersistentVolumeClaims work and are tested with local-path provisioner. Distributed CSI drivers have not been tested.
+- **Host slicing:** Slicing a host into multiple pawns with isolated pod networking requires the Constellation CNI. Without it, pods use veth bridges sharing the host network namespace.
 
 ## Learning More
 

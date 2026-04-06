@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 
+	"github.com/malformed-c/periapsis/errdefs"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 )
 
@@ -177,7 +178,13 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 		return "", fmt.Errorf("get PVC %s/%s: %w", namespace, claimName, err)
 	}
 	if pvc.Status.Phase != corev1.ClaimBound {
-		return "", fmt.Errorf("PVC %s/%s is not bound (phase: %s)", namespace, claimName, pvc.Status.Phase)
+		err := fmt.Errorf("PVC %s/%s is not bound (phase: %s)", namespace, claimName, pvc.Status.Phase)
+		// Pending phase is transient — the provisioner is working on creating the PV
+		if pvc.Status.Phase == corev1.ClaimPending {
+			return "", errdefs.AsTransient(err)
+		}
+		// Other phases (Lost, etc.) are not transient
+		return "", err
 	}
 
 	pvName := pvc.Spec.VolumeName

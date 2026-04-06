@@ -162,7 +162,52 @@ func (pn *PawnNode) BuildNode() *corev1.Node {
 	// This lets the k8s scheduler see real available resources and avoid
 	// overcommitting this node.
 	node.Status.Allocatable = pn.store.ComputeAllocatable(node.Status.Capacity)
+
+	// Report volumes in use so the attach/detach controller doesn't get confused.
+	node.Status.VolumesAttached, node.Status.VolumesInUse = pn.collectVolumeStatus()
+
 	return node
+}
+
+// collectVolumeStatus scans running pods for PVC-backed volumes and returns
+// VolumesAttached and VolumesInUse slices for the node status. Since periapsis
+// only supports hostPath and local PVs (no real CSI attach), we report all
+// bound PVCs as attached to prevent the attach/detach controller from
+// interfering with pod lifecycle.
+func (pn *PawnNode) collectVolumeStatus() ([]corev1.AttachedVolume, []corev1.UniqueVolumeName) {
+	pods := pn.store.GetPods()
+	seen := make(map[corev1.UniqueVolumeName]bool)
+
+	for _, pod := range pods {
+		// Skip terminal pods; their volumes are no longer in use.
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+
+		// Iterate pod volumes looking for PVC references.
+		for _, vol := range pod.Spec.Volumes {
+			if vol.PersistentVolumeClaim == nil {
+				continue
+			}
+
+			// Use a synthetic volume name — we don't do real attach/detach.
+			// Format: kubernetes.io/no-attacher/namespace-claimname
+			name := corev1.UniqueVolumeName(
+				"kubernetes.io/no-attacher/" + pod.Namespace + "-" + vol.PersistentVolumeClaim.ClaimName,
+			)
+			seen[name] = true
+		}
+	}
+
+	// Build result slices from the deduplicated set.
+	attached := make([]corev1.AttachedVolume, 0, len(seen))
+	inUse := make([]corev1.UniqueVolumeName, 0, len(seen))
+	for name := range seen {
+		attached = append(attached, corev1.AttachedVolume{Name: name, DevicePath: ""})
+		inUse = append(inUse, name)
+	}
+
+	return attached, inUse
 }
 
 // Shutdown marks the pawn as shutting down.

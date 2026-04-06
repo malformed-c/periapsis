@@ -1,0 +1,21 @@
+# helm upgrade --install --create-namespace seaweedfs-operator seaweedfs-operator/seaweedfs-operator --namespace seaweedfs -f seaweedfs-values.yaml
+
+image:
+  tag: latest
+
+grafanaDashboard:
+  # -- Enable or disable Grafana Dashboard configmap
+  enabled: true
+
+serviceMonitor:
+  # -- Enable or disable ServiceMonitor for prometheus metrics
+  enabled: false
+
+webhook:
+  enabled: false
+
+nodeSelector:
+  periapsis.io/primary: "true"
+
+tolerations:
+  - operator: Exists

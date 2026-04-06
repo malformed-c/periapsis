@@ -1,7 +1,6 @@
 package systemd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
-	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	dbusv5 "github.com/godbus/dbus/v5"
 	"github.com/malformed-c/periapsis/internal/image"
@@ -145,9 +143,29 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	s.logger.Info("Starting Machine", "service", serviceName, "slice", slice, "netns", netNSPath)
 
+	// Interactive containers (stdin=true) use --console=pipe so we can wire
+	// a PTY for kubectl attach. Non-interactive containers use --console=read-only
+	// so nspawn allocates its own internal PTY (fixes ENXIO on /dev/stderr)
+	// while stdout/stderr flow to the journal natively with correct _SYSTEMD_UNIT
+	// attribution.
+	//
+	// Exception: containers that bind-mount /dev from the host must use
+	// --console=pipe because --console=read-only tries to create /dev/console
+	// inside the container, which conflicts with the host's /dev bind mount.
+	consoleMode := "read-only"
+	if cfg.Container != nil && cfg.Container.Stdin {
+		consoleMode = "pipe"
+	}
+	for _, bm := range cfg.BindMounts {
+		if bm.ContainerPath == "/dev" {
+			consoleMode = "pipe"
+			break
+		}
+	}
+
 	execStart := []string{
 		"/usr/bin/systemd-nspawn",
-		"--console=pipe",
+		"--console=" + consoleMode,
 		"--keep-unit",
 		"--register=yes",
 		"--kill-signal=SIGTERM",
@@ -181,13 +199,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	// Bind mounts: resolved from pod Volumes + container VolumeMounts.
 	// --bind=<host>:<container> for rw, --bind-ro=<host>:<container> for ro.
-	// Bidirectional propagation uses +<path> suffix (shared); default is slave.
+	// nspawn auto-creates destination directories inside the container rootfs.
+	//
+	// By default, nspawn uses MS_SLAVE propagation (host→container visible,
+	// container→host NOT visible). For mounts with Propagation: "Bidirectional",
+	// bidirectional (MS_SHARED) propagation is enabled via makeSharedMounts,
+	// which runs after the unit starts.
 	for _, bm := range cfg.BindMounts {
 		arg := bm.HostPath + ":" + bm.ContainerPath
-		if bm.Propagation == "Bidirectional" {
-			// nspawn +path means MS_SHARED (bidirectional)
-			arg = "+" + arg
-		}
 		if bm.ReadOnly {
 			execStart = append(execStart, "--bind-ro="+arg)
 		} else {
@@ -266,14 +285,12 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		})
 	}
 
-	// Always allocate a PTY for stdout/stderr of the nspawn wrapper unit.
-	// This ensures that inside the container /proc/self/fd/1 and /proc/self/fd/2
-	// are real TTY character devices rather than journal sockets. Without this,
-	// processes that call open("/dev/stdout") or open("/dev/stderr") — such as
-	// nginx:alpine which symlinks /var/log/nginx/error.log → /dev/stderr →
-	// /proc/self/fd/2 — receive ENXIO because journal sockets are not openable
-	// via /proc/self/fd/N with open(2).
-	{
+	// Interactive containers need a PTY for kubectl attach/exec stdin relay.
+	// Non-interactive containers use --console=read-only (set above), which
+	// lets nspawn allocate its own internal PTY. stdout/stderr flow to the
+	// journal natively with correct _SYSTEMD_UNIT attribution — no forwarding
+	// goroutine needed.
+	if cfg.Container != nil && cfg.Container.Stdin {
 		master, slave, err := openPTY()
 		if err != nil {
 			return fmt.Errorf("create stdio PTY for %s: %w", machineName, err)
@@ -283,45 +300,21 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 		s.attachPTYs.Store(machineName, master)
 
-		if cfg.Container != nil && cfg.Container.Stdin {
-			// Interactive container: wire stdin to the same PTY so AttachToContainer
-			// can relay bidirectional I/O through the master.
-			// Set raw mode so the PTY doesn't echo input or do line buffering.
-			if termios, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS); err == nil {
-				termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
-				termios.Oflag &^= unix.OPOST
-				termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
-				termios.Cflag &^= unix.CSIZE | unix.PARENB
-				termios.Cflag |= unix.CS8
-				_ = unix.IoctlSetTermios(int(master.Fd()), unix.TCSETS, termios)
-			}
-			properties = append(properties,
-				dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
-				dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
-				dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
-			)
-			s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
-		} else {
-			// Non-interactive container: stdout/stderr go to the PTY slave so
-			// /proc/self/fd/1,2 are openable TTYs. Drain the master in a goroutine
-			// and forward lines to journald with the container's SyslogIdentifier
-			// so GetLogStream / kubectl logs continues to work.
-			// StopMachine closes the master via attachPTYs, causing the goroutine
-			// to exit on EIO.
-			containerName := cfg.Container.Name
-			go func() {
-				scanner := bufio.NewScanner(master)
-				for scanner.Scan() {
-					_ = journal.Send(scanner.Text(), journal.PriInfo, map[string]string{
-						"SYSLOG_IDENTIFIER": containerName,
-					})
-				}
-			}()
-			properties = append(properties,
-				dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
-				dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
-			)
+		// Set raw mode so the PTY doesn't echo input or do line buffering.
+		if termios, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS); err == nil {
+			termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+			termios.Oflag &^= unix.OPOST
+			termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+			termios.Cflag &^= unix.CSIZE | unix.PARENB
+			termios.Cflag |= unix.CS8
+			_ = unix.IoctlSetTermios(int(master.Fd()), unix.TCSETS, termios)
 		}
+		properties = append(properties,
+			dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
+			dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
+			dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
+		)
+		s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
 	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
@@ -364,6 +357,79 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			masterVal.(*os.File).Close()
 		}
 		return fmt.Errorf("failed to create machine unit: %w", err)
+	}
+
+	// Enable bidirectional mount propagation for bind mounts that require it.
+	if err := s.makeSharedMounts(ctx, machineName, cfg.BindMounts); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// makeSharedMounts enables MS_SHARED (bidirectional) mount propagation for bind mounts
+// that specify Propagation: "Bidirectional".
+//
+// For each such mount, this method:
+// 1. Makes the host-side mountpoint shared via unix.Mount with MS_SHARED|MS_REC
+// 2. Makes the container-side mount shared via nsenter --make-shared
+//
+// This allows container-side mounts to propagate back to the host, which is needed
+// for CSI drivers that perform additional mounts inside the container.
+func (s *SystemdRuntime) makeSharedMounts(ctx context.Context, machineName string, mounts []runtime.BindMount) error {
+	// Filter for bidirectional mounts.
+	var bidirectionalMounts []runtime.BindMount
+	for _, bm := range mounts {
+		if bm.Propagation == "Bidirectional" {
+			bidirectionalMounts = append(bidirectionalMounts, bm)
+		}
+	}
+
+	// If no bidirectional mounts, nothing to do.
+	if len(bidirectionalMounts) == 0 {
+		return nil
+	}
+
+	// Get the container's PID 1 on the host.
+	containerPID, err := s.getMachineLeaderPID(machineName)
+	if err != nil {
+		return fmt.Errorf("get container leader PID for machine %s: %w", machineName, err)
+	}
+
+	// Process each bidirectional mount.
+	for _, bm := range bidirectionalMounts {
+		// Ensure the host-side path is on a shared peer group. On systemd
+		// hosts the root mount is already shared, but if the path happens to
+		// be its own mountpoint (e.g. a separate volume) we need to flip it.
+		// EINVAL means it's not a mountpoint — that's fine, it inherits the
+		// parent mount's (shared) propagation.
+		if err := unix.Mount("", bm.HostPath, "", unix.MS_SHARED|unix.MS_REC, ""); err != nil && !errors.Is(err, unix.EINVAL) {
+			return fmt.Errorf("make host mount shared for %s: %w", bm.HostPath, err)
+		}
+
+		// Make the container-side mount shared via nsenter.
+		nsenterCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		cmd := exec.CommandContext(nsenterCtx,
+			"nsenter",
+			"-m",
+			"-t", strconv.Itoa(containerPID),
+			"--",
+			"mount",
+			"--make-shared",
+			bm.ContainerPath,
+		)
+		output, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("make container mount shared for %s: %w (output: %s)", bm.ContainerPath, err, output)
+		}
+
+		s.logger.Info(
+			"Made mount bidirectional",
+			"machine", machineName,
+			"hostPath", bm.HostPath,
+			"containerPath", bm.ContainerPath,
+		)
 	}
 
 	return nil

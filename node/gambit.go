@@ -1171,7 +1171,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	if pod.Spec.HostNetwork {
 		netPath = "/proc/1/ns/net"
 	} else {
-		netPath = filepath.Join("/var/run/netns", uid)
+		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
 	}
 
 	resolvedEnv := g.Tidal.ResolveEnv(pod, container, podIP)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/malformed-c/periapsis/errdefs"
@@ -30,6 +31,10 @@ type PodStore struct {
 	probeStates   map[string]map[string]*ContainerProbeState   // UID → container → probe state
 	probeRunner   *ProbeRunner
 	createSem     chan struct{} // limits concurrent pod creation sagas
+
+	// roSnap is a read-only mirror of pod state, committed atomically on
+	// every mutation. Readers (control server, CLI) load it lock-free.
+	roSnap atomic.Pointer[[]PodSnapshot]
 
 	logger *slog.Logger
 }
@@ -90,6 +95,7 @@ func (s *PodStore) EvictGhost(uid string) {
 	delete(s.pods, uid)
 	delete(s.podIPs, uid)
 	delete(s.podPhases, uid)
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -150,6 +156,7 @@ func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, saga *podSaga) {
 	s.inFlight[uid] = saga
 	s.pods[uid] = pod
 	s.podPhases[uid] = corev1.PodPending
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -166,9 +173,11 @@ func (s *PodStore) AlreadyRunning(uid string, pod *corev1.Pod) (exists bool, was
 	if len(existing.Spec.Containers) == 0 {
 		s.pods[uid] = pod
 		delete(s.hydratedUIDs, uid)
+		s.commitSnapshot()
 		return true, true
 	}
 	delete(s.hydratedUIDs, uid)
+	s.commitSnapshot()
 	return true, false
 }
 
@@ -187,6 +196,7 @@ func (s *PodStore) PromoteRunning(uid string, pod *corev1.Pod, ip string) {
 	s.podIPs[uid] = ip
 	s.podPhases[uid] = corev1.PodRunning
 	delete(s.inFlight, uid)
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -209,6 +219,7 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 	delete(s.probeStates, uid)
 	delete(s.deleting, uid)
 	delete(s.inFlight, uid)
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -216,6 +227,7 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 func (s *PodStore) SetPhase(uid string, phase corev1.PodPhase) {
 	s.mu.Lock()
 	s.podPhases[uid] = phase
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -229,6 +241,7 @@ func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message strin
 	s.mu.Lock()
 	s.pods[uid] = failedPod
 	s.podPhases[uid] = corev1.PodFailed
+	s.commitSnapshot()
 	s.mu.Unlock()
 	return failedPod
 }
@@ -355,6 +368,7 @@ func (s *PodStore) RegisterHydrated(uid string, pod *corev1.Pod, ip string) {
 	}
 	s.podPhases[uid] = corev1.PodRunning
 	s.hydratedUIDs[uid] = true
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -369,6 +383,7 @@ func (s *PodStore) RegisterHydratedBatch(entries []hydratedEntry) {
 		s.podPhases[e.uid] = corev1.PodRunning
 		s.hydratedUIDs[e.uid] = true
 	}
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -404,6 +419,7 @@ func (s *PodStore) HydratedUIDs() map[string]bool {
 func (s *PodStore) ClearHydrated(uid string) {
 	s.mu.Lock()
 	delete(s.hydratedUIDs, uid)
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -419,6 +435,7 @@ func (s *PodStore) PurgeHydrated(staleUIDs []string) {
 		delete(s.restarts, uid)
 		delete(s.probeStates, uid)
 	}
+	s.commitSnapshot()
 	s.mu.Unlock()
 }
 
@@ -476,14 +493,9 @@ func (s *PodStore) CompletedPodUID(namespace, name string) string {
 	return s.completedPods[namespace+"/"+name]
 }
 
-// SnapshotPods returns a lightweight snapshot of all pods in a single lock.
-// Returns nil if the lock cannot be acquired immediately.
-func (s *PodStore) SnapshotPods() []PodSnapshot {
-	if !s.mu.TryRLock() {
-		return nil
-	}
-	defer s.mu.RUnlock()
-
+// commitSnapshot rebuilds the read-only snapshot from current state.
+// Must be called while holding s.mu (write lock).
+func (s *PodStore) commitSnapshot() {
 	snaps := make([]PodSnapshot, 0, len(s.pods))
 	for uid, pod := range s.pods {
 		if s.hydratedUIDs[uid] {
@@ -498,7 +510,21 @@ func (s *PodStore) SnapshotPods() []PodSnapshot {
 			Containers: len(pod.Spec.Containers),
 		})
 	}
-	return snaps
+	s.roSnap.Store(&snaps)
+}
+
+// LoadSnapshot returns the current read-only pod snapshot. Lock-free.
+func (s *PodStore) LoadSnapshot() []PodSnapshot {
+	if p := s.roSnap.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// SnapshotPods returns a lightweight snapshot of all pods in a single lock.
+// Returns nil if the lock cannot be acquired immediately.
+func (s *PodStore) SnapshotPods() []PodSnapshot {
+	return s.LoadSnapshot()
 }
 
 // Snapshot returns all active pods with phase and IP for batch processing.

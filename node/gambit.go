@@ -634,8 +634,6 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		for attempt := 1; ; attempt++ {
 			err := g.createPodSync(sagaCtx, pod)
 			if err == nil {
-				// Creation succeeded — init restart state for the batch watcher.
-				g.initRestartState(pod)
 				return
 			}
 			g.Logger.Warn("CreatePod attempt failed",
@@ -992,6 +990,12 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	// Promote pod from Pending to Running and record IP.
 	g.store.PromoteRunning(uid, pod, podIP)
 
+	// Initialize probe state before the first status push so containers
+	// with readiness probes start as not-ready instead of defaulting to
+	// ready (the IsContainerReady fallback returns true when no probe
+	// state exists yet).
+	g.store.InitRestartState(pod)
+
 	// Index volume-mounted ConfigMaps/Secrets for live refresh.
 	g.volumes.Track(uid, pod)
 
@@ -1094,12 +1098,6 @@ func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "pod creation failed: %v", err)
 	failedPod := g.store.MarkFailed(uid, pod, "CreateFailed", err.Error())
 	g.notifyPodStatus(failedPod)
-}
-
-// initRestartState initializes CrashLoopBackOff tracking for a newly created pod.
-// Called after successful pod creation so the batch watcher can manage restarts.
-func (g *Gambit) initRestartState(pod *corev1.Pod) {
-	g.store.InitRestartState(pod)
 }
 
 // isContainerReady returns whether a container should be reported as Ready.

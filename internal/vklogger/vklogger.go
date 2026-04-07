@@ -3,6 +3,7 @@
 package vklogger
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -40,25 +41,36 @@ func New(l *slog.Logger) vklog.Logger {
 	return &adapter{logger: l}
 }
 
+// TODO add ctx
 func (a *adapter) emit(level slog.Level, msg string) {
 	if isSuppressed(msg) {
 		return
 	}
-	a.logger.Log(nil, level, msg)
+	a.logger.Log(context.TODO(), level, msg)
 }
 
-func (a *adapter) Debug(args ...interface{})                 { a.emit(slog.LevelDebug, fmt.Sprint(args...)) }
-func (a *adapter) Debugf(format string, args ...interface{}) { a.emit(slog.LevelDebug, fmt.Sprintf(format, args...)) }
-func (a *adapter) Info(args ...interface{})                  { a.emit(slog.LevelInfo, fmt.Sprint(args...)) }
-func (a *adapter) Infof(format string, args ...interface{})  { a.emit(slog.LevelInfo, fmt.Sprintf(format, args...)) }
-func (a *adapter) Warn(args ...interface{})                  { a.emit(slog.LevelWarn, fmt.Sprint(args...)) }
-func (a *adapter) Warnf(format string, args ...interface{})  { a.emit(slog.LevelWarn, fmt.Sprintf(format, args...)) }
-func (a *adapter) Error(args ...interface{})                 { a.emit(slog.LevelError, fmt.Sprint(args...)) }
-func (a *adapter) Errorf(format string, args ...interface{}) { a.emit(slog.LevelError, fmt.Sprintf(format, args...)) }
-func (a *adapter) Fatal(args ...interface{})                 { a.emit(slog.LevelError, fmt.Sprint(args...)) }
-func (a *adapter) Fatalf(format string, args ...interface{}) { a.emit(slog.LevelError, fmt.Sprintf(format, args...)) }
+func (a *adapter) Debug(args ...any) { a.emit(slog.LevelDebug, fmt.Sprint(args...)) }
+func (a *adapter) Debugf(format string, args ...any) {
+	a.emit(slog.LevelDebug, fmt.Sprintf(format, args...))
+}
+func (a *adapter) Info(args ...any) { a.emit(slog.LevelInfo, fmt.Sprint(args...)) }
+func (a *adapter) Infof(format string, args ...any) {
+	a.emit(slog.LevelInfo, fmt.Sprintf(format, args...))
+}
+func (a *adapter) Warn(args ...any) { a.emit(slog.LevelWarn, fmt.Sprint(args...)) }
+func (a *adapter) Warnf(format string, args ...any) {
+	a.emit(slog.LevelWarn, fmt.Sprintf(format, args...))
+}
+func (a *adapter) Error(args ...any) { a.emit(slog.LevelError, fmt.Sprint(args...)) }
+func (a *adapter) Errorf(format string, args ...any) {
+	a.emit(slog.LevelError, fmt.Sprintf(format, args...))
+}
+func (a *adapter) Fatal(args ...any) { a.emit(slog.LevelError, fmt.Sprint(args...)) }
+func (a *adapter) Fatalf(format string, args ...any) {
+	a.emit(slog.LevelError, fmt.Sprintf(format, args...))
+}
 
-func (a *adapter) WithField(key string, val interface{}) vklog.Logger {
+func (a *adapter) WithField(key string, val any) vklog.Logger {
 	return &adapter{logger: a.logger.With(key, val)}
 }
 func (a *adapter) WithFields(fields vklog.Fields) vklog.Logger {

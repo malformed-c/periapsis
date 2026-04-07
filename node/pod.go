@@ -25,9 +25,9 @@ import (
 	"github.com/malformed-c/periapsis/internal/queue"
 
 	"github.com/google/go-cmp/cmp"
-	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -365,7 +365,7 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			err = fmt.Errorf("Pod %q not found in pod lister: %w", key, err)
+			err = fmt.Errorf("pod %q not found in pod lister: %w", key, err)
 			log.G(ctx).WithError(err).Debug("Not enqueuing pod status update")
 		} else {
 			log.G(ctx).WithError(err).Warn("Not enqueuing pod status update due to error from pod lister")

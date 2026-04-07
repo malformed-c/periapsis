@@ -30,22 +30,22 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
-	"github.com/malformed-c/periapsis/node"
-	vklog "github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/internal/vklogger"
+	vklog "github.com/malformed-c/periapsis/log"
+	"github.com/malformed-c/periapsis/node"
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"golang.org/x/time/rate"
 )
 
 // perigeosRetryFunc is a custom retry policy for the pod sync queue.
@@ -495,18 +495,19 @@ func main() {
 
 			// High-throughput rate limiter: 500 items/sec burst 1000, with
 			// exponential backoff only on failures (1ms base, 30s max).
-			fastLimiter := workqueue.NewMaxOfRateLimiter(
-				&workqueue.BucketRateLimiter{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
-				workqueue.NewItemExponentialFailureRateLimiter(1*time.Millisecond, 30*time.Second),
+			// TODO: Figure out what type it wants
+			fastLimiter := workqueue.NewTypedMaxOfRateLimiter(
+				&workqueue.TypedBucketRateLimiter[any]{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
+				workqueue.NewTypedItemExponentialFailureRateLimiter[any](1*time.Millisecond, 30*time.Second),
 			)
 			podController, err := node.NewPodController(node.PodControllerConfig{
-				PodClient:         kubeClient.CoreV1(),
-				Provider:          g,
-				EventRecorder:     eventRecorder,
-				PodInformer:       localInformer.Core().V1().Pods(),
-				ConfigMapInformer: cmInformer,
-				SecretInformer:    secretInformer,
-				ServiceInformer:   svcInformer,
+				PodClient:                             kubeClient.CoreV1(),
+				Provider:                              g,
+				EventRecorder:                         eventRecorder,
+				PodInformer:                           localInformer.Core().V1().Pods(),
+				ConfigMapInformer:                     cmInformer,
+				SecretInformer:                        secretInformer,
+				ServiceInformer:                       svcInformer,
 				SyncPodsFromKubernetesRateLimiter:     fastLimiter,
 				SyncPodsFromKubernetesShouldRetryFunc: perigeosRetryFunc,
 				DeletePodsFromKubernetesRateLimiter:   fastLimiter,

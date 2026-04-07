@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -141,21 +142,20 @@ func (ch *CertHolder) tryRenew() (*tls.Certificate, error) {
 // sanSummary returns a short string listing the cert's DNS names and IPs.
 func sanSummary(leaf *x509.Certificate) string {
 	var parts []string
-	for _, d := range leaf.DNSNames {
-		parts = append(parts, d)
-	}
+	parts = append(parts, leaf.DNSNames...)
+
 	for _, ip := range leaf.IPAddresses {
 		parts = append(parts, ip.String())
 	}
 	if len(parts) > 6 {
 		parts = append(parts[:6], "...")
 	}
-	result := ""
+	var result strings.Builder
 	for i, p := range parts {
 		if i > 0 {
-			result += ","
+			result.WriteString(",")
 		}
-		result += p
+		result.WriteString(p)
 	}
-	return result
+	return result.String()
 }

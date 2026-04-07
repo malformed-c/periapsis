@@ -10,9 +10,7 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // ─── Mock Runtime ─────────────────────────────────────────────────────────────
@@ -105,16 +103,6 @@ func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) 
 	return NewReconcilerForTest(rt, nm, lister, logger)
 }
 
-func makePod(name, namespace, uid string) *corev1.Pod {
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-			UID:       types.UID(uid),
-		},
-	}
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
@@ -178,7 +166,7 @@ func TestReconciler_K8sPodListerMatchSkips(t *testing.T) {
 	}
 	nm := &mockNetwork{}
 	lister := &mockPodLister{
-		pods: []*corev1.Pod{makePod("mypod", "default", "k8s-uid")},
+		pods: []*corev1.Pod{makePod("k8s-uid", "default", "mypod", "200m", "100Mi")},
 	}
 	r := newTestReconciler(rt, nm, lister)
 

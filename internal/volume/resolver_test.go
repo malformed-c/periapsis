@@ -22,7 +22,7 @@ func TestResolve_HostPath(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(baseDir)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", nil, nil, nil)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", nil, nil, nil)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -69,7 +69,7 @@ func TestResolve_EmptyDir(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(baseDir)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", nil, nil, nil)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", nil, nil, nil)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -117,7 +117,7 @@ func TestResolve_ConfigMap(t *testing.T) {
 	mockCMLister := mocks.NewMockConfigMapLister(ctrl)
 	mockCMNamespaceLister := mocks.NewMockConfigMapNamespaceLister(ctrl)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", mockCMLister, nil, nil)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", mockCMLister, nil, nil)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -184,7 +184,7 @@ func TestResolve_Secret(t *testing.T) {
 	mockSecretLister := mocks.NewMockSecretLister(ctrl)
 	mockSecretNamespaceLister := mocks.NewMockSecretNamespaceLister(ctrl)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", nil, mockSecretLister, nil)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", nil, mockSecretLister, nil)
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -243,7 +243,7 @@ func TestCleanup(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(baseDir)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", nil, nil, nil)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", nil, nil, nil)
 
 	podStateDir := filepath.Join(baseDir, "pawns", "pawn-1", "pods", "pod-uid", "volumes")
 	err = os.MkdirAll(podStateDir, 0755)

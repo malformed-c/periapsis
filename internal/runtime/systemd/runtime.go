@@ -31,8 +31,8 @@ const maxConcurrentStarts = 8
 
 // SystemdRuntime implements runtime.Runtime by managing transient systemd-nspawn services.
 type SystemdRuntime struct {
-	conn    systemdDBus  // go-systemd wrapper (unit lifecycle)
-	rawConn machineDBus  // raw godbus (machine1 interface, unit object properties)
+	conn         systemdDBus // go-systemd wrapper (unit lifecycle)
+	rawConn      machineDBus // raw godbus (machine1 interface, unit object properties)
 	logger       *slog.Logger
 	imageManager *image.ImageManager
 
@@ -450,7 +450,6 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 		masterVal.(*os.File).Close()
 	}
 
-
 	ch := make(chan string, 1)
 	_, err := s.conn.StopUnitContext(ctx, wrapperUnit, "replace", ch)
 	if err != nil {
@@ -475,7 +474,6 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 
 	return nil
 }
-
 
 // CheckMachined verifies systemd-machined is healthy by calling ListMachines
 // over D-Bus. If machined has exhausted its file descriptor limit or its
@@ -661,7 +659,7 @@ func (s *SystemdRuntime) GetLogStream(
 	}
 
 	if opts.SinceSeconds > 0 {
-		cutoff := uint64(time.Now().Add(-time.Duration(opts.SinceSeconds)*time.Second).UnixMicro())
+		cutoff := uint64(time.Now().Add(-time.Duration(opts.SinceSeconds) * time.Second).UnixMicro())
 		if err := j.SeekRealtimeUsec(cutoff); err != nil {
 			j.Close()
 			return nil, fmt.Errorf("journal seek: %w", err)
@@ -1047,18 +1045,18 @@ func mapActiveState(s string) runtime.MachineState {
 
 // dbusUnitEscape converts a systemd unit name to its dbus object path component.
 // e.g. "foo-bar.service" -> "foo_2dbar_2eservice"
-func dbusUnitEscape(name string) string {
-	var b strings.Builder
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			b.WriteByte(c)
-		} else {
-			fmt.Fprintf(&b, "_%02x", c)
-		}
-	}
-	return b.String()
-}
+// func dbusUnitEscape(name string) string {
+// 	var b strings.Builder
+// 	for i := 0; i < len(name); i++ {
+// 		c := name[i]
+// 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+// 			b.WriteByte(c)
+// 		} else {
+// 			fmt.Fprintf(&b, "_%02x", c)
+// 		}
+// 	}
+// 	return b.String()
+// }
 
 // Helpers
 

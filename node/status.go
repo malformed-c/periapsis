@@ -182,4 +182,3 @@ func (g *Gambit) SnapshotPods() []PodSnapshot {
 // ─── Logs & Exec ─────────────────────────────────────────────────────────────
 
 var _ api.ContainerLogsHandlerFunc = (*Gambit)(nil).GetContainerLogs
-

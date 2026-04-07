@@ -193,11 +193,11 @@ func (h *testHarness) createPodDir(podUID string) {
 }
 
 // podDirExists checks whether the pod directory exists on disk.
-func (h *testHarness) podDirExists(podUID string) bool {
-	dir := filepath.Join(h.baseDir, "pawns", h.pawnName, "pods", podUID)
-	_, err := os.Stat(dir)
-	return err == nil
-}
+// func (h *testHarness) podDirExists(podUID string) bool {
+// 	dir := filepath.Join(h.baseDir, "pawns", h.pawnName, "pods", podUID)
+// 	_, err := os.Stat(dir)
+// 	return err == nil
+// }
 
 // diskPodUIDs returns all pod UIDs found on disk.
 func (h *testHarness) diskPodUIDs() []string {
@@ -658,4 +658,3 @@ func TestIntegration_DesyncFuzzer(t *testing.T) {
 		}
 	}
 }
-

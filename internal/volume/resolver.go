@@ -14,8 +14,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
@@ -254,6 +256,7 @@ func (r *Resolver) resolveVolume(
 // resolvePVC looks up a PVC and its bound PV, returning the hostPath of the
 // underlying volume. Supports hostPath, local, and CSI PV types.
 func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) (string, error) {
+	slog.Info("resolvePVC", "namespace", namespace, "claim", claimName)
 	if r.kubeClient == nil {
 		return "", fmt.Errorf("PVC volumes require kubeClient")
 	}
@@ -280,14 +283,17 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 
 	// local-path-provisioner creates hostPath PVs.
 	if pv.Spec.HostPath != nil {
+		slog.Info("resolvePVC: hostPath PV", "pv", pvName, "path", pv.Spec.HostPath.Path)
 		return pv.Spec.HostPath.Path, nil
 	}
 	// Also handle local PVs (e.g. from local volume provisioner).
 	if pv.Spec.Local != nil {
+		slog.Info("resolvePVC: local PV", "pv", pvName, "path", pv.Spec.Local.Path)
 		return pv.Spec.Local.Path, nil
 	}
 	// Handle CSI PVs.
 	if pv.Spec.CSI != nil {
+		slog.Info("resolvePVC: CSI PV", "pv", pvName, "driver", pv.Spec.CSI.Driver, "handle", pv.Spec.CSI.VolumeHandle)
 		return r.resolveCSI(ctx, pvName, pv)
 	}
 
@@ -300,6 +306,7 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 // 3. Calls NodeStageVolume and NodePublishVolume via the CSI driver
 // 4. Returns the target mount path for bind-mounting into the container
 func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.PersistentVolume) (string, error) {
+	slog.Info("resolveCSI", "pv", pvName, "hostNodeName", r.hostNodeName)
 	if r.hostNodeName == "" {
 		return "", fmt.Errorf("CSI volumes require hostNodeName")
 	}
@@ -322,15 +329,10 @@ func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.Per
 		},
 	}
 
-	// Create or update the VolumeAttachment.
-	existingVA, err := r.kubeClient.StorageV1().VolumeAttachments().Get(ctx, vaName, metav1.GetOptions{})
-	if err == nil {
-		va = existingVA // Use existing VA if it already exists
-	} else {
-		va, err = r.kubeClient.StorageV1().VolumeAttachments().Create(ctx, va, metav1.CreateOptions{})
-		if err != nil {
-			return "", fmt.Errorf("create VolumeAttachment for PV %s: %w", pvName, err)
-		}
+	// Create the VolumeAttachment.
+	_, err := r.kubeClient.StorageV1().VolumeAttachments().Create(ctx, va, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("create VolumeAttachment for PV %s: %w", pvName, err)
 	}
 
 	// Poll until the VolumeAttachment is attached.
@@ -356,15 +358,19 @@ func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.Per
 	}
 	defer csiClient.Close()
 
+	// The CSI driver pods (node + mount) only have /var/lib/kubelet/pods mounted
+	// with Bidirectional propagation. FUSE mounts created at the globalmount path
+	// propagate to the host, but NodePublishVolume bind mounts to paths outside
+	// /var/lib/kubelet/ are invisible to the CSI driver and silently fail.
+	//
+	// Strategy: call NodeStageVolume (creates the FUSE mount at globalmount which
+	// propagates to the host), then return the globalmount path directly — skip
+	// NodePublishVolume entirely.
 	stagingPath := filepath.Join("/var/lib/kubelet/plugins/kubernetes.io/csi", pvName, "globalmount")
-	targetPath := filepath.Join(r.stateDir, "csi", pvName, "mount")
 
-	// Create staging and target directories.
+	// Create staging directory.
 	if err := os.MkdirAll(stagingPath, 0o750); err != nil {
 		return "", fmt.Errorf("create staging path %s: %w", stagingPath, err)
-	}
-	if err := os.MkdirAll(targetPath, 0o750); err != nil {
-		return "", fmt.Errorf("create target path %s: %w", targetPath, err)
 	}
 
 	// Call NodeStageVolume.
@@ -376,16 +382,9 @@ func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.Per
 	if err := csiClient.NodeStageVolume(ctx, volumeID, stagingPath, pv.Spec.AccessModes, volumeContext, publishContext, map[string]string{}); err != nil {
 		return "", fmt.Errorf("NodeStageVolume for PV %s: %w", pvName, err)
 	}
+	slog.Info("resolveCSI: NodeStageVolume done, using globalmount directly", "pv", pvName, "stagingPath", stagingPath)
 
-	// Call NodePublishVolume.
-	readOnly := containsReadOnlyMode(pv.Spec.AccessModes)
-	if err := csiClient.NodePublishVolume(ctx, volumeID, stagingPath, targetPath, pv.Spec.AccessModes, volumeContext, publishContext, readOnly); err != nil {
-		// Clean up staging if publish fails.
-		_ = csiClient.NodeUnstageVolume(ctx, volumeID, stagingPath)
-		return "", fmt.Errorf("NodePublishVolume for PV %s: %w", pvName, err)
-	}
-
-	return targetPath, nil
+	return stagingPath, nil
 }
 
 // writeConfigMap materialises a ConfigMap volume to a host directory.
@@ -664,13 +663,12 @@ func resolveDownwardAPIField(pod *corev1.Pod, item corev1.DownwardAPIVolumeFile)
 }
 
 func labelsToString(m map[string]string) string {
-	result := ""
+	var result strings.Builder
 	for k, v := range m {
-		result += k + "=" + v + "\n"
+		result.WriteString(k + "=" + v + "\n")
 	}
-	return result
+	return result.String()
 }
-
 
 // RefreshConfigMapDirect rewrites a previously-materialised ConfigMap volume in-place
 // using the provided ConfigMap object directly (not from the lister cache).
@@ -813,16 +811,6 @@ func ensurePath(path string, t *corev1.HostPathType) error {
 func sha256Hash(input string) string {
 	h := sha256.Sum256([]byte(input))
 	return fmt.Sprintf("%x", h)[:16] // Return first 16 hex chars
-}
-
-// containsReadOnlyMode checks if the AccessModes list contains a read-only mode.
-func containsReadOnlyMode(modes []corev1.PersistentVolumeAccessMode) bool {
-	for _, mode := range modes {
-		if mode == corev1.ReadOnlyMany {
-			return true
-		}
-	}
-	return false
 }
 
 // waitForAttachment polls until a VolumeAttachment is marked as attached,

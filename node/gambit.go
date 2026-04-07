@@ -75,7 +75,7 @@ type Gambit struct {
 
 	volumes *VolumeTracker // live ConfigMap/Secret volume refresh
 
-	store        *PodStore    // pod state maps and mutex
+	store        *PodStore     // pod state maps and mutex
 	batchWatcher *BatchWatcher // single watcher per pawn (replaces per-pod watchers)
 
 	// podNotify is the callback registered by NotifyPods. When set, Gambit
@@ -138,13 +138,6 @@ func resolveNodeIP(cfg config.PawnConfig) string {
 		return ip.String()
 	}
 	return "127.0.0.1"
-}
-
-func createConcurrency(cfg config.PawnConfig) int {
-	if cfg.CreateConcurrency > 0 {
-		return cfg.CreateConcurrency
-	}
-	return DefaultCreateConcurrency
 }
 
 // GambitDeps holds all dependencies for Gambit. Passed to NewGambit.

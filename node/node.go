@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -147,7 +147,7 @@ func WithNodeEnableLeaseV1WithRenewInterval(client coordclientset.LeaseInterface
 			n,
 		)
 		if err != nil {
-			return fmt.Errorf("Unable to configure lease controller: %w", err)
+			return fmt.Errorf("unable to configure lease controller: %w", err)
 		}
 
 		n.leaseController = leaseController
@@ -433,7 +433,7 @@ func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.
 	} else if result.error != nil {
 		n.nodeEvent(corev1.EventTypeWarning, "NodePingFailed",
 			fmt.Sprintf("Node ping failed: %v", result.error))
-		return fmt.Errorf("Not updating node status because node ping failed: %w", result.error)
+		return fmt.Errorf("not updating node status because node ping failed: %w", result.error)
 	}
 
 	updateNodeStatusHeartbeat(providerNode)

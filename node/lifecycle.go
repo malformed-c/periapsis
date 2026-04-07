@@ -337,7 +337,6 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	var launchErr error
-	var cleanups []func(context.Context)
 	for range pod.Spec.Containers {
 		r := <-results
 		if r.err != nil {
@@ -347,7 +346,6 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		}
 		if r.cleanup != nil {
 			saga.Add("container/"+r.name, r.cleanup)
-			cleanups = append(cleanups, r.cleanup)
 		}
 	}
 
@@ -518,6 +516,18 @@ func (g *Gambit) launchContainer(
 		return nil, fmt.Errorf("waitForContainer: %w", err)
 	}
 
+	// Run PostStart lifecycle hook. Per the k8s spec, PostStart runs
+	// immediately after a container is created. If it fails, the container
+	// is killed (we run cleanup and return an error).
+	if c.Lifecycle != nil && c.Lifecycle.PostStart != nil {
+		if err := g.runLifecycleHook(ctx, pod, c, uid, c.Lifecycle.PostStart, "PostStart"); err != nil {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPostStartHook",
+				"PostStart hook failed for container %s: %v", c.Name, err)
+			cleanup(context.Background())
+			return nil, fmt.Errorf("PostStart hook: %w", err)
+		}
+	}
+
 	return cleanup, nil
 }
 
@@ -544,14 +554,6 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 		}
 	}
 	return fmt.Errorf("container %s/%s did not become running within %s", uid, containerName, timeout)
-}
-
-// waitForMachine is kept for HydrateFromRuntime compatibility.
-func (g *Gambit) waitForMachine(ctx context.Context, uid string, timeout time.Duration) error {
-	// For single-container pods this is equivalent to waitForContainer.
-	// We don't know the container name here, so this is a no-op placeholder
-	// called only from HydrateFromRuntime which doesn't need it.
-	return nil
 }
 
 // markPodFailed records a pod as Failed in the internal maps and pushes
@@ -749,13 +751,6 @@ func (g *Gambit) admitPod(pod *corev1.Pod) string {
 	return g.store.AdmitPod(pod, g.Config.CPU, g.Config.Memory)
 }
 
-// computeAllocatable returns Capacity minus the sum of resource requests from
-// all currently tracked pods. This gives the k8s scheduler visibility into
-// real available resources so it can avoid overcommitting the node.
-func (g *Gambit) computeAllocatable(capacity corev1.ResourceList) corev1.ResourceList {
-	return g.store.ComputeAllocatable(capacity)
-}
-
 // pullProgressFunc returns a callback that emits Pulling events at 10% steps.
 // podEventFn returns an image.PullEventFn that forwards layer pull events as
 // pod events on the given pod.
@@ -791,6 +786,63 @@ func podTerminationGracePeriod(pod *corev1.Pod) int64 {
 	return 30
 }
 
+// runLifecycleHook executes a single lifecycle hook (PostStart or PreStop).
+// Returns an error if the hook fails. The caller decides whether to act on it
+// (PostStart failures kill the container; PreStop failures are logged only).
+func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev1.Container, uid string, handler *corev1.LifecycleHandler, hookName string) error {
+	switch {
+	case handler.Exec != nil:
+		g.Logger.Info("Running lifecycle hook", "hook", hookName, "container", c.Name, "pod", pod.Name, "type", "exec")
+		return g.Runtime.RunInContainer(ctx, uid, c.Name, handler.Exec.Command, &noopAttachIO{})
+
+	case handler.HTTPGet != nil:
+		g.Logger.Info("Running lifecycle hook", "hook", hookName, "container", c.Name, "pod", pod.Name, "type", "httpGet")
+		podIP := g.store.PodIP(uid)
+
+		host := handler.HTTPGet.Host
+		if host == "" {
+			host = podIP
+		}
+		if host == "" {
+			return fmt.Errorf("no host/podIP available")
+		}
+
+		port := handler.HTTPGet.Port.String()
+		scheme := string(handler.HTTPGet.Scheme)
+		if scheme == "" {
+			scheme = "http"
+		}
+
+		url := fmt.Sprintf("%s://%s:%s%s", strings.ToLower(scheme), host, port, handler.HTTPGet.Path)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return fmt.Errorf("bad request: %w", err)
+		}
+		for _, h := range handler.HTTPGet.HTTPHeaders {
+			req.Header.Set(h.Name, h.Value)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("HTTP request failed: %w", err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("HTTP status %d", resp.StatusCode)
+		}
+		return nil
+
+	case handler.Sleep != nil:
+		g.Logger.Info("Running lifecycle hook", "hook", hookName, "container", c.Name, "pod", pod.Name, "type", "sleep")
+		time.Sleep(time.Duration(handler.Sleep.Seconds) * time.Second)
+		return nil
+
+	default:
+		return nil
+	}
+}
+
 // runPreStopHooks executes PreStop lifecycle hooks for all running containers.
 // Hooks run within the parent context's deadline (shared with the stop budget).
 // Errors are logged but do not prevent container shutdown.
@@ -800,67 +852,14 @@ func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid strin
 		if c.Lifecycle == nil || c.Lifecycle.PreStop == nil {
 			continue
 		}
-
-		hook := c.Lifecycle.PreStop
-		g.Logger.Info("Running PreStop hook", "container", c.Name, "pod", pod.Name)
-
-		switch {
-		case hook.Exec != nil:
-			if err := g.Runtime.RunInContainer(ctx, uid, c.Name, hook.Exec.Command, &noopAttachIO{}); err != nil {
-				g.Logger.Warn("PreStop exec hook failed", "container", c.Name, "err", err)
-				if g.EventRecorder != nil {
-					g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreStopHook",
-						"PreStop exec hook failed for container %s: %v", c.Name, err)
-				}
+		if err := g.runLifecycleHook(ctx, pod, c, uid, c.Lifecycle.PreStop, "PreStop"); err != nil {
+			g.Logger.Warn("PreStop hook failed", "container", c.Name, "err", err)
+			if g.EventRecorder != nil {
+				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreStopHook",
+					"PreStop hook failed for container %s: %v", c.Name, err)
 			}
-
-		case hook.HTTPGet != nil:
-			g.runHTTPPreStopHook(ctx, pod, c.Name, uid, hook.HTTPGet)
 		}
 	}
-}
-
-// runHTTPPreStopHook executes an HTTP GET PreStop hook against the container.
-func (g *Gambit) runHTTPPreStopHook(ctx context.Context, pod *corev1.Pod, containerName, uid string, httpGet *corev1.HTTPGetAction) {
-	podIP := g.store.PodIP(uid)
-
-	host := httpGet.Host
-	if host == "" {
-		host = podIP
-	}
-	if host == "" {
-		g.Logger.Warn("PreStop HTTP hook: no host/podIP available", "container", containerName)
-		return
-	}
-
-	port := httpGet.Port.String()
-	scheme := string(httpGet.Scheme)
-	if scheme == "" {
-		scheme = "http"
-	}
-
-	url := fmt.Sprintf("%s://%s:%s%s", strings.ToLower(scheme), host, port, httpGet.Path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		g.Logger.Warn("PreStop HTTP hook: bad request", "container", containerName, "err", err)
-		return
-	}
-	for _, h := range httpGet.HTTPHeaders {
-		req.Header.Set(h.Name, h.Value)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		g.Logger.Warn("PreStop HTTP hook failed", "container", containerName, "url", url, "err", err)
-		if g.EventRecorder != nil {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPreStopHook",
-				"PreStop HTTP hook failed for container %s: %v", containerName, err)
-		}
-		return
-	}
-	resp.Body.Close()
-	g.Logger.Info("PreStop HTTP hook completed", "container", containerName, "status", resp.StatusCode)
 }
 
 // ─── Pod Queries ─────────────────────────────────────────────────────────────
-

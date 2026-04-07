@@ -181,7 +181,7 @@ func (s *SystemdRuntime) supervisorPIDFromMachined(machineName string) (int, err
 	machineObj := s.rawConn.Object("org.freedesktop.machine1", machinePath)
 	supervisorVar, err := machineObj.GetProperty("org.freedesktop.machine1.Machine.Supervisor")
 	if err != nil {
-		return 0, fmt.Errorf("Supervisor property(%s): %w", machineName, err)
+		return 0, fmt.Errorf("supervisor property(%s): %w", machineName, err)
 	}
 	supervisor, ok := supervisorVar.Value().(uint32)
 	if !ok || supervisor == 0 {

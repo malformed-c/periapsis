@@ -26,7 +26,7 @@ func TestResolve_PVC(t *testing.T) {
 	mockPVC := mocks.NewMockPersistentVolumeClaimInterface(ctrl)
 	mockPV := mocks.NewMockPersistentVolumeInterface(ctrl)
 
-	r := NewResolver(baseDir, "pawn-1", "pod-uid", nil, nil, mockKubeClient)
+	r := NewResolver(baseDir, "pawn-1", "pod-uid", "", nil, nil, mockKubeClient)
 
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{

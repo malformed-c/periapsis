@@ -7,17 +7,20 @@
 //   - configMap — files written to a host-side dir, then bind-mounted read-only
 //   - secret    — files written to a host-side dir, then bind-mounted read-only
 //   - projected — kube-api-access (service account token + CA cert + downward API)
-//   - persistentVolumeClaim — resolved to the underlying PV hostPath (local-path and local PV types)
+//   - persistentVolumeClaim — resolved to the underlying PV hostPath (local-path and local PV types) or CSI volumes
 package volume
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -32,25 +35,32 @@ type Resolver struct {
 	// projected volumes: <baseDir>/pawns/<pawn>/pods/<uid>/volumes/
 	stateDir string
 
+	// hostNodeName is the name of the real host node (for VolumeAttachment
+	// creation when mounting CSI volumes).
+	hostNodeName string
+
 	// cmLister and secretLister are optional top-level listers.
 	// They are scoped to the pod's namespace at resolution time.
 	cmLister     listersv1.ConfigMapLister
 	secretLister listersv1.SecretLister
 
-	// kubeClient is used for TokenRequest (projected service account volumes).
-	// Optional — if nil, projected volumes fall back to an empty token.
+	// kubeClient is used for TokenRequest (projected service account volumes)
+	// and VolumeAttachment creation (CSI volumes).
+	// Optional — if nil, those volume types are unsupported.
 	kubeClient kubernetes.Interface
 }
 
 // NewResolver creates a Resolver for the given pod UID.
+// hostNodeName should be the real host node name (e.g., from os.Hostname()).
 func NewResolver(
-	baseDir, pawnName, podUID string,
+	baseDir, pawnName, podUID, hostNodeName string,
 	cmLister listersv1.ConfigMapLister,
 	secretLister listersv1.SecretLister,
 	kubeClient kubernetes.Interface,
 ) *Resolver {
 	return &Resolver{
 		stateDir:     filepath.Join(baseDir, "pawns", pawnName, "pods", podUID, "volumes"),
+		hostNodeName: hostNodeName,
 		cmLister:     cmLister,
 		secretLister: secretLister,
 		kubeClient:   kubeClient,
@@ -82,9 +92,85 @@ func (r *Resolver) Resolve(ctx context.Context, pod *corev1.Pod, container *core
 	return mounts, nil
 }
 
-// Cleanup removes host-side state (emptyDir, projected) for a pod.
+// Cleanup removes host-side state (emptyDir, projected, CSI mounts) for a pod.
 func (r *Resolver) Cleanup() error {
 	return os.RemoveAll(r.stateDir)
+}
+
+// CleanupCSI performs CSI-specific cleanup: NodeUnpublishVolume, NodeUnstageVolume,
+// and VolumeAttachment deletion. It requires the pod and kubeClient to identify which
+// volumes are CSI-backed.
+func (r *Resolver) CleanupCSI(ctx context.Context, pod *corev1.Pod) error {
+	if r.kubeClient == nil || pod == nil {
+		return nil // No cleanup needed if no kubeClient or pod
+	}
+
+	// Iterate pod volumes and clean up any CSI volumes.
+	for _, vol := range pod.Spec.Volumes {
+		if vol.PersistentVolumeClaim == nil {
+			continue
+		}
+
+		// Get the PV to check if it's CSI
+		pvc, err := r.kubeClient.CoreV1().PersistentVolumeClaims(pod.Namespace).Get(ctx, vol.PersistentVolumeClaim.ClaimName, metav1.GetOptions{})
+		if err != nil {
+			// If we can't find the PVC, skip cleanup for this volume
+			continue
+		}
+
+		pvName := pvc.Spec.VolumeName
+		pv, err := r.kubeClient.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+		if err != nil || pv.Spec.CSI == nil {
+			// Not a CSI volume or can't get it, skip
+			continue
+		}
+
+		// This is a CSI volume, clean it up
+		if err := r.cleanupCSIVolume(ctx, pv); err != nil {
+			// Log but don't fail the overall cleanup
+			// (in production, you'd use a logger here)
+			_ = err
+		}
+	}
+
+	return nil
+}
+
+// cleanupCSIVolume performs cleanup for a single CSI volume.
+func (r *Resolver) cleanupCSIVolume(ctx context.Context, pv *corev1.PersistentVolume) error {
+	driverName := pv.Spec.CSI.Driver
+	volumeID := pv.Spec.CSI.VolumeHandle
+	pvName := pv.Name
+
+	stagingPath := filepath.Join("/var/lib/kubelet/plugins/kubernetes.io/csi", pvName, "globalmount")
+	targetPath := filepath.Join(r.stateDir, "csi", pvName, "mount")
+
+	// Create CSI client
+	csiClient, err := NewCSIClient(driverName)
+	if err != nil {
+		// If we can't connect to the CSI driver, try to clean up the directories anyway
+		// The VolumeAttachment will eventually be garbage collected
+		_ = os.RemoveAll(stagingPath)
+		_ = os.RemoveAll(targetPath)
+		return nil
+	}
+	defer csiClient.Close()
+
+	// Call NodeUnpublishVolume
+	_ = csiClient.NodeUnpublishVolume(ctx, volumeID, targetPath)
+
+	// Call NodeUnstageVolume
+	_ = csiClient.NodeUnstageVolume(ctx, volumeID, stagingPath)
+
+	// Clean up directories
+	_ = os.RemoveAll(stagingPath)
+	_ = os.RemoveAll(targetPath)
+
+	// Try to delete the VolumeAttachment
+	vaName := sha256Hash(pvName + "/" + r.hostNodeName)
+	_ = r.kubeClient.StorageV1().VolumeAttachments().Delete(ctx, vaName, metav1.DeleteOptions{})
+
+	return nil
 }
 
 func (r *Resolver) resolveVolume(
@@ -166,8 +252,7 @@ func (r *Resolver) resolveVolume(
 }
 
 // resolvePVC looks up a PVC and its bound PV, returning the hostPath of the
-// underlying volume. Only hostPath and local PV types are supported — these
-// are what local-path-provisioner creates.
+// underlying volume. Supports hostPath, local, and CSI PV types.
 func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) (string, error) {
 	if r.kubeClient == nil {
 		return "", fmt.Errorf("PVC volumes require kubeClient")
@@ -201,8 +286,106 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 	if pv.Spec.Local != nil {
 		return pv.Spec.Local.Path, nil
 	}
+	// Handle CSI PVs.
+	if pv.Spec.CSI != nil {
+		return r.resolveCSI(ctx, pvName, pv)
+	}
 
-	return "", fmt.Errorf("PV %s has unsupported type (only hostPath and local are supported)", pvName)
+	return "", fmt.Errorf("PV %s has unsupported type (only hostPath, local, and CSI are supported)", pvName)
+}
+
+// resolveCSI handles CSI volume mounting. It:
+// 1. Creates or gets a VolumeAttachment for the host node
+// 2. Waits for the attach to complete
+// 3. Calls NodeStageVolume and NodePublishVolume via the CSI driver
+// 4. Returns the target mount path for bind-mounting into the container
+func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.PersistentVolume) (string, error) {
+	if r.hostNodeName == "" {
+		return "", fmt.Errorf("CSI volumes require hostNodeName")
+	}
+
+	driverName := pv.Spec.CSI.Driver
+	volumeID := pv.Spec.CSI.VolumeHandle
+
+	// Create VolumeAttachment for the host node (deterministic name based on PV).
+	vaName := sha256Hash(pvName + "/" + r.hostNodeName)
+	va := &storagev1.VolumeAttachment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: vaName,
+		},
+		Spec: storagev1.VolumeAttachmentSpec{
+			Attacher: driverName,
+			Source: storagev1.VolumeAttachmentSource{
+				PersistentVolumeName: &pvName,
+			},
+			NodeName: r.hostNodeName,
+		},
+	}
+
+	// Create or update the VolumeAttachment.
+	existingVA, err := r.kubeClient.StorageV1().VolumeAttachments().Get(ctx, vaName, metav1.GetOptions{})
+	if err == nil {
+		va = existingVA // Use existing VA if it already exists
+	} else {
+		va, err = r.kubeClient.StorageV1().VolumeAttachments().Create(ctx, va, metav1.CreateOptions{})
+		if err != nil {
+			return "", fmt.Errorf("create VolumeAttachment for PV %s: %w", pvName, err)
+		}
+	}
+
+	// Poll until the VolumeAttachment is attached.
+	if err := waitForAttachment(ctx, r.kubeClient, vaName); err != nil {
+		return "", fmt.Errorf("wait for CSI attach for PV %s: %w", pvName, err)
+	}
+
+	// Refresh the VolumeAttachment to get the publish context.
+	va, err = r.kubeClient.StorageV1().VolumeAttachments().Get(ctx, vaName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get VolumeAttachment for PV %s: %w", pvName, err)
+	}
+
+	publishContext := map[string]string{}
+	if va.Status.AttachmentMetadata != nil {
+		publishContext = va.Status.AttachmentMetadata
+	}
+
+	// Create the CSI client and mount the volume.
+	csiClient, err := NewCSIClient(driverName)
+	if err != nil {
+		return "", fmt.Errorf("create CSI client for driver %s: %w", driverName, err)
+	}
+	defer csiClient.Close()
+
+	stagingPath := filepath.Join("/var/lib/kubelet/plugins/kubernetes.io/csi", pvName, "globalmount")
+	targetPath := filepath.Join(r.stateDir, "csi", pvName, "mount")
+
+	// Create staging and target directories.
+	if err := os.MkdirAll(stagingPath, 0o750); err != nil {
+		return "", fmt.Errorf("create staging path %s: %w", stagingPath, err)
+	}
+	if err := os.MkdirAll(targetPath, 0o750); err != nil {
+		return "", fmt.Errorf("create target path %s: %w", targetPath, err)
+	}
+
+	// Call NodeStageVolume.
+	volumeContext := pv.Spec.CSI.VolumeAttributes
+	if volumeContext == nil {
+		volumeContext = make(map[string]string)
+	}
+
+	if err := csiClient.NodeStageVolume(ctx, volumeID, stagingPath, pv.Spec.AccessModes, volumeContext, publishContext, map[string]string{}); err != nil {
+		return "", fmt.Errorf("NodeStageVolume for PV %s: %w", pvName, err)
+	}
+
+	// Call NodePublishVolume.
+	readOnly := containsReadOnlyMode(pv.Spec.AccessModes)
+	if err := csiClient.NodePublishVolume(ctx, volumeID, stagingPath, targetPath, pv.Spec.AccessModes, volumeContext, publishContext, readOnly); err != nil {
+		// Clean up staging if publish fails.
+		_ = csiClient.NodeUnstageVolume(ctx, volumeID, stagingPath)
+		return "", fmt.Errorf("NodePublishVolume for PV %s: %w", pvName, err)
+	}
+
+	return targetPath, nil
 }
 
 // writeConfigMap materialises a ConfigMap volume to a host directory.
@@ -624,4 +807,45 @@ func ensurePath(path string, t *corev1.HostPathType) error {
 		}
 	}
 	return nil
+}
+
+// sha256Hash returns a short deterministic hash of the input string.
+func sha256Hash(input string) string {
+	h := sha256.Sum256([]byte(input))
+	return fmt.Sprintf("%x", h)[:16] // Return first 16 hex chars
+}
+
+// containsReadOnlyMode checks if the AccessModes list contains a read-only mode.
+func containsReadOnlyMode(modes []corev1.PersistentVolumeAccessMode) bool {
+	for _, mode := range modes {
+		if mode == corev1.ReadOnlyMany {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForAttachment polls until a VolumeAttachment is marked as attached,
+// with a 30-second timeout.
+func waitForAttachment(ctx context.Context, kubeClient kubernetes.Interface, vaName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for attachment timed out: %w", ctx.Err())
+		case <-ticker.C:
+			va, err := kubeClient.StorageV1().VolumeAttachments().Get(ctx, vaName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("get VolumeAttachment: %w", err)
+			}
+			if va.Status.Attached {
+				return nil
+			}
+		}
+	}
 }

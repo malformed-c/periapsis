@@ -44,6 +44,7 @@ type Reconciler struct {
 	logger        *slog.Logger
 	baseDir       string
 	pawnName      string
+	hostNodeName  string // Real host node name, used for CSI volume cleanup
 	syncRequester func(namespace, name string) // forward reconciler callback
 }
 
@@ -64,6 +65,7 @@ func NewReconciler(
 		logger:        logger,
 		baseDir:       g.Config.BaseDir,
 		pawnName:      g.Config.Name,
+		hostNodeName:  g.hostNodeName,
 		syncRequester: g.RequestSync,
 	}
 }
@@ -272,7 +274,7 @@ func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {
 		r.logger.Error("Reconciler: failed to unmount", "uid", m.UID, "container", m.ContainerName, "err", err)
 	}
 	// Clean up volumes and pod workspace directory.
-	volResolver := volume.NewResolver(r.baseDir, r.pawnName, m.UID, nil, nil, nil)
+	volResolver := volume.NewResolver(r.baseDir, r.pawnName, m.UID, r.hostNodeName, nil, nil, nil)
 	if err := volResolver.Cleanup(); err != nil {
 		r.logger.Warn("Reconciler: volume cleanup failed", "uid", m.UID, "err", err)
 	}

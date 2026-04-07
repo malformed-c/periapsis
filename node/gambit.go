@@ -81,6 +81,7 @@ type Gambit struct {
 	svcLister    listersv1.ServiceLister
 	kubeClient   kubernetes.Interface
 	clusterDNS   string // ClusterIP of kube-dns, written to container resolv.conf
+	hostNodeName string // Real host node name (from os.Hostname()), used for CSI volumes
 
 	volumes *VolumeTracker // live ConfigMap/Secret volume refresh
 
@@ -186,6 +187,8 @@ type GambitDeps struct {
 
 func NewGambit(deps GambitDeps) *Gambit {
 	nodeIP := resolveNodeIP(deps.Config)
+	// Get the real host node name for CSI volume mounting.
+	hostNodeName, _ := os.Hostname()
 	g := &Gambit{
 		Config:         deps.Config,
 		ImageManager:   deps.ImageManager,
@@ -202,6 +205,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 		svcLister:      deps.SvcLister,
 		kubeClient:     deps.KubeClient,
 		clusterDNS:     deps.ClusterDNS,
+		hostNodeName:   hostNodeName,
 	}
 	if deps.APIServerHost != "" {
 		g.Tidal.SetAPIServer(deps.APIServerHost, deps.APIServerPort)
@@ -701,14 +705,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		return fmt.Errorf("machined pre-flight: %w", err)
 	}
 
-	// saga accumulates compensations for completed steps.
-	// compensate() runs them in reverse order (LIFO).
-	var compensations []func()
-	compensate := func() {
-		for i := len(compensations) - 1; i >= 0; i-- {
-			compensations[i]()
-		}
-	}
+	saga := NewSaga(pod, g.Logger, g.EventRecorder)
 
 	// Step 1: network setup.
 	// HostNetwork pods share the host network namespace — skip CNI and use
@@ -724,14 +721,14 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedNetwork", "CNI setup failed: %v", err)
 			return fmt.Errorf("network setup: %w", err)
 		}
-		compensations = append(compensations, func() {
-			_ = g.NetworkManager.Teardown(context.Background(), uid, pod.Namespace, pod.Name)
+		saga.Add("network", func(ctx context.Context) {
+			_ = g.NetworkManager.Teardown(ctx, uid, pod.Namespace, pod.Name)
 		})
 	}
 
 	// Register pod workspace cleanup as early compensation (runs last in LIFO).
-	compensations = append(compensations, func() {
-		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, nil, nil, nil)
+	saga.Add("workspace", func(_ context.Context) {
+		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, nil, nil, nil)
 		_ = volResolver.Cleanup()
 		podDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid)
 		_ = os.RemoveAll(podDir)
@@ -746,7 +743,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	rm, _ := manager.NewResourceManager(nil, g.secretLister, g.cmLister, g.svcLister)
 	if err := podutils.PopulateEnvironmentVariables(ctx, pod, rm, g.EventRecorder); err != nil {
 		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPopulateEnv", "environment variable resolution failed: %v", err)
-		compensate()
+		saga.Compensate()
 		return fmt.Errorf("env population: %w", err)
 	}
 
@@ -781,7 +778,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 				})
 			if err != nil {
 				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", ic.Name, err)
-				compensate()
+				saga.Compensate()
 				return fmt.Errorf("pull init container %s: %w", ic.Name, err)
 			}
 			// Cache the successful pull result.
@@ -796,7 +793,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		rootfs, err := g.ImageManager.Mount(uid+"-"+ic.Name, layers)
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedMount", "Mount %s: %v", ic.Name, err)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("mount init container %s: %w", ic.Name, err)
 		}
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Created", "Created init container %s", ic.Name)
@@ -804,13 +801,13 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		// No compensation registered — we unmount inline below.
 
 		resolvedEnv := g.Tidal.ResolveEnv(pod, ic, podIP)
-		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.cmLister, g.secretLister, g.kubeClient)
+		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
 		bindMounts, err := volResolver.Resolve(ctx, pod, ic)
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedMount",
 				"Volume resolution failed for init container %s: %v", ic.Name, err)
 			_ = g.ImageManager.Unmount(uid + "-" + ic.Name)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("volume resolution for init container %s: %w", ic.Name, err)
 		}
 		if g.clusterDNS != "" {
@@ -843,7 +840,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 
 		if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 			_ = g.ImageManager.Unmount(uid + "-" + ic.Name)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("start init container %s: %w", ic.Name, err)
 		}
 
@@ -854,13 +851,13 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 			_ = g.Runtime.StopMachine(context.Background(), uid, ic.Name)
 			_ = g.ImageManager.Unmount(uid + "-" + ic.Name)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedInit", "Init container %s: %v", ic.Name, err)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("init container %s: %w", ic.Name, err)
 		}
 		_ = g.ImageManager.Unmount(uid + "-" + ic.Name)
 		if state == perigeos.StateFailed {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedInit", "Init container %s exited with error", ic.Name)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("init container %s failed", ic.Name)
 		}
 
@@ -896,7 +893,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 				})
 			if err != nil {
 				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPull", "Pull %s: %v", c.Name, err)
-				compensate()
+				saga.Compensate()
 				return fmt.Errorf("pull container %s: %w", c.Name, err)
 			}
 			// Cache the successful pull result.
@@ -911,23 +908,23 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 		rootfs, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedMount", "Mount %s: %v", c.Name, err)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("mount container %s: %w", c.Name, err)
 		}
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Created", "Created container %s", c.Name)
 		cname := c.Name // capture for compensation closure
-		compensations = append(compensations, func() {
+		saga.Add("container/"+cname, func(ctx context.Context) {
+			_ = g.Runtime.StopMachine(ctx, uid, cname)
 			_ = g.ImageManager.Unmount(uid + "-" + cname)
-			_ = g.Runtime.StopMachine(context.Background(), uid, cname)
 		})
 
 		resolvedEnv := g.Tidal.ResolveEnv(pod, c, podIP)
-		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.cmLister, g.secretLister, g.kubeClient)
+		volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
 		bindMounts, err := volResolver.Resolve(ctx, pod, c)
 		if err != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedMount",
 				"Volume resolution failed for container %s: %v", c.Name, err)
-			compensate()
+			saga.Compensate()
 			return fmt.Errorf("volume resolution for container %s: %w", c.Name, err)
 		}
 		if g.clusterDNS != "" {
@@ -982,7 +979,7 @@ func (g *Gambit) createPodSync(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	if startErr != nil {
-		compensate()
+		saga.Compensate()
 		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedStart", "Pod failed to start: %v", startErr)
 		return startErr
 	}
@@ -1173,7 +1170,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	}
 
 	resolvedEnv := g.Tidal.ResolveEnv(pod, container, podIP)
-	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.cmLister, g.secretLister, g.kubeClient)
+	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
 	bindMounts, err := volResolver.Resolve(ctx, pod, container)
 	if err != nil {
 		g.Logger.Error("Restart: volume resolution failed", "container", containerName, "err", err)
@@ -1310,8 +1307,13 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	// Clean up any host-side volume state (emptyDir, configMap projections).
-	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, nil, nil, nil)
+	// Clean up any host-side volume state (emptyDir, configMap projections, CSI mounts).
+	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, nil, nil, g.kubeClient)
+	// First, clean up CSI volumes if kubeClient is available
+	if err := volResolver.CleanupCSI(ctx, pod); err != nil {
+		g.Logger.Warn("CSI cleanup failed (non-fatal)", "uid", uid, "err", err)
+	}
+	// Then clean up the state directory
 	if err := volResolver.Cleanup(); err != nil {
 		g.Logger.Warn("Volume cleanup failed (non-fatal)", "uid", uid, "err", err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/join"
 	"github.com/malformed-c/periapsis/internal/network"
 	"github.com/malformed-c/periapsis/internal/pki"
+	"github.com/malformed-c/periapsis/internal/plugin"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
@@ -349,6 +350,20 @@ func main() {
 		Client: kubeClient,
 		SelfIP: pki.GetOutboundIP().String(),
 	})
+
+	// --- Plugin registration: watch CSI driver sockets, create CSINode per pawn ---
+	{
+		pawnNames := make([]string, len(perigeoCfg.Pawns))
+		for i, p := range perigeoCfg.Pawns {
+			pawnNames[i] = p.Name
+		}
+		pw := plugin.NewPluginWatcher(kubeClient, pawnNames, logger.With("component", "plugin-watcher"))
+		wg.Go(func() {
+			if err := pw.Run(ctx); err != nil {
+				logger.Error("Plugin watcher exited", "err", err)
+			}
+		})
+	}
 
 	var (
 		serversMu  sync.Mutex

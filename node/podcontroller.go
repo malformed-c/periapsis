@@ -105,10 +105,6 @@ type PodController struct {
 	// this can be non-trivial for callers.
 	err error
 
-	// skipDownwardAPIResolution can be used to skip any attempts at resolving downward API references
-	// in pods before calling CreatePod on the provider.
-	// Providers need this if they need to do their own custom resolving
-	skipDownwardAPIResolution bool
 }
 
 type knownPod struct {
@@ -166,10 +162,6 @@ type PodControllerConfig struct {
 	// set that filter here so the pod controller does not handle events for pods assigned to other nodes.
 	PodEventFilterFunc PodEventFilterFunc
 
-	// SkipDownwardAPIResolution can be used to skip any attempts at resolving downward API references
-	// in pods before calling CreatePod on the provider.
-	// Providers need this if they need to do their own custom resolving
-	SkipDownwardAPIResolution bool
 }
 
 // NewPodController creates a new pod controller with the provided config.
@@ -213,7 +205,6 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		done:               make(chan struct{}),
 		recorder:           cfg.EventRecorder,
 		podEventFilterFunc:        cfg.PodEventFilterFunc,
-		skipDownwardAPIResolution: cfg.SkipDownwardAPIResolution,
 	}
 
 	pc.syncPodsFromKubernetes = queue.New(cfg.SyncPodsFromKubernetesRateLimiter, "syncPodsFromKubernetes", pc.syncPodFromKubernetesHandler, cfg.SyncPodsFromKubernetesShouldRetryFunc)

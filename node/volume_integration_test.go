@@ -51,7 +51,7 @@ func TestIntegration_VolumeLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	volResolver := volume.NewResolver(h.baseDir, h.pawnName, uid, nil, nil, nil)
+	volResolver := volume.NewResolver(h.baseDir, h.pawnName, uid, "", nil, nil, nil)
 	mounts, err := volResolver.Resolve(ctx, pod, &pod.Spec.Containers[0])
 	require.NoError(t, err)
 	require.Len(t, mounts, 1)

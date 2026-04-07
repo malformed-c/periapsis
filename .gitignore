@@ -45,3 +45,4 @@ loganalytics.json
 debug
 
 vendor/
+.serena/

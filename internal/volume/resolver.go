@@ -785,11 +785,15 @@ func removeStaleFiles(hostDir string, keep map[string]bool) error {
 }
 
 func ensurePath(path string, t *corev1.HostPathType) error {
-	if t == nil || *t == corev1.HostPathUnset || *t == corev1.HostPathDirectory || *t == corev1.HostPathFile {
+	if t == nil || *t == corev1.HostPathUnset || *t == corev1.HostPathFile {
 		// Must already exist — don't create.
 		return nil
 	}
 	switch *t {
+	case corev1.HostPathDirectory:
+		// k8s spec says dir must already exist, but perigeos acts as the kubelet
+		// and must create dirs like /var/lib/kubelet/plugins_registry on demand.
+		return os.MkdirAll(path, 0o755)
 	case corev1.HostPathDirectoryOrCreate:
 		return os.MkdirAll(path, 0o755)
 	case corev1.HostPathFileOrCreate:

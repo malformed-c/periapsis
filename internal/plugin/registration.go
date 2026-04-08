@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/fsnotify/fsnotify"
@@ -21,7 +22,34 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+const (
+	// pluginRegistryDir is where node-driver-registrar places its sockets.
+	// perigeos creates this directory at startup so hostPath volumes that
+	// reference it with type=Directory or type=DirectoryOrCreate succeed.
+	pluginRegistryDir = "/var/lib/kubelet/plugins_registry"
+
+	// pluginRegistryKubeletDir is where kubelet normally keeps its own plugin
+	// sockets; some CSI DaemonSets mount this too.
+	pluginRegistryKubeletDir = "/var/lib/kubelet/plugins"
+
+	// handleRetryInterval is how long to wait between GetInfo retries.
+	// The registrar's gRPC server may not be ready immediately after the
+	// socket file appears (kernel creates the inode before bind(2) completes).
+	handleRetryInterval = 500 * time.Millisecond
+
+	// handleRetryTimeout caps how long we wait for the registrar to answer.
+	handleRetryTimeout = 30 * time.Second
+)
+
 // PluginWatcher watches for CSI driver socket registrations and creates CSINode objects.
+// It acts as the kubelet-side of the node plugin registration protocol:
+//
+//  1. node-driver-registrar creates a socket at pluginRegistryDir/<driver>-reg.sock
+//  2. PluginWatcher detects the socket via fsnotify and calls GetInfo() on it
+//  3. PluginWatcher dials the CSI endpoint returned by GetInfo, calls NodeGetInfo()
+//  4. PluginWatcher creates/updates CSINode objects for each pawn
+//  5. PluginWatcher calls NotifyRegistrationStatus(ok) — this unblocks the registrar
+//     and prevents it from timing out and crashing
 type PluginWatcher struct {
 	kubeClient kubernetes.Interface
 	pawnNames  []string
@@ -38,29 +66,32 @@ func NewPluginWatcher(kubeClient kubernetes.Interface, pawnNames []string, logge
 }
 
 // Run starts watching the kubelet plugins registry directory.
-// It scans existing sockets on startup and watches for new ones.
+// It ensures the directory exists (so CSI DaemonSet hostPath volumes succeed),
+// scans existing sockets on startup, and watches for new ones.
 func (pw *PluginWatcher) Run(ctx context.Context) error {
-	pluginRegistryDir := "/var/lib/kubelet/plugins_registry/"
+	// Ensure both kubelet plugin directories exist. CSI DaemonSets reference
+	// them as hostPath volumes (type=Directory or DirectoryOrCreate). If they
+	// don't exist the bind mount fails and the registrar container can't create
+	// its socket — making the pod crash before registration even starts.
+	for _, dir := range []string{pluginRegistryDir, pluginRegistryKubeletDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			pw.logger.Warn("Failed to create plugin directory", "dir", dir, "err", err)
+		}
+	}
 
-	// Scan existing sockets on startup
+	// Scan existing sockets on startup (registrar may have run before us).
 	if entries, err := os.ReadDir(pluginRegistryDir); err == nil {
 		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if !strings.HasSuffix(entry.Name(), ".sock") {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sock") {
 				continue
 			}
 			socketPath := filepath.Join(pluginRegistryDir, entry.Name())
-			if err := pw.handleSocket(ctx, socketPath); err != nil {
-				pw.logger.Warn("Failed to handle existing socket", "socket", socketPath, "err", err)
-			}
+			go pw.handleSocketWithRetry(ctx, socketPath)
 		}
 	} else {
 		pw.logger.Warn("Could not scan plugin registry directory", "dir", pluginRegistryDir, "err", err)
 	}
 
-	// Start fsnotify watcher for new sockets
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("create fsnotify watcher: %w", err)
@@ -87,10 +118,9 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 			if !strings.HasSuffix(event.Name, ".sock") {
 				continue
 			}
-			pw.logger.Debug("New socket detected", "socket", event.Name)
-			if err := pw.handleSocket(ctx, event.Name); err != nil {
-				pw.logger.Warn("Failed to handle socket", "socket", event.Name, "err", err)
-			}
+			pw.logger.Debug("New plugin socket detected", "socket", event.Name)
+			// Handle in a goroutine — retry loop must not block the watcher.
+			go pw.handleSocketWithRetry(ctx, event.Name)
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return fmt.Errorf("fsnotify watcher error channel closed")
@@ -100,41 +130,84 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 	}
 }
 
-// handleSocket processes a single socket file by dialing the plugin registration
-// service, getting plugin info, dialing the CSI endpoint, getting node info,
-// and creating CSINode objects for each pawn.
+// handleSocketWithRetry retries handleSocket until success or timeout.
+// The socket file exists before the registrar's gRPC server is bound to it
+// (kernel creates the inode first), so the first dial attempt often races.
+// A 30-second window covers slow image pulls and container start latency.
+func (pw *PluginWatcher) handleSocketWithRetry(ctx context.Context, socketPath string) {
+	retryCtx, cancel := context.WithTimeout(ctx, handleRetryTimeout)
+	defer cancel()
+
+	for {
+		err := pw.handleSocket(retryCtx, socketPath)
+		if err == nil {
+			return
+		}
+		pw.logger.Debug("Plugin registration attempt failed, will retry",
+			"socket", socketPath, "err", err)
+
+		select {
+		case <-retryCtx.Done():
+			pw.logger.Warn("Plugin registration timed out", "socket", socketPath, "err", err)
+			return
+		case <-time.After(handleRetryInterval):
+		}
+	}
+}
+
+// handleSocket performs a single registration attempt for a socket:
+//  1. Dials the registrar's gRPC server and calls GetInfo()
+//  2. Resolves the CSI endpoint to a host-visible path
+//  3. Calls NodeGetInfo() on the CSI plugin
+//  4. Creates/updates CSINode for each pawn
+//  5. Calls NotifyRegistrationStatus(ok) to unblock the registrar
 func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) error {
-	// Dial the plugin registration service
 	conn, err := grpc.NewClient(
 		"unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		return fmt.Errorf("dial plugin registration socket %s: %w", socketPath, err)
+		return fmt.Errorf("dial registration socket: %w", err)
 	}
 	defer conn.Close()
 
 	regClient := registerapi.NewRegistrationClient(conn)
 	info, err := regClient.GetInfo(ctx, &registerapi.InfoRequest{})
 	if err != nil {
-		return fmt.Errorf("call GetInfo on %s: %w", socketPath, err)
+		return fmt.Errorf("GetInfo: %w", err)
 	}
 
-	// Only process CSI plugins
 	if info.Type != registerapi.CSIPlugin {
 		pw.logger.Debug("Skipping non-CSI plugin", "socket", socketPath, "type", info.Type)
+		// Still notify so the registrar doesn't hang.
+		_, _ = regClient.NotifyRegistrationStatus(ctx, &registerapi.RegistrationStatus{
+			PluginRegistered: true,
+		})
 		return nil
 	}
 
-	pw.logger.Debug("Processing CSI plugin", "plugin", info.Name, "socket", socketPath)
+	pw.logger.Info("Registering CSI plugin", "driver", info.Name, "socket", socketPath)
 
-	// Determine the CSI endpoint
+	// The endpoint returned by GetInfo() is the path as seen INSIDE the
+	// registrar container (e.g. "/csi/csi.sock"). perigeos bind-mounts the
+	// emptyDir backing that path to a host directory under the pod state dir.
+	// We need the HOST-side path so we can dial the CSI plugin from the host.
+	//
+	// The CSI plugin socket is also a hostPath or emptyDir volume, so it is
+	// reachable on the host at the same path (hostPath volumes) or via the
+	// emptyDir host directory. For the common seaweedfs layout where the CSI
+	// socket is at /csi/csi.sock backed by an emptyDir, the host path is
+	// pluginRegistryKubeletDir/<driverName>/csi.sock — the conventional
+	// staging path that perigeos creates during NodeStageVolume.
+	//
+	// Fall back: if the endpoint path exists on the host, use it directly
+	// (works for hostPath-backed sockets). Otherwise derive the staging path.
 	endpoint := info.Endpoint
 	if endpoint == "" {
 		endpoint = socketPath
 	}
+	endpoint = pw.resolveCSIEndpoint(info.Name, endpoint)
 
-	// Dial the CSI endpoint
 	csiConn, err := grpc.NewClient(
 		"unix://"+endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -144,58 +217,87 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 	}
 	defer csiConn.Close()
 
-	// Get node info
 	nodeClient := csi.NewNodeClient(csiConn)
 	nodeResp, err := nodeClient.NodeGetInfo(ctx, &csi.NodeGetInfoRequest{})
 	if err != nil {
-		return fmt.Errorf("call NodeGetInfo on %s: %w", endpoint, err)
+		return fmt.Errorf("NodeGetInfo on %s: %w", endpoint, err)
 	}
 
-	// Create CSINode for each pawn
 	for _, pawnName := range pw.pawnNames {
 		if err := pw.ensureCSINode(ctx, pawnName, info.Name, nodeResp); err != nil {
-			pw.logger.Warn("Failed to ensure CSINode for pawn", "pawn", pawnName, "plugin", info.Name, "err", err)
+			pw.logger.Warn("Failed to ensure CSINode",
+				"pawn", pawnName, "driver", info.Name, "err", err)
 		}
 	}
 
-	// Notify the plugin that registration is complete
+	// Critical: notify the registrar that registration succeeded.
+	// Without this call the registrar blocks, then times out and exits,
+	// crashing the CSI pod.
 	if _, err := regClient.NotifyRegistrationStatus(ctx, &registerapi.RegistrationStatus{
 		PluginRegistered: true,
 	}); err != nil {
-		pw.logger.Warn("Failed to notify registration status", "plugin", info.Name, "err", err)
+		// Log but don't fail — CSINode is already created, the side effect is done.
+		pw.logger.Warn("NotifyRegistrationStatus failed", "driver", info.Name, "err", err)
 	}
 
+	pw.logger.Info("CSI plugin registered", "driver", info.Name)
 	return nil
 }
 
-// ensureCSINode ensures that a CSINode exists for the given pawn with the
-// specified driver information. It creates the CSINode if it doesn't exist,
-// or appends the driver if the CSINode already exists.
+// resolveCSIEndpoint converts a container-internal socket path to a path that
+// is reachable from the host.
+//
+// Strategy:
+//  1. If the path exists on the host as-is, use it (hostPath-backed socket).
+//  2. Otherwise look for the socket under pluginRegistryKubeletDir/<driverName>/,
+//     which is the conventional staging location and where perigeos surfaces
+//     emptyDir-backed sockets via bind mount.
+//  3. Fall back to the original path and let the caller surface the error.
+func (pw *PluginWatcher) resolveCSIEndpoint(driverName, containerPath string) string {
+	// Fast path: socket is directly accessible on the host (e.g. HostPath volume).
+	if _, err := os.Stat(containerPath); err == nil {
+		return containerPath
+	}
+
+	// Derive host path: pluginRegistryKubeletDir/<driverName>/<basename>
+	base := filepath.Base(containerPath)
+	hostPath := filepath.Join(pluginRegistryKubeletDir, driverName, base)
+	if _, err := os.Stat(hostPath); err == nil {
+		return hostPath
+	}
+
+	// Also try pluginRegistryKubeletDir/<driverName>/csi.sock — some drivers
+	// use non-standard names but are always staged here by perigeos.
+	stagingSocket := filepath.Join(pluginRegistryKubeletDir, driverName, "csi.sock")
+	if _, err := os.Stat(stagingSocket); err == nil {
+		return stagingSocket
+	}
+
+	pw.logger.Debug("Could not resolve CSI endpoint to host path, using as-is",
+		"driver", driverName, "path", containerPath)
+	return containerPath
+}
+
+// ensureCSINode creates or updates the CSINode for a pawn with the given driver.
 func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName string, nodeInfo *csi.NodeGetInfoResponse) error {
-	// Get the Node object to obtain its UID for OwnerReference
 	node, err := pw.kubeClient.CoreV1().Nodes().Get(ctx, pawnName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get node %s: %w", pawnName, err)
 	}
 
-	// Extract topology keys from AccessibleTopology
 	var topologyKeys []string
-	if nodeInfo.AccessibleTopology != nil && nodeInfo.AccessibleTopology.Segments != nil {
+	if nodeInfo.AccessibleTopology != nil {
 		for key := range nodeInfo.AccessibleTopology.Segments {
 			topologyKeys = append(topologyKeys, key)
 		}
 	}
 
-	// Build allocatable resources if MaxVolumesPerNode is set
 	var allocatable *storagev1.VolumeNodeResources
 	if nodeInfo.MaxVolumesPerNode > 0 {
 		count := int32(nodeInfo.MaxVolumesPerNode)
-		allocatable = &storagev1.VolumeNodeResources{
-			Count: &count,
-		}
+		allocatable = &storagev1.VolumeNodeResources{Count: &count}
 	}
 
-	// Create the driver entry
 	driverEntry := storagev1.CSINodeDriver{
 		Name:         driverName,
 		NodeID:       nodeInfo.NodeId,
@@ -203,14 +305,8 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 		Allocatable:  allocatable,
 	}
 
-	// Try to get existing CSINode
 	csiNode, err := pw.kubeClient.StorageV1().CSINodes().Get(ctx, pawnName, metav1.GetOptions{})
-	if err != nil && !k8serrors.IsNotFound(err) {
-		return fmt.Errorf("get CSINode %s: %w", pawnName, err)
-	}
-
 	if k8serrors.IsNotFound(err) {
-		// Create new CSINode
 		newCSINode := &storagev1.CSINode{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: pawnName,
@@ -225,59 +321,52 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 				Drivers: []storagev1.CSINodeDriver{driverEntry},
 			},
 		}
-
 		if _, err := pw.kubeClient.StorageV1().CSINodes().Create(ctx, newCSINode, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("create CSINode %s: %w", pawnName, err)
 		}
 		pw.logger.Info("Created CSINode", "node", pawnName, "driver", driverName)
+	} else if err != nil {
+		return fmt.Errorf("get CSINode %s: %w", pawnName, err)
 	} else {
-		// Check if driver already exists
-		driverExists := false
-		for _, existingDriver := range csiNode.Spec.Drivers {
-			if existingDriver.Name == driverName {
-				driverExists = true
-				break
+		// Update existing: add driver if not already present, or patch nodeID if changed.
+		updated := false
+		for i, d := range csiNode.Spec.Drivers {
+			if d.Name == driverName {
+				if d.NodeID != nodeInfo.NodeId {
+					csiNode.Spec.Drivers[i] = driverEntry
+					updated = true
+				}
+				goto patchAnnotation
 			}
 		}
+		csiNode.Spec.Drivers = append(csiNode.Spec.Drivers, driverEntry)
+		updated = true
 
-		if !driverExists {
-			// Append the driver
-			csiNode.Spec.Drivers = append(csiNode.Spec.Drivers, driverEntry)
+	patchAnnotation:
+		if updated {
 			if _, err := pw.kubeClient.StorageV1().CSINodes().Update(ctx, csiNode, metav1.UpdateOptions{}); err != nil {
 				return fmt.Errorf("update CSINode %s: %w", pawnName, err)
 			}
-			pw.logger.Info("Added driver to CSINode", "node", pawnName, "driver", driverName)
+			pw.logger.Info("Updated CSINode", "node", pawnName, "driver", driverName)
 		}
 	}
 
-	// Update Node annotation with CSI node IDs
-	nodeIDAnnotationKey := "csi.volume.kubernetes.io/nodeid"
-	if node.Annotations == nil {
-		node.Annotations = make(map[string]string)
-	}
-
-	// Parse existing annotation value (it's a JSON object)
+	// Keep the csi.volume.kubernetes.io/nodeid annotation on the Node object
+	// in sync. Some external schedulers and admission controllers read this.
 	nodeIDMap := make(map[string]string)
-	if existingJSON, ok := node.Annotations[nodeIDAnnotationKey]; ok {
-		if err := json.Unmarshal([]byte(existingJSON), &nodeIDMap); err != nil {
-			pw.logger.Warn("Could not parse existing node ID annotation", "node", pawnName, "err", err)
-		}
+	const nodeIDAnnotationKey = "csi.volume.kubernetes.io/nodeid"
+	if existing, ok := node.Annotations[nodeIDAnnotationKey]; ok {
+		_ = json.Unmarshal([]byte(existing), &nodeIDMap)
 	}
-
-	// Add/update the driver entry
 	nodeIDMap[driverName] = nodeInfo.NodeId
-
-	// Re-marshal and update annotation
 	newJSON, err := json.Marshal(nodeIDMap)
 	if err != nil {
-		return fmt.Errorf("marshal node ID map: %w", err)
+		return fmt.Errorf("marshal nodeID annotation: %w", err)
 	}
-
-	// Strategic merge patch to update Node annotation
-	annotationPatch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{"%s":%s}}}`,
-		nodeIDAnnotationKey, string(newJSON)))
-
-	if _, err := pw.kubeClient.CoreV1().Nodes().Patch(ctx, pawnName, k8stypes.StrategicMergePatchType, annotationPatch, metav1.PatchOptions{}); err != nil {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%s}}}`, nodeIDAnnotationKey, newJSON)
+	if _, err := pw.kubeClient.CoreV1().Nodes().Patch(
+		ctx, pawnName, k8stypes.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{},
+	); err != nil {
 		return fmt.Errorf("patch node annotation: %w", err)
 	}
 

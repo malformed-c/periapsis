@@ -407,21 +407,15 @@ func (s *SystemdRuntime) makeSharedMounts(ctx context.Context, machineName strin
 			return fmt.Errorf("make host mount shared for %s: %w", bm.HostPath, err)
 		}
 
-		// Make the container-side mount shared via nsenter.
-		nsenterCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		cmd := exec.CommandContext(nsenterCtx,
-			"nsenter",
-			"-m",
-			"-t", strconv.Itoa(containerPID),
-			"--",
-			"mount",
-			"--make-shared",
-			bm.ContainerPath,
-		)
-		output, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			return fmt.Errorf("make container mount shared for %s: %w (output: %s)", bm.ContainerPath, err, output)
+		// Make the container-side mount shared by entering the container's
+		// mount namespace via setns and calling unix.Mount directly.
+		//
+		// We cannot use "nsenter -m -t <pid> -- mount --make-shared <path>"
+		// because nspawn's pivot_root unmounts the old host root from the
+		// container's mount namespace, so no host binaries (including mount(8))
+		// are reachable there regardless of the container image contents.
+		if err := makeContainerMountShared(containerPID, bm.ContainerPath); err != nil {
+			return fmt.Errorf("make container mount shared for %s: %w", bm.ContainerPath, err)
 		}
 
 		s.logger.Info(
@@ -433,6 +427,78 @@ func (s *SystemdRuntime) makeSharedMounts(ctx context.Context, machineName strin
 	}
 
 	return nil
+}
+
+// makeContainerMountShared enters the container's mount namespace (by pid) and
+// calls unix.Mount with MS_SHARED|MS_REC on containerPath.
+//
+// We do this with a raw setns syscall rather than "nsenter -- mount --make-shared"
+// because nspawn's pivot_root removes the old host root from the container's
+// mount namespace, so no host binaries are reachable there. The syscall needs
+// no binary in the container image.
+//
+// The function:
+//  1. Locks the current OS thread so Go's scheduler cannot migrate us.
+//  2. Saves the current mount namespace fd (via /proc/self/ns/mnt).
+//  3. Opens /proc/<pid>/ns/mnt and calls setns to enter the container ns.
+//  4. Calls unix.Mount("", path, "", MS_SHARED|MS_REC, "").
+//  5. Restores the original namespace and unlocks the thread.
+//
+// Steps 3-5 run inside a dedicated goroutine that is itself locked to an OS
+// thread, so the setns call is always isolated to a single thread and never
+// bleeds into other goroutines.
+func makeContainerMountShared(pid int, containerPath string) error {
+	type result struct{ err error }
+	ch := make(chan result, 1)
+
+	go func() {
+		goruntime.LockOSThread()
+		// Intentionally do NOT call UnlockOSThread: once we setns on this
+		// thread we must not let Go reuse it with the wrong namespace. The
+		// goroutine (and its OS thread) exit when this function returns,
+		// which is the safe disposal path.
+
+		// Save current mount namespace so we can restore it on failure/success.
+		selfNS, err := os.Open("/proc/self/ns/mnt")
+		if err != nil {
+			ch <- result{fmt.Errorf("open self mnt ns: %w", err)}
+			return
+		}
+		defer selfNS.Close()
+
+		restore := func() {
+			_ = unix.Setns(int(selfNS.Fd()), unix.CLONE_NEWNS)
+		}
+
+		// Enter the container's mount namespace.
+		nsPath := fmt.Sprintf("/proc/%d/ns/mnt", pid)
+		containerNS, err := os.Open(nsPath)
+		if err != nil {
+			ch <- result{fmt.Errorf("open container mnt ns %s: %w", nsPath, err)}
+			return
+		}
+		defer containerNS.Close()
+
+		if err := unix.Setns(int(containerNS.Fd()), unix.CLONE_NEWNS); err != nil {
+			ch <- result{fmt.Errorf("setns into container mnt ns: %w", err)}
+			return
+		}
+
+		// Make the mount shared inside the container's namespace.
+		mountErr := unix.Mount("", containerPath, "", unix.MS_SHARED|unix.MS_REC, "")
+
+		// Always restore before returning.
+		restore()
+
+		if mountErr != nil && !errors.Is(mountErr, unix.EINVAL) {
+			ch <- result{fmt.Errorf("mount --make-shared %s: %w", containerPath, mountErr)}
+			return
+		}
+		ch <- result{}
+	}()
+
+	r := <-ch
+	return r.err
 }
 
 // StopMachine stops the wrapper service with a context-respecting timeout.

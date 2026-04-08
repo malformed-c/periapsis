@@ -23,6 +23,7 @@ import (
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -329,9 +330,9 @@ func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.Per
 		},
 	}
 
-	// Create the VolumeAttachment.
+	// Create the VolumeAttachment; if it already exists from a prior attempt, that's fine.
 	_, err := r.kubeClient.StorageV1().VolumeAttachments().Create(ctx, va, metav1.CreateOptions{})
-	if err != nil {
+	if err != nil && !kerrors.IsAlreadyExists(err) {
 		return "", fmt.Errorf("create VolumeAttachment for PV %s: %w", pvName, err)
 	}
 

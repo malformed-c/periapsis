@@ -51,7 +51,8 @@ func makePod(uid, namespace, name, cpuReq, memReq string) *corev1.Pod {
 func setupTestStore() *PodStore {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// Passing nil for perigeos.Runtime assuming the tests here don't trigger active probes
-	return NewPodStore(nil, 10, logger)
+	store := NewPodStore(nil, 10, logger)
+	return store
 }
 
 // waitForSnapshot waits for the asynchronous background aggregator to catch up.
@@ -73,6 +74,7 @@ func waitForSnapshot(t *testing.T, store *PodStore, expected int) []PodSnapshot 
 
 func TestPodStore_BasicLifecycle(t *testing.T) {
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 	pod := makePod("uid-1", "default", "web", "", "")
 
 	// 1. Register Pending
@@ -133,6 +135,7 @@ func TestPodStore_BasicLifecycle(t *testing.T) {
 
 func TestPodStore_ResourceAdmission(t *testing.T) {
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 
 	// Node Capacity: 1000m CPU, 1Gi Mem
 	nodeCPU := resource.MustParse("1000m")
@@ -183,6 +186,7 @@ func TestPodStore_ResourceAdmission(t *testing.T) {
 
 func TestPodStore_ProbesAndRestarts(t *testing.T) {
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 	pod := makePod("uid-1", "default", "web", "", "")
 	store.RegisterPending("uid-1", pod, nil)
 
@@ -223,6 +227,7 @@ func TestPodStore_ProbesAndRestarts(t *testing.T) {
 
 func TestPodStore_Hydration(t *testing.T) {
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 	pod := makePod("uid-hydrated", "default", "restored", "100m", "100Mi")
 
 	// Hydrate
@@ -275,6 +280,7 @@ func TestPodStore_SnapshotAggregatorConcurrency(t *testing.T) {
 	// This test ensures the channel-triggered background aggregator
 	// does not block hot paths and updates eventually.
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 
 	// Fire off 100 pod registrations rapidly
 	for i := 0; i < 100; i++ {
@@ -292,6 +298,7 @@ func TestPodStore_SnapshotAggregatorConcurrency(t *testing.T) {
 
 func TestPodStore_EvictGhost(t *testing.T) {
 	store := setupTestStore()
+	t.Cleanup(store.Close)
 	pod := makePod("uid-ghost", "default", "ghost", "500m", "100Mi")
 
 	store.RegisterPending("uid-ghost", pod, nil)
@@ -309,5 +316,54 @@ func TestPodStore_EvictGhost(t *testing.T) {
 	}
 	if store.usedCPU.Load() != 0 {
 		t.Fatalf("Expected 0 used CPU after eviction, got %d", store.usedCPU.Load())
+	}
+}
+
+func TestPodStore_DeletingCountAtomic(t *testing.T) {
+	store := setupTestStore()
+	t.Cleanup(store.Close)
+
+	pod := makePod("uid-1", "default", "web", "", "")
+	store.RegisterPending("uid-1", pod, nil)
+
+	if store.DeletionsInProgress() {
+		t.Fatal("Expected no deletions in progress initially")
+	}
+
+	// MarkDeleting should be idempotent w.r.t. the counter.
+	store.MarkDeleting("uid-1")
+	store.MarkDeleting("uid-1") // second call must not double-count
+	if !store.DeletionsInProgress() {
+		t.Fatal("Expected deletions in progress after MarkDeleting")
+	}
+	if store.deletingCount.Load() != 1 {
+		t.Fatalf("Expected deletingCount=1, got %d", store.deletingCount.Load())
+	}
+
+	store.Unregister("uid-1", "default", "web")
+	if store.DeletionsInProgress() {
+		t.Fatal("Expected no deletions in progress after Unregister")
+	}
+	if store.deletingCount.Load() != 0 {
+		t.Fatalf("Expected deletingCount=0, got %d", store.deletingCount.Load())
+	}
+}
+
+func TestPodStore_Close(t *testing.T) {
+	store := setupTestStore()
+	pod := makePod("uid-1", "default", "web", "", "")
+	store.RegisterPending("uid-1", pod, nil)
+	waitForSnapshot(t, store, 1)
+
+	// Close must not block or panic.
+	done := make(chan struct{})
+	go func() {
+		store.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close() blocked")
 	}
 }

@@ -39,13 +39,15 @@ type PodStore struct {
 	nameIndex  map[string]string // "namespace/name" → UID
 	completed  map[string]string // "namespace/name" → UID (log fallback)
 
-	// atomic global counters for instant 0-lock Admittance queries
-	usedCPU atomic.Int64 // in millicores
-	usedMem atomic.Int64 // in bytes
+	// atomic global counters for instant 0-lock queries
+	usedCPU      atomic.Int64 // in millicores
+	usedMem      atomic.Int64 // in bytes
+	deletingCount atomic.Int32 // number of pods currently in the delete path
 
 	// roSnap is an asynchronously updated lock-free read replica.
 	roSnap    atomic.Pointer[[]PodSnapshot]
 	triggerCh chan struct{} // triggers the background aggregator
+	stopCh    chan struct{} // closed by Close() to stop the aggregator
 
 	probeRunner *ProbeRunner
 	createSem   chan struct{}
@@ -62,6 +64,7 @@ func NewPodStore(rt perigeos.Runtime, createConcurrency int, logger *slog.Logger
 		nameIndex:   make(map[string]string),
 		completed:   make(map[string]string),
 		triggerCh:   make(chan struct{}, 1),
+		stopCh:      make(chan struct{}),
 		probeRunner: NewProbeRunner(rt, logger),
 		createSem:   make(chan struct{}, createConcurrency),
 		logger:      logger,
@@ -100,11 +103,20 @@ func (s *PodStore) triggerSnapshot() {
 
 // runSnapshotAggregator is the central event loop that rebuilds the global snapshot.
 // It completely decouples O(N) read-replica building from hot O(1) write paths.
+// Exits when stopCh is closed (via Close()).
 func (s *PodStore) runSnapshotAggregator() {
-	for range s.triggerCh {
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case _, ok := <-s.triggerCh:
+			if !ok {
+				return
+			}
+		}
+
 		s.registryMu.RLock()
 		snaps := make([]PodSnapshot, 0, len(s.pods))
-
 		for uid, ps := range s.pods {
 			ps.mu.RLock()
 			if !ps.hydrated {
@@ -208,18 +220,7 @@ func (s *PodStore) PodPhase(uid string) corev1.PodPhase {
 }
 
 func (s *PodStore) DeletionsInProgress() bool {
-	s.registryMu.RLock()
-	defer s.registryMu.RUnlock()
-
-	for _, ps := range s.pods {
-		ps.mu.RLock()
-		deleting := ps.deleting
-		ps.mu.RUnlock()
-		if deleting {
-			return true
-		}
-	}
-	return false
+	return s.deletingCount.Load() > 0
 }
 
 func (s *PodStore) IsDeleting(uid string) bool {
@@ -304,7 +305,10 @@ func (s *PodStore) PromoteRunning(uid string, pod *corev1.Pod, ip string) {
 func (s *PodStore) MarkDeleting(uid string) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		ps.deleting = true
+		if !ps.deleting {
+			ps.deleting = true
+			s.deletingCount.Add(1)
+		}
 		ps.mu.Unlock()
 	}
 }
@@ -322,10 +326,14 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 	if ok {
 		ps.mu.RLock()
 		cpu, mem := podResources(ps.pod)
+		wasDeleting := ps.deleting
 		ps.mu.RUnlock()
 
 		s.usedCPU.Add(-cpu)
 		s.usedMem.Add(-mem)
+		if wasDeleting {
+			s.deletingCount.Add(-1)
+		}
 		s.triggerSnapshot()
 	}
 }
@@ -745,6 +753,12 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 
 func (s *PodStore) CreateSem() chan struct{} {
 	return s.createSem
+}
+
+// Close shuts down the background snapshot aggregator. Must be called when the
+// PodStore is no longer needed (e.g. in tests, or on pawn shutdown).
+func (s *PodStore) Close() {
+	close(s.stopCh)
 }
 
 func (s *PodStore) ProbeRunner() *ProbeRunner {

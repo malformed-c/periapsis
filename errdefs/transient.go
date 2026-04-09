@@ -41,7 +41,7 @@ func Transient(msg string) error {
 }
 
 // Transientf makes an ErrTransient from the provided error format and args
-func Transientf(format string, args ...interface{}) error {
+func Transientf(format string, args ...any) error {
 	return &transientError{fmt.Errorf(format, args...)}
 }
 

@@ -21,11 +21,11 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/queue"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
+	pkgerrors "github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -104,7 +104,6 @@ type PodController struct {
 	// This is used since `pc.Run()` is typically called in a goroutine and managing
 	// this can be non-trivial for callers.
 	err error
-
 }
 
 type knownPod struct {
@@ -161,7 +160,6 @@ type PodControllerConfig struct {
 	// For example, if the pod informer is not filtering based on pod.Spec.NodeName, you should
 	// set that filter here so the pod controller does not handle events for pods assigned to other nodes.
 	PodEventFilterFunc PodEventFilterFunc
-
 }
 
 // NewPodController creates a new pod controller with the provided config.
@@ -200,11 +198,11 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		client:             cfg.PodClient,
 		podsInformer:       cfg.PodInformer,
 		podsLister:         cfg.PodInformer.Lister(),
-		provider: cfg.Provider,
+		provider:           cfg.Provider,
 		ready:              make(chan struct{}),
 		done:               make(chan struct{}),
 		recorder:           cfg.EventRecorder,
-		podEventFilterFunc:        cfg.PodEventFilterFunc,
+		podEventFilterFunc: cfg.PodEventFilterFunc,
 	}
 
 	pc.syncPodsFromKubernetes = queue.New(cfg.SyncPodsFromKubernetesRateLimiter, "syncPodsFromKubernetes", pc.syncPodFromKubernetesHandler, cfg.SyncPodsFromKubernetesShouldRetryFunc)
@@ -263,7 +261,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 	// syncing.
 
 	var eventHandler cache.ResourceEventHandler = cache.ResourceEventHandlerFuncs{
-		AddFunc: func(pod interface{}) {
+		AddFunc: func(pod any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "AddFunc")
@@ -277,7 +275,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 			}
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
+		UpdateFunc: func(oldObj, newObj any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "UpdateFunc")
@@ -321,7 +319,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				}
 			}
 		},
-		DeleteFunc: func(pod interface{}) {
+		DeleteFunc: func(pod any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			ctx, span := trace.StartSpan(ctx, "DeleteFunc")
@@ -346,7 +344,7 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 
 	if pc.podEventFilterFunc != nil {
 		eventHandler = cache.FilteringResourceEventHandler{
-			FilterFunc: func(obj interface{}) bool {
+			FilterFunc: func(obj any) bool {
 				p, ok := obj.(*corev1.Pod)
 				if !ok {
 					return false

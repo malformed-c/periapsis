@@ -10,31 +10,31 @@ import (
 )
 
 type mockSystemdDBus struct {
-	mu sync.Mutex
-	units map[string]dbus.UnitStatus
+	mu         sync.Mutex
+	units      map[string]dbus.UnitStatus
 	properties map[string]map[string]*dbus.Property
 
 	startTransientCalled chan string
-	stopUnitCalled      chan string
-	resetUnitCalled     chan string
+	stopUnitCalled       chan string
+	resetUnitCalled      chan string
 
 	startTransientErr error
-	stopUnitErr      error
+	stopUnitErr       error
 
 	subscriberChan chan<- *dbus.PropertiesUpdate
 }
 
 func newMockSystemdDBus() *mockSystemdDBus {
 	return &mockSystemdDBus{
-		units: make(map[string]dbus.UnitStatus),
-		properties: make(map[string]map[string]*dbus.Property),
+		units:                make(map[string]dbus.UnitStatus),
+		properties:           make(map[string]map[string]*dbus.Property),
 		startTransientCalled: make(chan string, 10),
-		stopUnitCalled: make(chan string, 10),
-		resetUnitCalled: make(chan string, 10),
+		stopUnitCalled:       make(chan string, 10),
+		resetUnitCalled:      make(chan string, 10),
 	}
 }
 
-func (m *mockSystemdDBus) Close() {}
+func (m *mockSystemdDBus) Close()           {}
 func (m *mockSystemdDBus) Subscribe() error { return nil }
 func (m *mockSystemdDBus) SetPropertiesSubscriber(ch chan<- *dbus.PropertiesUpdate, errCh chan<- error) {
 	m.mu.Lock()
@@ -191,27 +191,27 @@ func (m *mockMachineDBus) Object(dest string, path dbusv5.ObjectPath) dbusv5.Bus
 }
 
 type mockBusObject struct {
-	path dbusv5.ObjectPath
-	properties map[string]dbusv5.Variant
-	callResults map[string]interface{}
+	path        dbusv5.ObjectPath
+	properties  map[string]dbusv5.Variant
+	callResults map[string]any
 }
 
-func (o *mockBusObject) Call(method string, flags dbusv5.Flags, args ...interface{}) *dbusv5.Call {
+func (o *mockBusObject) Call(method string, flags dbusv5.Flags, args ...any) *dbusv5.Call {
 	res := o.callResults[method]
 	return &dbusv5.Call{
-		Args: []interface{}{res},
+		Args: []any{res},
 	}
 }
 
-func (o *mockBusObject) CallWithContext(ctx context.Context, method string, flags dbusv5.Flags, args ...interface{}) *dbusv5.Call {
+func (o *mockBusObject) CallWithContext(ctx context.Context, method string, flags dbusv5.Flags, args ...any) *dbusv5.Call {
 	return o.Call(method, flags, args...)
 }
 
-func (o *mockBusObject) Go(method string, flags dbusv5.Flags, ch chan *dbusv5.Call, args ...interface{}) *dbusv5.Call {
+func (o *mockBusObject) Go(method string, flags dbusv5.Flags, ch chan *dbusv5.Call, args ...any) *dbusv5.Call {
 	return nil
 }
 
-func (o *mockBusObject) GoWithContext(ctx context.Context, method string, flags dbusv5.Flags, ch chan *dbusv5.Call, args ...interface{}) *dbusv5.Call {
+func (o *mockBusObject) GoWithContext(ctx context.Context, method string, flags dbusv5.Flags, ch chan *dbusv5.Call, args ...any) *dbusv5.Call {
 	return nil
 }
 
@@ -230,7 +230,7 @@ func (o *mockBusObject) GetProperty(p string) (dbusv5.Variant, error) {
 	return dbusv5.Variant{}, fmt.Errorf("property %s not found", p)
 }
 
-func (o *mockBusObject) SetProperty(p string, v interface{}) error { return nil }
-func (o *mockBusObject) StoreProperty(p string, v interface{}) error { return nil }
-func (o *mockBusObject) Destination() string { return "" }
-func (o *mockBusObject) Path() dbusv5.ObjectPath { return o.path }
+func (o *mockBusObject) SetProperty(p string, v any) error   { return nil }
+func (o *mockBusObject) StoreProperty(p string, v any) error { return nil }
+func (o *mockBusObject) Destination() string                 { return "" }
+func (o *mockBusObject) Path() dbusv5.ObjectPath             { return o.path }

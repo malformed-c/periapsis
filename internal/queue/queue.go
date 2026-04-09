@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	pkgerrors "github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/trace"
+	pkgerrors "github.com/pkg/errors"
 	"golang.org/x/sync/semaphore"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/workqueue"
@@ -65,8 +65,8 @@ type Queue struct {
 	// wakeup
 	wakeupCh chan struct{}
 
-	retryFunc  ShouldRetryFunc
-	onForget   func(key string, err error)
+	retryFunc ShouldRetryFunc
+	onForget  func(key string, err error)
 }
 
 type queueItem struct {
@@ -138,7 +138,7 @@ func (q *Queue) Forget(ctx context.Context, key string) {
 	ctx, span := trace.StartSpan(ctx, "Forget")
 	defer span.End()
 
-	ctx = span.WithFields(ctx, map[string]interface{}{
+	ctx = span.WithFields(ctx, map[string]any{
 		"queue": q.name,
 		"key":   key,
 	})
@@ -175,7 +175,7 @@ func (q *Queue) insert(ctx context.Context, key string, ratelimit bool, delay *t
 	ctx, span := trace.StartSpan(ctx, "insert")
 	defer span.End()
 
-	ctx = span.WithFields(ctx, map[string]interface{}{
+	ctx = span.WithFields(ctx, map[string]any{
 		"queue":     q.name,
 		"key":       key,
 		"ratelimit": ratelimit,
@@ -313,8 +313,6 @@ func (q *Queue) ItemsBeingProcessedLen() int {
 	return len(q.itemsBeingProcessed)
 }
 
-
-//
 // It blocks until context is cancelled, and all of the workers exit.
 func (q *Queue) Run(ctx context.Context, workers int) {
 	if workers <= 0 {
@@ -350,7 +348,7 @@ func (q *Queue) Run(ctx context.Context, workers int) {
 }
 
 func (q *Queue) worker(ctx context.Context, i int) {
-	ctx = log.WithLogger(ctx, log.G(ctx).WithFields(map[string]interface{}{
+	ctx = log.WithLogger(ctx, log.G(ctx).WithFields(map[string]any{
 		"workerId": i,
 		"queue":    q.name,
 	}))
@@ -444,7 +442,7 @@ func (q *Queue) handleQueueItemObject(ctx context.Context, qi *queueItem) error 
 	ctx, span := trace.StartSpan(ctx, "handleQueueItemObject")
 	defer span.End()
 
-	ctx = span.WithFields(ctx, map[string]interface{}{
+	ctx = span.WithFields(ctx, map[string]any{
 		"requeues":        qi.requeues,
 		"originallyAdded": qi.originallyAdded.String(),
 		"addedViaRedirty": qi.addedViaRedirty,

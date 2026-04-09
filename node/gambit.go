@@ -195,7 +195,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 	}
 	if deps.CMInformer != nil {
 		deps.CMInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			UpdateFunc: func(_, obj interface{}) {
+			UpdateFunc: func(_, obj any) {
 				cm := obj.(*corev1.ConfigMap)
 				g.volumes.RefreshConfigMap(cm)
 			},
@@ -203,7 +203,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 	}
 	if deps.SecretInformer != nil {
 		deps.SecretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			UpdateFunc: func(_, obj interface{}) {
+			UpdateFunc: func(_, obj any) {
 				s := obj.(*corev1.Secret)
 				g.volumes.RefreshSecret(s)
 			},

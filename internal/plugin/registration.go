@@ -369,8 +369,8 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 	// 2. Build the outer patch using proper Go maps.
 	// By casting innerJSONBytes to a string, json.Marshal will automatically
 	// escape it into a proper JSON string (e.g. "{\"seaweedfs...\"}")
-	patchMap := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patchMap := map[string]any{
+		"metadata": map[string]any{
 			"annotations": map[string]string{
 				nodeIDAnnotationKey: string(innerJSONBytes),
 			},

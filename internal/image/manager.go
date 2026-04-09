@@ -200,7 +200,7 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		return paths, true, nil
 	}
 
-	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (interface{}, error) {
+	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (any, error) {
 		im.logger.Info("Resolving image manifest", "image", imageName)
 		if eventFn != nil {
 			eventFn("Normal", "ResolvingManifest", "Resolving image manifest")
@@ -331,7 +331,7 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 	for i, layer := range layers {
 		i, layer, info := i, layer, infos[i]
 		g.Go(func() error {
-			pathIface, err, _ := im.layerSF.Do(info.hash, func() (interface{}, error) {
+			pathIface, err, _ := im.layerSF.Do(info.hash, func() (any, error) {
 				path, pullErr := im.ensureLayer(info.hash, layer, selector, opts.Event)
 				// Mark done (close channel) regardless of success/failure so
 				// waiting peers unblock and fall through to upstream themselves.

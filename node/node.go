@@ -429,10 +429,13 @@ func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.
 	}()
 
 	if result, err := n.nodePingController.getResult(ctx); err != nil {
+
 		return err
+
 	} else if result.error != nil {
 		n.nodeEvent(corev1.EventTypeWarning, "NodePingFailed",
 			fmt.Sprintf("Node ping failed: %v", result.error))
+
 		return fmt.Errorf("not updating node status because node ping failed: %w", result.error)
 	}
 
@@ -447,7 +450,8 @@ func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.
 			return err
 		}
 
-		// This might have recreated the node, which may cause problems with our leases until a node update succeeds
+		// This might have recreated the node,
+		// which may cause problems with our leases until a node update succeeds
 		node, err = updateNodeStatus(ctx, n.nodes, providerNode)
 		if err != nil {
 			return err
@@ -491,7 +495,7 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 		VK->K8s: Patch: delete B, upsert A\nThis is where things go wrong,\nbecause the patch is written to replace all node conditions\nit overwrites (drops) [C]
 		note left of K8s: Node Conditions are [A]\nNode condition C from ExternalUpdater is no longer present
 		@enduml
-			     ,--.                                                        ,---.          ,---------------.
+			   ,--.                                                        ,---.          ,---------------.
 		     |VK|                                                        |K8s|          |ExternalUpdater|
 		     `+-'                                                        `-+-'          `-------+-------'
 		      |  ,------------------------------------------!.             |                    |

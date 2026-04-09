@@ -334,7 +334,7 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	}
 	ctx = span.WithField(ctx, "key", key)
 
-	var obj interface{}
+	var obj any
 	err = wait.PollUntilContextCancel(ctx, notificationRetryPeriod, true, func(ctx context.Context) (bool, error) {
 		var ok bool
 		obj, ok = pc.knownPods.Load(key)
@@ -367,9 +367,11 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 		if errors.IsNotFound(err) {
 			err = fmt.Errorf("pod %q not found in pod lister: %w", key, err)
 			log.G(ctx).WithError(err).Debug("Not enqueuing pod status update")
+
 		} else {
 			log.G(ctx).WithError(err).Warn("Not enqueuing pod status update due to error from pod lister")
 		}
+
 		span.SetStatus(err)
 		return
 	}

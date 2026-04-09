@@ -303,7 +303,7 @@ func (c *leaseController) newLease(ctx context.Context, node *corev1.Node, base 
 		}
 	}
 
-	ctx = span.WithFields(ctx, map[string]interface{}{
+	ctx = span.WithFields(ctx, map[string]any{
 		"lease": lease,
 	})
 	log.G(ctx).Debug("Generated lease")
@@ -337,7 +337,7 @@ func (e *nodeNotReadyError) Is(target error) bool {
 	return ok
 }
 
-func (e *nodeNotReadyError) As(target interface{}) bool {
+func (e *nodeNotReadyError) As(target any) bool {
 	val, ok := target.(*nodeNotReadyError)
 	if ok {
 		*val = *e

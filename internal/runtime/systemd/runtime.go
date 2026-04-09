@@ -360,7 +360,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		// previous attempt wasn't fully removed yet (transient unit auto-unload
 		// is async). Stop+reset it and retry once.
 		if strings.Contains(err.Error(), "already loaded") || strings.Contains(err.Error(), "fragment file") {
-			_ = s.conn.StopUnitContext(ctx, serviceName, "replace", nil)
+			_, _ = s.conn.StopUnitContext(ctx, serviceName, "replace", nil)
 			_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
 			time.Sleep(200 * time.Millisecond)
 			if _, retryErr := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); retryErr != nil {

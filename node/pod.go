@@ -37,12 +37,12 @@ import (
 
 const (
 	podStatusReasonProviderFailed = "PerigeosFailed"
-	podEventCreateFailed          = "PerigeosCreateFailed"
-	podEventCreateSuccess         = "PerigeosCreateSuccess"
-	podEventDeleteFailed          = "PerigeosDeleteFailed"
-	podEventDeleteSuccess         = "PerigeosDeleteSuccess"
-	podEventUpdateFailed          = "PerigeosUpdateFailed"
-	podEventUpdateSuccess         = "PerigeosUpdateSuccess"
+	podEventCreateFailed          = "CreateFailed"
+	podEventCreateSuccess         = "Create"
+	podEventDeleteFailed          = "DeleteFailed"
+	podEventDeleteSuccess         = "Delete"
+	podEventUpdateFailed          = "UpdateFailed"
+	podEventUpdateSuccess         = "Update"
 	podEventStatusUpdateFailed    = "FailedStatusUpdate"
 	podEventForceDeleteFailed     = "FailedForceDelete"
 	podEventDeleteDanglingFailed  = "FailedDeleteDangling"

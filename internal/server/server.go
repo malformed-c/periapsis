@@ -39,6 +39,7 @@ type PawnServerConfig struct {
 // blobProvider is the subset of image.ImageManager used for blob serving.
 type blobProvider interface {
 	BlobPath(hash string) string
+	InflightHashes() []string
 }
 
 func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
@@ -56,8 +57,10 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 	// Content-addressed: the digest is the integrity check; TLS cert is not verified by peers.
 	if cfg.ImageManager != nil {
 		im := cfg.ImageManager
+		// GET/HEAD /blobs/{digest} — serves cached compressed OCI layer tarballs.
+		// HEAD is used by peers to check presence without downloading.
 		mux.HandleFunc("/blobs/", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
@@ -79,7 +82,28 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 			defer f.Close()
 			stat, _ := f.Stat()
 			w.Header().Set("Content-Type", "application/gzip")
+			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			http.ServeContent(w, r, digest+".tar.gz", stat.ModTime(), f)
+		})
+
+		// GET /blobs/inflight — returns JSON array of layer hashes currently
+		// being pulled by this host. Peers use this to discover in-flight pulls
+		// and wait rather than independently hitting the upstream registry.
+		mux.HandleFunc("/blobs/inflight", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			hashes := im.InflightHashes()
+			if hashes == nil {
+				hashes = []string{} // always return an array, never null
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(hashes)
 		})
 	}
 

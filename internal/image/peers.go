@@ -3,6 +3,7 @@ package image
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,14 @@ const peerConnsPerHost = layerConcurrency
 // peerStallTimeout is how long a peer body read may make no progress before
 // the download is considered stalled and the peer is marked bad.
 const peerStallTimeout = 30 * time.Second
+
+// inflightPollInterval is how often we re-check a peer's /blobs/{hash}
+// while waiting for it to finish pulling a layer we want.
+const inflightPollInterval = 2 * time.Second
+
+// inflightWaitTimeout caps how long we wait for a peer to finish a layer
+// before giving up and pulling from upstream ourselves.
+const inflightWaitTimeout = 4 * time.Minute
 
 // PeerConfig configures peer blob fetching.
 type PeerConfig struct {
@@ -120,7 +129,6 @@ func (ps *peerSelector) markBad(ep string) {
 	for i, e := range ps.healthy {
 		if e == ep {
 			ps.healthy = append(ps.healthy[:i], ps.healthy[i+1:]...)
-			// Adjust cursor so we don't skip an entry after the removed one.
 			if ps.next > i {
 				ps.next--
 			}
@@ -132,6 +140,112 @@ func (ps *peerSelector) markBad(ep string) {
 			return
 		}
 	}
+}
+
+// peersWithInflight queries all peers for their in-flight layer hashes and
+// returns a map of hash → endpoint for hashes that match the given set.
+// Used to discover which peer is pulling a layer we also want, so we can
+// wait for it instead of pulling from upstream independently.
+func (im *ImageManager) peersWithInflight(ctx context.Context, wantHashes map[string]bool) map[string]string {
+	if im.peerClient == nil {
+		return nil
+	}
+	eps := im.peerEndpoints(ctx)
+	if len(eps) == 0 {
+		return nil
+	}
+
+	type result struct {
+		ep     string
+		hashes []string
+	}
+	ch := make(chan result, len(eps))
+
+	for _, ep := range eps {
+		ep := ep
+		go func() {
+			hashes, err := fetchInflightHashes(ctx, im.peerClient, ep)
+			if err != nil {
+				ch <- result{ep: ep}
+				return
+			}
+			ch <- result{ep: ep, hashes: hashes}
+		}()
+	}
+
+	// hash → first peer that has it inflight
+	found := make(map[string]string)
+	for range eps {
+		r := <-ch
+		for _, h := range r.hashes {
+			if wantHashes[h] {
+				if _, exists := found[h]; !exists {
+					found[h] = r.ep
+				}
+			}
+		}
+	}
+	return found
+}
+
+// waitForPeerLayer waits up to inflightWaitTimeout for ep to finish pulling
+// hash (i.e. for /blobs/{hash} to return 200). Returns the peer endpoint to
+// fetch from, or "" if the wait timed out or the peer disappeared.
+func waitForPeerLayer(ctx context.Context, client *http.Client, ep, hash string) bool {
+	ctx, cancel := context.WithTimeout(ctx, inflightWaitTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(inflightPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if peerHasLayer(ctx, client, ep, hash) {
+				return true
+			}
+		}
+	}
+}
+
+// peerHasLayer returns true if ep serves /blobs/{hash} with HTTP 200.
+func peerHasLayer(ctx context.Context, client *http.Client, ep, hash string) bool {
+	url := fmt.Sprintf("https://%s/blobs/%s", ep, hash)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// fetchInflightHashes retrieves the list of layer hashes currently being
+// pulled by ep via GET /blobs/inflight.
+func fetchInflightHashes(ctx context.Context, client *http.Client, ep string) ([]string, error) {
+	url := fmt.Sprintf("https://%s/blobs/inflight", ep)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("peer %s: HTTP %d", ep, resp.StatusCode)
+	}
+	var hashes []string
+	if err := json.NewDecoder(resp.Body).Decode(&hashes); err != nil {
+		return nil, err
+	}
+	return hashes, nil
 }
 
 // fetch tries to fetch a blob from the next healthy peer. Returns the response

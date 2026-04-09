@@ -47,6 +47,12 @@ type ImageManager struct {
 	configCache   map[string]*imageConfig // image name → persisted config (entrypoint/cmd)
 	imageSF       singleflight.Group      // deduplicates manifest resolution by image name
 	layerSF       singleflight.Group      // deduplicates layer downloads by content hash
+
+	// inflightLayers tracks layer hashes currently being pulled by this host.
+	// Value type is chan struct{} — closed when the pull completes.
+	// Exposed via /blobs/inflight so peers can discover and wait on our pulls
+	// instead of independently downloading the same layer from upstream.
+	inflightLayers sync.Map // hash → chan struct{}
 }
 
 // imageConfig holds the subset of OCI image config we need across restarts.
@@ -164,6 +170,15 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		}
 	}
 
+	// Always policy: try disk cache before hitting the registry.
+	// The registry is still consulted for the manifest so we can detect image
+	// updates, but if all layers are already on disk we skip re-downloading them.
+	// This avoids redundant network traffic when the same image is used across pods.
+	if paths, err := im.loadLayerCache(imageName); err == nil {
+		im.logger.Debug("Serving image from disk cache (Always)", "image", imageName)
+		return paths, true, nil
+	}
+
 	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (interface{}, error) {
 		im.logger.Info("Resolving image manifest", "image", imageName)
 		ref, err := name.ParseReference(imageName)
@@ -248,18 +263,44 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 	// healthy set and bad peers are evicted across layers.
 	selector := im.newPeerSelector(context.Background())
 
+	// Pre-register ALL layer hashes as inflight before any goroutine starts.
+	// This lets peers discover our full intent immediately: they can wait on
+	// individual layers as they complete rather than pulling from upstream.
+	// We resolve DiffIDs sequentially here (cheap — just reads manifest data).
+	type layerInfo struct {
+		hash string
+		ch   chan struct{} // closed when this layer's pull finishes
+	}
+	infos := make([]layerInfo, total)
+	for i, layer := range layers {
+		diffID, err := layer.DiffID()
+		if err != nil {
+			return nil, fmt.Errorf("resolve diffID[%d]: %w", i, err)
+		}
+		h := diffID.Hex
+		// Only register as inflight if not already on disk — no point announcing
+		// a layer we already have.
+		if _, statErr := os.Stat(filepath.Join(im.layerCache, h)); statErr != nil {
+			infos[i] = layerInfo{hash: h, ch: im.markInflight(h)}
+		} else {
+			infos[i] = layerInfo{hash: h}
+		}
+	}
+
 	g := new(errgroup.Group)
 	g.SetLimit(layerConcurrency)
 
 	for i, layer := range layers {
-		i, layer := i, layer
+		i, layer, info := i, layer, infos[i]
 		g.Go(func() error {
-			diffID, err := layer.DiffID()
-			if err != nil {
-				return err
-			}
-			pathIface, err, _ := im.layerSF.Do(diffID.Hex, func() (interface{}, error) {
-				return im.ensureLayer(diffID.Hex, layer, selector, opts.Event)
+			pathIface, err, _ := im.layerSF.Do(info.hash, func() (interface{}, error) {
+				path, pullErr := im.ensureLayer(info.hash, layer, selector, opts.Event)
+				// Mark done (close channel) regardless of success/failure so
+				// waiting peers unblock and fall through to upstream themselves.
+				if info.ch != nil {
+					im.markLayerDone(info.hash, info.ch)
+				}
+				return path, pullErr
 			})
 			if err != nil {
 				return err
@@ -347,6 +388,40 @@ func (im *ImageManager) BlobPath(hash string) string {
 	return im.blobPath(hash)
 }
 
+// markInflight registers hash as in-flight on this host.
+// Returns a done channel that is closed by markLayerDone when the pull finishes.
+// Other goroutines (and remote peers) can wait on this channel.
+// If the hash is already registered (via layerSF dedup), returns the existing channel.
+func (im *ImageManager) markInflight(hash string) chan struct{} {
+	ch := make(chan struct{})
+	actual, loaded := im.inflightLayers.LoadOrStore(hash, ch)
+	if loaded {
+		return actual.(chan struct{})
+	}
+	return ch
+}
+
+// markLayerDone marks hash as no longer in-flight and closes the done channel
+// so any waiters unblock. Safe to call multiple times (close on already-closed
+// channel is caught by recover).
+func (im *ImageManager) markLayerDone(hash string, ch chan struct{}) {
+	im.inflightLayers.Delete(hash)
+	defer func() { recover() }() //nolint:errcheck
+	close(ch)
+}
+
+// InflightHashes returns the set of layer hashes this host is currently pulling.
+// Called by the /blobs/inflight HTTP endpoint so peers can discover our in-flight
+// pulls and wait rather than independently pulling from upstream.
+func (im *ImageManager) InflightHashes() []string {
+	var hashes []string
+	im.inflightLayers.Range(func(k, _ any) bool {
+		hashes = append(hashes, k.(string))
+		return true
+	})
+	return hashes
+}
+
 // ensureLayer ensures a layer is extracted to {layerCache}/{hash}/.
 // Pull order:
 //  1. Already extracted — return immediately.
@@ -383,18 +458,54 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 		}
 	}
 
-	// 3. Try peers via selector — each stalling peer is evicted so subsequent
-	//    layers from the same pull skip it automatically.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if selector != nil {
+		// 3a. Check if a peer is already pulling this layer (inflight sharing).
+		// If so, wait for it to finish then fetch from that peer instead of
+		// independently hitting the upstream registry.
+		//
+		// peersWithInflight is called with a short-lived context — we just want
+		// a quick snapshot, not to block the pull for a slow kube API.
+		inflightCtx, inflightCancel := context.WithTimeout(ctx, 5*time.Second)
+		inflightPeers := im.peersWithInflight(inflightCtx, map[string]bool{hash: true})
+		inflightCancel()
+		if peerEp, ok := inflightPeers[hash]; ok {
+			im.logger.Info("Layer inflight on peer, waiting", "hash", hash[:12], "peer", peerEp)
+			if eventFn != nil {
+				eventFn("Normal", "PeerWait", fmt.Sprintf("Layer %s is being pulled by peer %s, waiting", hash[:12], peerEp))
+			}
+			if waitForPeerLayer(ctx, im.peerClient, peerEp, hash) {
+				// Peer finished — fetch from it.
+				body, err := fetchOnePeer(ctx, im.peerClient, hash, peerEp)
+				if err == nil {
+					err = saveAndExtract(stallReader(body, peerStallTimeout), blobFile, tmpPath)
+					body.Close()
+					if err == nil {
+						if eventFn != nil {
+							eventFn("Normal", "PulledFromPeer", fmt.Sprintf("Layer %s pulled from peer %s (waited for inflight)", hash[:12], peerEp))
+						}
+						return commitLayer(tmpPath, destPath)
+					}
+				}
+				// Peer fetch failed after wait — fall through to selector / upstream.
+				os.Remove(blobFile)
+				os.RemoveAll(tmpPath)
+				if err := os.MkdirAll(tmpPath, 0755); err != nil {
+					return "", err
+				}
+			}
+			// Peer timed out or disappeared — fall through to upstream.
+		}
+
+		// 3b. Try peers that already have the layer (present, not inflight).
 		for {
 			peerBody, peerEp, ok := selector.fetch(ctx, hash)
 			if !ok {
 				break // no healthy peers left
 			}
-			im.logger.Info("Pulling layer from peer", "hash", hash, "peer", peerEp)
+			im.logger.Info("Pulling layer from peer", "hash", hash[:12], "peer", peerEp)
 			err := saveAndExtract(peerBody, blobFile, tmpPath)
 			peerBody.Close()
 			if err == nil {
@@ -404,7 +515,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 				return commitLayer(tmpPath, destPath)
 			}
 			// Stall or extraction error — evict this peer and try the next.
-			im.logger.Warn("Peer layer fetch failed, trying next peer", "hash", hash, "peer", peerEp, "err", err)
+			im.logger.Warn("Peer layer fetch failed, trying next peer", "hash", hash[:12], "peer", peerEp, "err", err)
 			if eventFn != nil {
 				eventFn("Warning", "PeerFallback", fmt.Sprintf("Peer %s stalled on layer %s, trying next peer", peerEp, hash[:12]))
 			}

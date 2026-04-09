@@ -227,24 +227,30 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 // of the node and violently scrubs any trace of the pod. It is safe to call repeatedly.
 func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *corev1.Pod) {
 	g.Logger.Info("Executing idempotent teardown for pod", "pod", pod.Name)
+	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing", "Stopping pod %s", pod.Name)
 
 	allContainers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
 
 	// 1. Systemd & Filesystem Scrubber
 	for _, c := range allContainers {
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing", "Stopping container %s", c.Name)
+
 		// Stop unit (blocks until DBus confirms)
 		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 
-		// VIOLENTLY clear failed fragment files from systemd
+		// Clear failed fragment files from systemd
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
 		// Unmount the container filesystem
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", c.Name)
 	}
 
 	// 2. Network Scrubber
 	if !pod.Spec.HostNetwork {
 		_ = g.NetworkManager.Teardown(ctx, uid, pod.Namespace, pod.Name)
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkTeardown", "CNI network released for pod %s", pod.Name)
 	}
 
 	// 3. Workspace Scrubber

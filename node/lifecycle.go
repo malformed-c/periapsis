@@ -556,12 +556,17 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 			switch state {
 			case perigeos.StateRunning:
 				return nil
-			case perigeos.StateExited, perigeos.StateFailed:
+			case perigeos.StateExited:
 				// Container already ran and exited (fast-exit containers like
 				// certgen finish before the first poll). This is success from
 				// the perspective of "the machine started" — the BatchWatcher
 				// will handle terminal phase transitions and exit codes.
 				return nil
+			case perigeos.StateFailed:
+				// Unit failed on startup (e.g. nspawn refused due to stale
+				// unix-export mount, bad config, missing rootfs). This is a
+				// hard error — don't proceed to MakeSharedMounts on a dead container.
+				return fmt.Errorf("container %s/%s failed on startup", uid, containerName)
 			}
 		}
 		select {

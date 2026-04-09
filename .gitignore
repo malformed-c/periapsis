@@ -48,3 +48,4 @@ vendor/
 .serena/
 review.txt
 todo
+internal_install.sh

@@ -78,7 +78,7 @@ func TestPodStore_BasicLifecycle(t *testing.T) {
 	pod := makePod("uid-1", "default", "web", "", "")
 
 	// 1. Register Pending
-	dummySaga := &podSaga{done: make(chan struct{})} // Mocking unexported saga
+	dummySaga := &creationHandle{done: make(chan struct{})} // Mocking unexported saga
 	store.RegisterPending("uid-1", pod, dummySaga)
 
 	if !store.HasPod("uid-1") {

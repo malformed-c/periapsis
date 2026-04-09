@@ -359,8 +359,12 @@ func (g *Gambit) launchContainer(
 			return fmt.Errorf("waitForContainer: %w", err)
 		}
 
-		// Propagate Bidirectional mounts (required for CSI drivers)
+		// Propagate Bidirectional mounts (required for CSI drivers).
+		// If this fails, stop the container before returning — leaving it
+		// running without shared propagation is worse than a clean retry.
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
+			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
+			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
 			return fmt.Errorf("MakeSharedMounts: %w", err)
 		}
 
@@ -513,8 +517,12 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 		state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
 		if err == nil {
 			switch state {
-			case perigeos.StateRunning, perigeos.StateExited, perigeos.StateFailed:
+			case perigeos.StateRunning, perigeos.StateExited:
 				return nil
+			case perigeos.StateFailed:
+				// Startup failure (e.g. nspawn refused stale unix-export mount).
+				// Don't call MakeSharedMounts on a dead container.
+				return fmt.Errorf("container %s/%s failed on startup", uid, containerName)
 			}
 		}
 		select {

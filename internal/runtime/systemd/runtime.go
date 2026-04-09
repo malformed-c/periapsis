@@ -343,6 +343,12 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// between StopMachine returning and the unit being fully removed from the table.
 	_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
 
+	// Clean up any stale unix-export bind mount from a previous SIGKILL.
+	// nspawn creates this at /run/systemd/nspawn/unix-export/<machineName>
+	// and removes it on clean exit, but not on SIGKILL. If it exists, the
+	// next nspawn start immediately fails with "Mount point exists already".
+	cleanNspawnUnixExport(machineName)
+
 	// Acquire semaphore to limit concurrent StartTransientUnit calls.
 	select {
 	case s.startSem <- struct{}{}:
@@ -516,6 +522,24 @@ func makeContainerMountShared(pid int, containerPath string) error {
 	return r.err
 }
 
+// cleanNspawnUnixExport removes the stale unix-export bind mount that
+// systemd-nspawn creates at startup and cleans up on a graceful exit.
+// When nspawn is SIGKILL'd (e.g. by a timed-out StopMachine), the mount
+// survives. The next nspawn for the same machine name sees it and refuses:
+//   "Mount point '...' exists already, refusing."
+// Call this before StartTransientUnit and after StopMachine.
+func cleanNspawnUnixExport(machineName string) {
+	path := "/run/systemd/nspawn/unix-export/" + machineName
+	// MNT_DETACH (lazy unmount): safe even if nothing is actually mounted.
+	// EINVAL means path is not a mountpoint — nothing to do.
+	if err := unix.Unmount(path, unix.MNT_DETACH); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) {
+		// Non-fatal: log via slog would require a logger here; the next
+		// nspawn start will fail and surface the error through normal paths.
+		_ = err
+	}
+	_ = os.Remove(path) // no-op if not present
+}
+
 // StopMachine stops the wrapper service with a context-respecting timeout.
 func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName string) error {
 	var caller string
@@ -549,6 +573,8 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 		if err := s.conn.ResetFailedUnitContext(ctx, wrapperUnit); err != nil {
 			s.logger.Debug("ResetFailedUnit ignored", "unit", wrapperUnit, "err", err)
 		}
+		// Clean up stale unix-export mount that survives SIGKILL.
+		cleanNspawnUnixExport(machineName)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

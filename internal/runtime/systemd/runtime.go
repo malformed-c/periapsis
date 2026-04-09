@@ -356,12 +356,19 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
 			masterVal.(*os.File).Close()
 		}
-		return fmt.Errorf("failed to create machine unit: %w", err)
-	}
-
-	// Enable bidirectional mount propagation for bind mounts that require it.
-	if err := s.makeSharedMounts(ctx, machineName, cfg.BindMounts); err != nil {
-		return err
+		// "already loaded or has a fragment file" means the unit from a
+		// previous attempt wasn't fully removed yet (transient unit auto-unload
+		// is async). Stop+reset it and retry once.
+		if strings.Contains(err.Error(), "already loaded") || strings.Contains(err.Error(), "fragment file") {
+			_ = s.conn.StopUnitContext(ctx, serviceName, "replace", nil)
+			_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
+			time.Sleep(200 * time.Millisecond)
+			if _, retryErr := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); retryErr != nil {
+				return fmt.Errorf("failed to create machine unit (after reset retry): %w", retryErr)
+			}
+		} else {
+			return fmt.Errorf("failed to create machine unit: %w", err)
+		}
 	}
 
 	return nil
@@ -427,6 +434,14 @@ func (s *SystemdRuntime) makeSharedMounts(ctx context.Context, machineName strin
 	}
 
 	return nil
+}
+
+// MakeSharedMounts implements runtime.Runtime. It is called from launchContainer
+// after waitForContainer confirms the machine is running, so getMachineLeaderPID
+// is guaranteed to succeed.
+func (s *SystemdRuntime) MakeSharedMounts(ctx context.Context, podUID, containerName string, mounts []runtime.BindMount) error {
+	machineName := "pod-" + podUID + "-" + containerName
+	return s.makeSharedMounts(ctx, machineName, mounts)
 }
 
 // makeContainerMountShared enters the container's mount namespace (by pid) and

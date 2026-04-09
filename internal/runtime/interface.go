@@ -56,6 +56,12 @@ type Runtime interface {
 	// Implementations that cannot provide events should return a nil channel.
 	SubscribeEvents(ctx context.Context) <-chan UnitEvent
 
+	// MakeSharedMounts enables MS_SHARED (bidirectional) propagation for the
+	// bind mounts of a running container. Must be called after the container
+	// is confirmed running (i.e. after waitForContainer) so the machine has
+	// registered with machined and its leader PID is resolvable.
+	MakeSharedMounts(ctx context.Context, podUID, containerName string, mounts []BindMount) error
+
 	// ResetUnit cleans up a dead/failed transient unit so it doesn't
 	// accumulate in systemd's unit listing. Called by the BatchWatcher
 	// after it has read the unit's exit code and processed terminal state.

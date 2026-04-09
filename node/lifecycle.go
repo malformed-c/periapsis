@@ -100,6 +100,14 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				return
 			}
 
+			// After 5 consecutive failures push a CrashLoopBackOff waiting
+			// status so kubectl describe / k8s events reflect reality.
+			// The pod stays Pending (we keep retrying) but the container
+			// statuses tell operators why it isn't starting.
+			if attempt >= 5 {
+				g.pushCrashLoopStatus(uid, pod, err)
+			}
+
 			// Pod stays in Pending phase during retries — k8s sees it as
 			// "still being created" and won't schedule an overshoot replacement.
 			select {
@@ -516,6 +524,15 @@ func (g *Gambit) launchContainer(
 		return nil, fmt.Errorf("waitForContainer: %w", err)
 	}
 
+	// Enable bidirectional mount propagation now that the container is confirmed
+	// running. MakeSharedMounts needs the machine registered with machined so it
+	// can resolve the leader PID — calling it inside RunMachine (before
+	// waitForContainer) races with nspawn registration and fails with "no MainPID".
+	if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, cfg.BindMounts); err != nil {
+		cleanup(context.Background())
+		return nil, fmt.Errorf("MakeSharedMounts: %w", err)
+	}
+
 	// Run PostStart lifecycle hook. Per the k8s spec, PostStart runs
 	// immediately after a container is created. If it fails, the container
 	// is killed (we run cleanup and return an error).
@@ -562,6 +579,29 @@ func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "pod creation failed: %v", err)
 	failedPod := g.store.MarkFailed(uid, pod, "CreateFailed", err.Error())
 	g.notifyPodStatus(failedPod)
+}
+
+// pushCrashLoopStatus updates the pod's ContainerStatuses to show
+// CrashLoopBackOff for all containers. Called after repeated create failures
+// so that kubectl describe and k8s events reflect why the pod isn't starting.
+// The pod phase stays Pending — we keep retrying.
+func (g *Gambit) pushCrashLoopStatus(uid string, pod *corev1.Pod, lastErr error) {
+	updated := pod.DeepCopy()
+	updated.Status.Phase = corev1.PodPending
+	updated.Status.ContainerStatuses = nil
+	for _, c := range pod.Spec.Containers {
+		updated.Status.ContainerStatuses = append(updated.Status.ContainerStatuses, corev1.ContainerStatus{
+			Name:  c.Name,
+			Image: c.Image,
+			State: corev1.ContainerState{
+				Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "CrashLoopBackOff",
+					Message: lastErr.Error(),
+				},
+			},
+		})
+	}
+	g.notifyPodStatus(updated)
 }
 
 // isContainerReady returns whether a container should be reported as Ready.

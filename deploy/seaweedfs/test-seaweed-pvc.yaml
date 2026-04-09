@@ -1,0 +1,28 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seaweed-pvc-test
+
+spec:
+  # Force the pod onto the virtual node
+  nodeName: engifire-pawn-01
+
+  containers:
+  - name: writer
+    image: busybox
+    # This command creates a file, waits, and then keeps the pod alive
+    command: ["/bin/sh", "-c"]
+    args:
+      - echo "Hello from Perigeos Pawn!" > /data/perigeos-test.txt;
+        echo "File created successfully";
+        sleep 3600
+
+    volumeMounts:
+    - name: seaweed-vol
+      mountPath: /data
+
+  volumes:
+  - name: seaweed-vol
+    persistentVolumeClaim:
+      claimName: seaweedfs-test-pvc

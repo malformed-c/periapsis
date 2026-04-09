@@ -92,9 +92,9 @@ type Gambit struct {
 	node *PawnNode
 }
 
-// podSaga tracks an in-flight pod creation or a running watcher.
+// creationHandle tracks an in-flight pod creation or a running watcher.
 // The cancel func signals the goroutine to stop; done is closed when it exits.
-type podSaga struct {
+type creationHandle struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -210,6 +210,23 @@ func NewGambit(deps GambitDeps) *Gambit {
 		})
 	}
 	return g
+}
+
+func (g *Gambit) StartBatchWatcher() {
+	g.batchWatcher = StartBatchWatcher(BatchWatcherDeps{
+		Store:            g.store,
+		Runtime:          g.Runtime,
+		EventRecorder:    g.EventRecorder,
+		Logger:           g.Logger,
+		PawnName:         g.Config.Name,
+		NotifyStatus:     g.NotifyPodStatus,
+		RestartContainer: g.RestartContainerCB,
+		BuildPodStatus:   g.BuildPodStatusCB,
+		ParseUnitName: func(unitName string) (string, string) {
+			return ParseUnitName(g.Config.Name, unitName)
+		},
+	})
+	g.Logger.Info("BatchWatcher started and assigned to Gambit")
 }
 
 // SetSyncRequester registers the forward reconciler callback. The provider

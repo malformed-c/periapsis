@@ -94,7 +94,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 
 		switch state {
 		case perigeos.StateRunning:
-			cs.Ready = g.isContainerReady(uid, c.Name)
+			cs.Ready = g.store.IsContainerReady(uid, c.Name)
 			cs.State = corev1.ContainerState{
 				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.node.StartTime())},
 			}

@@ -23,7 +23,7 @@ type podState struct {
 	ip       string
 	phase    corev1.PodPhase
 	hydrated bool
-	inFlight *podSaga
+	inFlight *creationHandle
 	deleting bool
 	restarts map[string]*containerRestartState
 	probes   map[string]*ContainerProbeState
@@ -40,8 +40,8 @@ type PodStore struct {
 	completed  map[string]string // "namespace/name" → UID (log fallback)
 
 	// atomic global counters for instant 0-lock queries
-	usedCPU      atomic.Int64 // in millicores
-	usedMem      atomic.Int64 // in bytes
+	usedCPU       atomic.Int64 // in millicores
+	usedMem       atomic.Int64 // in bytes
 	deletingCount atomic.Int32 // number of pods currently in the delete path
 
 	// roSnap is an asynchronously updated lock-free read replica.
@@ -245,11 +245,11 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 
 // ─── Composite State Mutations ──────────────────────────────────────────────
 
-func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, saga *podSaga) {
+func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creationHandle) {
 	ps := &podState{
 		pod:      pod,
 		phase:    corev1.PodPending,
-		inFlight: saga,
+		inFlight: handle,
 	}
 
 	s.registryMu.Lock()
@@ -366,12 +366,12 @@ func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message strin
 func (s *PodStore) CancelInFlight(uid string) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
-		saga := ps.inFlight
+		handle := ps.inFlight
 		ps.mu.RUnlock()
 
-		if saga != nil {
-			saga.cancel()
-			<-saga.done
+		if handle != nil {
+			handle.cancel()
+			<-handle.done
 		}
 	}
 }

@@ -12,14 +12,14 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/fsnotify/fsnotify"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	registerapi "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -359,13 +359,31 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 		_ = json.Unmarshal([]byte(existing), &nodeIDMap)
 	}
 	nodeIDMap[driverName] = nodeInfo.NodeId
-	newJSON, err := json.Marshal(nodeIDMap)
+
+	// 1. Marshal the inner map to a JSON byte slice
+	innerJSONBytes, err := json.Marshal(nodeIDMap)
 	if err != nil {
 		return fmt.Errorf("marshal nodeID annotation: %w", err)
 	}
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%s}}}`, nodeIDAnnotationKey, newJSON)
+
+	// 2. Build the outer patch using proper Go maps.
+	// By casting innerJSONBytes to a string, json.Marshal will automatically
+	// escape it into a proper JSON string (e.g. "{\"seaweedfs...\"}")
+	patchMap := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]string{
+				nodeIDAnnotationKey: string(innerJSONBytes),
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patchMap)
+	if err != nil {
+		return fmt.Errorf("marshal patch: %w", err)
+	}
+
 	if _, err := pw.kubeClient.CoreV1().Nodes().Patch(
-		ctx, pawnName, k8stypes.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{},
+		ctx, pawnName, k8stypes.StrategicMergePatchType, patchBytes, metav1.PatchOptions{},
 	); err != nil {
 		return fmt.Errorf("patch node annotation: %w", err)
 	}

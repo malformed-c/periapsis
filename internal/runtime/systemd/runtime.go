@@ -460,10 +460,13 @@ func (s *SystemdRuntime) MakeSharedMounts(ctx context.Context, podUID, container
 //
 // The function:
 //  1. Locks the current OS thread so Go's scheduler cannot migrate us.
-//  2. Saves the current mount namespace fd (via /proc/self/ns/mnt).
-//  3. Opens /proc/<pid>/ns/mnt and calls setns to enter the container ns.
-//  4. Calls unix.Mount("", path, "", MS_SHARED|MS_REC, "").
-//  5. Restores the original namespace and unlocks the thread.
+//  2. Unshares CLONE_FS so the thread gets its own fs_struct. Without this,
+//     setns(CLONE_NEWNS) fails with EINVAL in multithreaded Go programs.
+//  3. Opens /proc/<pid>/ns/mnt and /proc/<pid>/root.
+//  4. Enters the container's mount namespace via setns.
+//  5. Changes the thread's root to the container's root via chroot.
+//  6. Calls unix.Mount("", path, "", MS_SHARED|MS_REC, "").
+//  7. Returns, allowing the Go runtime to terminate the locked OS thread.
 //
 // Steps 3-5 run inside a dedicated goroutine that is itself locked to an OS
 // thread, so the setns call is always isolated to a single thread and never
@@ -474,24 +477,20 @@ func makeContainerMountShared(pid int, containerPath string) error {
 
 	go func() {
 		goruntime.LockOSThread()
-		// Intentionally do NOT call UnlockOSThread: once we setns on this
-		// thread we must not let Go reuse it with the wrong namespace. The
-		// goroutine (and its OS thread) exit when this function returns,
-		// which is the safe disposal path.
+		// Intentionally do NOT call UnlockOSThread: once we mutate the thread's
+		// namespaces and root, we must not let Go reuse it for other goroutines.
+		// When this goroutine exits, the Go runtime will terminate the OS thread.
 
-		// Save current mount namespace so we can restore it on failure/success.
-		selfNS, err := os.Open("/proc/self/ns/mnt")
-		if err != nil {
-			ch <- result{fmt.Errorf("open self mnt ns: %w", err)}
+		// Unshare CLONE_FS to get a private fs_struct.
+		// A process/thread may not be reassociated with a new mount namespace
+		// if it shares its fs_struct with other threads (which all Go threads do
+		// by default). This fixes the EINVAL error from setns(CLONE_NEWNS).
+		if err := unix.Unshare(unix.CLONE_FS); err != nil {
+			ch <- result{fmt.Errorf("unshare CLONE_FS: %w", err)}
 			return
 		}
-		defer selfNS.Close()
 
-		restore := func() {
-			_ = unix.Setns(int(selfNS.Fd()), unix.CLONE_NEWNS)
-		}
-
-		// Enter the container's mount namespace.
+		// Open the container's mount namespace.
 		nsPath := fmt.Sprintf("/proc/%d/ns/mnt", pid)
 		containerNS, err := os.Open(nsPath)
 		if err != nil {
@@ -500,16 +499,36 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		}
 		defer containerNS.Close()
 
+		// Open the container's root directory.
+		rootPath := fmt.Sprintf("/proc/%d/root", pid)
+		rootDir, err := os.Open(rootPath)
+		if err != nil {
+			ch <- result{fmt.Errorf("open container root %s: %w", rootPath, err)}
+			return
+		}
+		defer rootDir.Close()
+
+		// Enter the container's mount namespace.
 		if err := unix.Setns(int(containerNS.Fd()), unix.CLONE_NEWNS); err != nil {
 			ch <- result{fmt.Errorf("setns into container mnt ns: %w", err)}
 			return
 		}
 
+		// Change the thread's root directory to the container's root.
+		// This is required because setns(CLONE_NEWNS) does not change the caller's
+		// root directory. Without this, the subsequent mount() would resolve
+		// containerPath relative to the host's root.
+		if err := unix.Fchdir(int(rootDir.Fd())); err != nil {
+			ch <- result{fmt.Errorf("fchdir to container root: %w", err)}
+			return
+		}
+		if err := unix.Chroot("."); err != nil {
+			ch <- result{fmt.Errorf("chroot to container root: %w", err)}
+			return
+		}
+
 		// Make the mount shared inside the container's namespace.
 		mountErr := unix.Mount("", containerPath, "", unix.MS_SHARED|unix.MS_REC, "")
-
-		// Always restore before returning.
-		restore()
 
 		if mountErr != nil && !errors.Is(mountErr, unix.EINVAL) {
 			ch <- result{fmt.Errorf("mount --make-shared %s: %w", containerPath, mountErr)}
@@ -526,7 +545,9 @@ func makeContainerMountShared(pid int, containerPath string) error {
 // systemd-nspawn creates at startup and cleans up on a graceful exit.
 // When nspawn is SIGKILL'd (e.g. by a timed-out StopMachine), the mount
 // survives. The next nspawn for the same machine name sees it and refuses:
-//   "Mount point '...' exists already, refusing."
+//
+//	"Mount point '...' exists already, refusing."
+//
 // Call this before StartTransientUnit and after StopMachine.
 func cleanNspawnUnixExport(machineName string) {
 	path := "/run/systemd/nspawn/unix-export/" + machineName

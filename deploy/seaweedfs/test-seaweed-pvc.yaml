@@ -14,7 +14,7 @@ spec:
     # This command creates a file, waits, and then keeps the pod alive
     command: ["/bin/sh", "-c"]
     args:
-      - echo "Hello from Perigeos Pawn!" > /data/perigeos-test.txt;
+      - echo "Hello from Perigeos Pawn!" > /data/perigeos-test-new.txt;
         echo "File created successfully";
         sleep 3600
 

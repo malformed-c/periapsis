@@ -129,6 +129,7 @@ func (ps *peerSelector) markBad(ep string) {
 	for i, e := range ps.healthy {
 		if e == ep {
 			ps.healthy = append(ps.healthy[:i], ps.healthy[i+1:]...)
+			// Adjust cursor so we don't skip an entry after the removed one.
 			if ps.next > i {
 				ps.next--
 			}

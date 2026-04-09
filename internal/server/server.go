@@ -43,7 +43,7 @@ type blobProvider interface {
 }
 
 func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
-	port     := g.Config.Port
+	port := g.Config.Port
 	pawnName := g.Config.Name
 
 	mux := http.NewServeMux()
@@ -81,6 +81,8 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 			}
 			defer f.Close()
 			stat, _ := f.Stat()
+
+			// TODO zstd?
 			w.Header().Set("Content-Type", "application/gzip")
 			if r.Method == http.MethodHead {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))

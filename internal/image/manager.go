@@ -150,6 +150,8 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		pullPolicy = "Always"
 	}
 
+	eventFn := opts.Event
+
 	cacheKey := "manifest:" + imageName
 
 	// IfNotPresent / Never: try in-memory cache, then disk cache.
@@ -159,13 +161,26 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		im.mu.Unlock()
 		if ok {
 			paths, err := im.layersFromImage(cached, opts)
+			if eventFn != nil {
+				eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is in cache", imageName))
+			}
+
 			return paths, err == nil, err
 		}
 		// Check disk-persisted layer cache (survives process restart).
 		if paths, err := im.loadLayerCache(imageName); err == nil {
+			if eventFn != nil {
+				eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is in cache", imageName))
+			}
+
 			return paths, true, nil
 		}
+
 		if pullPolicy == "Never" {
+			if eventFn != nil {
+				eventFn("Error", "ImageMissing", fmt.Sprintf("Image %s not in cache and pullPolicy=Never", imageName))
+			}
+
 			return nil, false, fmt.Errorf("image %s not in cache and pullPolicy=Never", imageName)
 		}
 	}
@@ -174,15 +189,29 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 	// The registry is still consulted for the manifest so we can detect image
 	// updates, but if all layers are already on disk we skip re-downloading them.
 	// This avoids redundant network traffic when the same image is used across pods.
+	// TODO Actually download the manifest and check the hashes
+	// pull only what's missing/edited
 	if paths, err := im.loadLayerCache(imageName); err == nil {
 		im.logger.Debug("Serving image from disk cache (Always)", "image", imageName)
+		if eventFn != nil {
+			eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is in cache (Always path)", imageName))
+		}
+
 		return paths, true, nil
 	}
 
 	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (interface{}, error) {
 		im.logger.Info("Resolving image manifest", "image", imageName)
+		if eventFn != nil {
+			eventFn("Normal", "ResolvingManifest", "Resolving image manifest")
+		}
+
 		ref, err := name.ParseReference(imageName)
 		if err != nil {
+			if eventFn != nil {
+				eventFn("Error", "ResolvingManifestFailed", "Failed to parse reference")
+			}
+
 			return nil, fmt.Errorf("failed to parse reference: %w", err)
 		}
 		img, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
@@ -205,8 +234,17 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		// Try disk-persisted layer cache (survives process restart).
 		if paths, diskErr := im.loadLayerCache(imageName); diskErr == nil {
 			im.logger.Info("Registry unavailable, using disk-cached layers", "image", imageName, "err", err)
+			if eventFn != nil {
+				eventFn("Warning", "RegistryFailed", "Registry unavailable, using disk-cached layers")
+			}
+
 			return paths, true, nil
 		}
+
+		if eventFn != nil {
+			eventFn("Error", "ResolvingManifestFailed", "Failed to pull manifest")
+		}
+
 		return nil, false, fmt.Errorf("failed to pull manifest: %w", err)
 	}
 
@@ -651,9 +689,10 @@ func commitLayer(tmpPath, destPath string) (string, error) {
 // Returns the absolute path to the merged directory (the container's rootfs view).
 //
 // Layout under <baseDir>/pods/<podUID>/:
-//   rootfs/  — merged (container's view)
-//   upper/   — writable layer
-//   work/    — overlayfs scratch space
+//
+//	rootfs/  — merged (container's view)
+//	upper/   — writable layer
+//	work/    — overlayfs scratch space
 func (im *ImageManager) Mount(podUID string, layerPaths []string) (string, error) {
 	base, err := filepath.Abs(filepath.Join(im.baseDir, "pods", podUID))
 	if err != nil {

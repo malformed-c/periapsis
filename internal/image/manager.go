@@ -126,13 +126,15 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		// Derive the image name by reversing the safe-name encoding.
 		safe := strings.TrimSuffix(e.Name(), ".json")
 		if strings.HasSuffix(safe, ".config") {
+
 			continue // skip .config.json files
 		}
 		imageName := strings.NewReplacer("_", "/").Replace(safe)
 		// Restore the tag separator: the last "_" before a tag is actually ":"
-		// e.g. "library_nginx_latest" → "library/nginx:latest" isn't fully
+		// e.g. "library_nginx_latest" -> "library/nginx:latest" isn't fully
 		// recoverable without the original, so we store the safe name as-is
 		// and show it. This is cosmetic — the actual data is in the paths.
+		// TODO tweak tag separator
 		if seen[imageName] {
 			continue
 		}
@@ -168,6 +170,18 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 	}
 
 	return images, nil
+}
+
+func (im *ImageManager) ListCachedImagesJSON() []map[string]any {
+	images, _ := im.ListCachedImages()
+	out := make([]map[string]any, len(images))
+	for i, img := range images {
+		out[i] = map[string]any{
+			"name": img.Name, "digest": img.Digest,
+			"layers": img.Layers, "size_bytes": img.SizeBytes,
+		}
+	}
+	return out
 }
 
 // dirSize returns the total size of all files under dir.
@@ -963,16 +977,4 @@ func (im *ImageManager) Unmount(podUID string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return rmErr
-}
-
-func (im *ImageManager) ListCachedImagesJSON() []map[string]any {
-	images, _ := im.ListCachedImages()
-	out := make([]map[string]any, len(images))
-	for i, img := range images {
-		out[i] = map[string]any{
-			"name": img.Name, "digest": img.Digest,
-			"layers": img.Layers, "size_bytes": img.SizeBytes,
-		}
-	}
-	return out
 }

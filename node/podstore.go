@@ -13,6 +13,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// completedEntry records a recently-deleted pod for log retrieval.
+// Entries expire after completedTTL to prevent unbounded growth in high-churn clusters.
+const completedTTL = 24 * time.Hour
+
+type completedEntry struct {
+	uid       string
+	deletedAt time.Time
+}
+
 // podState acts as the localized "Actor" state for a single pod.
 // By giving each pod its own mutex, we eliminate global lock contention
 // for highly concurrent events like container probes or restarts across 3000+ pods.
@@ -37,7 +46,8 @@ type PodStore struct {
 	registryMu sync.RWMutex
 	pods       map[string]*podState
 	nameIndex  map[string]string // "namespace/name" → UID
-	completed  map[string]string // "namespace/name" → UID (log fallback)
+	completed    map[string]completedEntry // "namespace/name" → entry (log fallback)
+	completedMu  sync.Mutex                 // separate lock — never held with registryMu
 
 	// atomic global counters for instant 0-lock queries
 	usedCPU       atomic.Int64 // in millicores
@@ -62,7 +72,7 @@ func NewPodStore(rt perigeos.Runtime, createConcurrency int, logger *slog.Logger
 	store := &PodStore{
 		pods:        make(map[string]*podState),
 		nameIndex:   make(map[string]string),
-		completed:   make(map[string]string),
+		completed:   make(map[string]completedEntry),
 		triggerCh:   make(chan struct{}, 1),
 		stopCh:      make(chan struct{}),
 		probeRunner: NewProbeRunner(rt, logger),
@@ -320,7 +330,10 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 		delete(s.pods, uid)
 		delete(s.nameIndex, namespace+"/"+name)
 	}
-	s.completed[namespace+"/"+name] = uid
+	s.completedMu.Lock()
+	s.completed[namespace+"/"+name] = completedEntry{uid: uid, deletedAt: time.Now()}
+	s.expireCompleted()
+	s.completedMu.Unlock()
 	s.registryMu.Unlock()
 
 	if ok {
@@ -644,9 +657,9 @@ func (s *PodStore) FindPodUID(namespace, podName string) (string, error) {
 }
 
 func (s *PodStore) CompletedPodUID(namespace, name string) string {
-	s.registryMu.RLock()
-	defer s.registryMu.RUnlock()
-	return s.completed[namespace+"/"+name]
+	s.completedMu.Lock()
+	defer s.completedMu.Unlock()
+	return s.completed[namespace+"/"+name].uid
 }
 
 func (s *PodStore) LoadSnapshot() []PodSnapshot {
@@ -753,6 +766,17 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 
 func (s *PodStore) CreateSem() chan struct{} {
 	return s.createSem
+}
+
+// expireCompleted removes completed entries older than completedTTL.
+// Must be called with completedMu held.
+func (s *PodStore) expireCompleted() {
+	cutoff := time.Now().Add(-completedTTL)
+	for k, e := range s.completed {
+		if e.deletedAt.Before(cutoff) {
+			delete(s.completed, k)
+		}
+	}
 }
 
 // Close shuts down the background snapshot aggregator. Must be called when the

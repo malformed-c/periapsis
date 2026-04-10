@@ -202,6 +202,26 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	//   - "failed" (non-zero exit) → we react to this immediately
 	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
 	//     poll detects the unit is gone within 2s
+	// Emit informational events for container stop substates.
+	// These fire while the container is shutting down and let operators
+	// see exactly where time is spent during pod deletion.
+	switch ev.SubState {
+	case "stop-sigterm", "stop-watchdog":
+		// systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
+		if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
+				"Container %s received SIGTERM, waiting for graceful exit", containerName)
+		}
+		return
+	case "stop-sigkill", "stop-kill":
+		// Grace period expired; systemd is sending SIGKILL.
+		if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Killing",
+				"Container %s grace period expired, sending SIGKILL", containerName)
+		}
+		return
+	}
+
 	var state perigeos.MachineState
 	switch ev.SubState {
 	case "running":

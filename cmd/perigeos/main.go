@@ -105,6 +105,9 @@ func main() {
 		"Path to the control Unix socket for apsis CLI")
 	controlTCPFlag := flag.String("control-tcp", "",
 		"TCP address for remote Varlink access with mTLS, e.g. :7443 (requires --server-ca)")
+	drainFlag := flag.Bool("drain", false,
+		"Mark nodes NotReady+Unschedulable on shutdown and wait for pods to be evicted. "+
+			"Use for decommission. Omit for normal restarts — pods survive via KillMode=process.")
 	flag.Parse()
 
 	if *perigeosConfigPath == "" {
@@ -647,18 +650,28 @@ func main() {
 	logger.Info("Shutdown signal received")
 	_, _ = daemon.SdNotify(false, daemon.SdNotifyStopping)
 
-	// Signal all pawns to begin graceful shutdown — Ping returns error,
-	// nodes go NotReady, scheduler stops placing new pods.
-	gambitsMu.Lock()
-	for _, g := range allGambits {
-		g.Shutdown()
+	if *drainFlag {
+		// Drain mode: mark nodes NotReady+Unschedulable so the scheduler
+		// evicts pods before we exit. Use before decommissioning a host.
+		logger.Info("Drain mode: marking nodes NotReady")
+		gambitsMu.Lock()
+		for _, g := range allGambits {
+			g.Shutdown() // emits NotReady+Unschedulable to apiserver
+		}
+		gambitsMu.Unlock()
+	} else {
+		// Normal restart: do NOT mark nodes NotReady.
+		// KillMode=process means containers survive; HydrateFromRuntime will
+		// rediscover them. Emitting NotReady causes Constellation and other
+		// node-watching agents to tear down their per-node state and not
+		// re-establish it when the node returns Ready — requiring a manual
+		// agent restart to recover.
+		logger.Info("Restart mode: exiting without marking nodes NotReady (pods survive)")
 	}
-	gambitsMu.Unlock()
 
 	// With KillMode=process, containers survive perigeos restart.
 	// We do NOT drain pods here — HydrateFromRuntime will rediscover
-	// them on next start. For explicit node decommission, use
-	// `perigeos drain` before stopping the service.
+	// them on next start. For explicit node decommission, pass --drain.
 
 	// Wait for any in-progress deletions (from apiserver) to finish.
 	// This prevents the daemon from exiting while containers are still stopping.

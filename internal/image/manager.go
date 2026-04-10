@@ -185,19 +185,29 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		}
 	}
 
-	// Always policy: try disk cache before hitting the registry.
-	// The registry is still consulted for the manifest so we can detect image
-	// updates, but if all layers are already on disk we skip re-downloading them.
-	// This avoids redundant network traffic when the same image is used across pods.
-	// TODO Actually download the manifest and check the hashes
-	// pull only what's missing/edited
-	if paths, err := im.loadLayerCache(imageName); err == nil {
-		im.logger.Debug("Serving image from disk cache (Always)", "image", imageName)
-		if eventFn != nil {
-			eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is in cache (Always path)", imageName))
+	// Always policy: resolve the remote manifest digest first (cheap HEAD/GET).
+	// If the remote digest matches the cached one, all layers are current —
+	// return the disk cache without re-downloading anything.
+	// This gives correct "always check for updates" semantics while avoiding
+	// redundant layer downloads when the image hasn't changed.
+	if cachedPaths, cacheErr := im.loadLayerCache(imageName); cacheErr == nil {
+		cachedDigest := im.loadManifestDigest(imageName)
+		if cachedDigest != "" {
+			if remoteDigest, digestErr := im.resolveManifestDigest(imageName); digestErr == nil {
+				if remoteDigest == cachedDigest {
+					im.logger.Debug("Always: remote digest matches cache, skipping pull",
+						"image", imageName, "digest", remoteDigest[:16])
+					if eventFn != nil {
+						eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is up to date (digest %s…)", imageName, remoteDigest[:16]))
+					}
+					return cachedPaths, true, nil
+				}
+				im.logger.Info("Always: remote digest changed, re-pulling",
+					"image", imageName, "cached", cachedDigest[:16], "remote", remoteDigest[:16])
+			}
+			// digest fetch failed (offline, rate-limited) — fall through to full manifest pull
 		}
-
-		return paths, true, nil
+		// No cached digest yet (first pull was before this feature) — fall through
 	}
 
 	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (any, error) {
@@ -259,8 +269,11 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		return nil, false, err
 	}
 
-	// Persist layer list and image config to disk so they survive process restart.
+	// Persist layer list, manifest digest, and image config to disk.
 	im.saveLayerCache(imageName, layerPaths)
+	if digest, derr := img.Digest(); derr == nil {
+		im.saveManifestDigest(imageName, digest.String())
+	}
 	if cf, err := img.ConfigFile(); err == nil {
 		im.saveImageConfig(imageName, &imageConfig{
 			Entrypoint: cf.Config.Entrypoint,
@@ -365,6 +378,55 @@ func (im *ImageManager) layerCacheFile(imageName string) string {
 func (im *ImageManager) imageConfigFile(imageName string) string {
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
 	return filepath.Join(im.layerCache, ".manifests", safe+".config.json")
+}
+// manifestDigestFile returns the path for a disk-persisted manifest digest.
+// Used by the Always pull policy to detect image updates without re-downloading
+// all layers: if the remote digest matches the cached digest, layers are current.
+func (im *ImageManager) manifestDigestFile(imageName string) string {
+	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
+	return filepath.Join(im.layerCache, ".manifests", safe+".digest")
+}
+
+// saveManifestDigest persists the manifest digest for an image to disk.
+func (im *ImageManager) saveManifestDigest(imageName, digest string) {
+	path := im.manifestDigestFile(imageName)
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte(digest), 0644)
+}
+
+// loadManifestDigest loads the cached manifest digest for an image.
+// Returns "" on any error (treat as cache miss).
+func (im *ImageManager) loadManifestDigest(imageName string) string {
+	data, err := os.ReadFile(im.manifestDigestFile(imageName))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// resolveManifestDigest fetches the remote manifest digest for imageName without
+// downloading any layer data. This is a lightweight HEAD-equivalent that lets
+// the Always pull policy check for image updates in ~100ms instead of pulling
+// potentially gigabytes of layers unnecessarily.
+func (im *ImageManager) resolveManifestDigest(imageName string) (string, error) {
+	ref, err := name.ParseReference(imageName)
+	if err != nil {
+		return "", err
+	}
+	desc, err := remote.Head(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		// remote.Head is not supported by all registries; fall back to full Get.
+		img, imgErr := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if imgErr != nil {
+			return "", fmt.Errorf("head: %w; get: %w", err, imgErr)
+		}
+		d, digestErr := img.Digest()
+		if digestErr != nil {
+			return "", digestErr
+		}
+		return d.String(), nil
+	}
+	return desc.Digest.String(), nil
 }
 
 // saveImageConfig persists an image's Entrypoint and Cmd to disk.

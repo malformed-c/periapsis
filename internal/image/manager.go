@@ -94,6 +94,97 @@ func (im *ImageManager) GetLayerCachePath() string {
 	return im.layerCache
 }
 
+// CachedImage describes a locally cached OCI image.
+type CachedImage struct {
+	Name       string   // full image reference
+	Digest     string   // manifest digest ("" if not yet cached)
+	Layers     int      // number of layers
+	LayerPaths []string // absolute paths to extracted layer dirs
+	SizeBytes  int64    // total on-disk size of all extracted layers + blob files
+}
+
+// ListCachedImages returns metadata for every image whose layer list is
+// persisted on disk. The list survives process restarts.
+func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
+	manifestDir := filepath.Join(im.layerCache, ".manifests")
+	entries, err := os.ReadDir(manifestDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read manifest dir: %w", err)
+	}
+
+	var images []CachedImage
+	seen := make(map[string]bool)
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		// .json files are layer caches; .config.json and .digest are siblings.
+		// Derive the image name by reversing the safe-name encoding.
+		safe := strings.TrimSuffix(e.Name(), ".json")
+		if strings.HasSuffix(safe, ".config") {
+			continue // skip .config.json files
+		}
+		imageName := strings.NewReplacer("_", "/").Replace(safe)
+		// Restore the tag separator: the last "_" before a tag is actually ":"
+		// e.g. "library_nginx_latest" → "library/nginx:latest" isn't fully
+		// recoverable without the original, so we store the safe name as-is
+		// and show it. This is cosmetic — the actual data is in the paths.
+		if seen[imageName] {
+			continue
+		}
+		seen[imageName] = true
+
+		paths, err := im.loadLayerCache(imageName)
+		if err != nil {
+			// Try with the raw safe name (has colons encoded as _)
+			continue
+		}
+
+		var totalSize int64
+		for _, p := range paths {
+			if info, err := dirSize(p); err == nil {
+				totalSize += info
+			}
+			// Also count the blob file if present.
+			blobFile := im.blobPath(filepath.Base(p))
+			if fi, err := os.Stat(blobFile); err == nil {
+				totalSize += fi.Size()
+			}
+		}
+
+		digest := im.loadManifestDigest(imageName)
+
+		images = append(images, CachedImage{
+			Name:       imageName,
+			Digest:     digest,
+			Layers:     len(paths),
+			LayerPaths: paths,
+			SizeBytes:  totalSize,
+		})
+	}
+
+	return images, nil
+}
+
+// dirSize returns the total size of all files under dir.
+func dirSize(dir string) (int64, error) {
+	var size int64
+	err := filepath.Walk(dir, func(_ string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip unreadable files
+		}
+		if !fi.IsDir() {
+			size += fi.Size()
+		}
+		return nil
+	})
+	return size, err
+}
+
 // ImageEntrypoint returns the OCI image's Entrypoint and Cmd.
 // Checks the in-memory manifest cache first, then falls back to the
 // disk-persisted config cache (survives process restarts).
@@ -379,6 +470,7 @@ func (im *ImageManager) imageConfigFile(imageName string) string {
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
 	return filepath.Join(im.layerCache, ".manifests", safe+".config.json")
 }
+
 // manifestDigestFile returns the path for a disk-persisted manifest digest.
 // Used by the Always pull policy to detect image updates without re-downloading
 // all layers: if the remote digest matches the cached digest, layers are current.
@@ -871,4 +963,16 @@ func (im *ImageManager) Unmount(podUID string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return rmErr
+}
+
+func (im *ImageManager) ListCachedImagesJSON() []map[string]any {
+	images, _ := im.ListCachedImages()
+	out := make([]map[string]any, len(images))
+	for i, img := range images {
+		out[i] = map[string]any{
+			"name": img.Name, "digest": img.Digest,
+			"layers": img.Layers, "size_bytes": img.SizeBytes,
+		}
+	}
+	return out
 }

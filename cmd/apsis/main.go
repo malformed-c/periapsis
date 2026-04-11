@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"text/tabwriter"
 	"time"
@@ -25,7 +26,7 @@ func main() {
 	socketPath := flag.String("socket", control.DefaultSocketPath, "Path to control socket")
 	jsonOutput := flag.Bool("json", false, "Output raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: apsis [flags] <command>\n  apsis <command> [flags]\n\nCommands:\n  status    Daemon status overview\n  pawns     List pawns with state and pod counts\n  pods      List pods across all pawns\n  showcase  Visual breakdown of cluster state\n  doctor    Compare pod state across all sources and report discrepancies\n  images    List cached OCI images and on-disk sizes\n  drain     Mark nodes NotReady and evict pods (use before decommission)\n  top       Live per-pawn cgroup stats (refreshes every 2s)\n  rollout   Stepped scale/rollout for a Deployment\n  version   Version info\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage: apsis [flags] <command>\n  apsis <command> [flags]\n\nCommands:\n  status    Daemon status overview\n  pawns     List pawns with state and pod counts\n  pods      List pods across all pawns\n  showcase  Visual breakdown of cluster state\n  doctor    Compare pod state across all sources and report discrepancies\n  images    List cached OCI images and on-disk sizes\n  drain     Mark nodes NotReady and let scheduler evict pods (passive)\n  stop      Active drain (NotReady + stop all pods) then systemctl stop perigeos\n  top       Live per-pawn cgroup stats (refreshes every 2s)\n  rollout   Stepped scale/rollout for a Deployment\n  version   Version info\n\nFlags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -53,7 +54,7 @@ func main() {
 	// "rollout" also needs a long-lived context — no timeout.
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if cmd == "top" || cmd == "rollout" || cmd == "drain" {
+	if cmd == "top" || cmd == "rollout" || cmd == "drain" || cmd == "stop" {
 		ctx, cancel = context.WithCancel(context.Background())
 	} else {
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
@@ -76,6 +77,8 @@ func main() {
 		err = cmdImages(ctx, client, *jsonOutput)
 	case "drain":
 		err = cmdDrain(ctx, client)
+	case "stop":
+		err = cmdStop(ctx, client)
 	case "version":
 		err = cmdVersion(ctx, client, *jsonOutput)
 	case "top":
@@ -520,5 +523,28 @@ func cmdDrain(ctx context.Context, c *control.Client) error {
 		return err
 	}
 	fmt.Println(resp)
+	return nil
+}
+
+// cmdStop drains all pawns (NotReady + actively stops every pod) and then
+// invokes `systemctl stop perigeos`. Use this for clean decommission of the
+// host. `systemctl restart perigeos` is unaffected and remains a fast bounce
+// that leaves containers running (KillMode=process + HydrateFromRuntime).
+func cmdStop(ctx context.Context, c *control.Client) error {
+	fmt.Println("Draining pawns (mark NotReady + stop all pods)...")
+	resp, err := c.Stop(ctx)
+	if err != nil {
+		return fmt.Errorf("drain via control socket: %w", err)
+	}
+	fmt.Println(resp)
+
+	fmt.Println("Running: systemctl stop perigeos")
+	cmd := exec.CommandContext(ctx, "systemctl", "stop", "perigeos")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("systemctl stop perigeos: %w", err)
+	}
+	fmt.Println("perigeos stopped.")
 	return nil
 }

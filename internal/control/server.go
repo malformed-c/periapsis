@@ -54,6 +54,8 @@ func (m *managerIface) VarlinkDispatch(ctx context.Context, c varlink.Call, meth
 		return m.server.varlinkImages(ctx, &c)
 	case "Drain":
 		return m.server.varlinkDrain(ctx, &c)
+	case "Stop":
+		return m.server.varlinkStop(ctx, &c)
 	case "Version":
 		return m.server.varlinkVersion(ctx, &c)
 	default:
@@ -275,6 +277,8 @@ func (s *Server) dispatch(ctx context.Context, method string) (any, string) {
 		return s.buildImages(), ""
 	case "Drain":
 		return s.buildDrain(), ""
+	case "Stop":
+		return s.buildStop(ctx), ""
 	case "Version":
 		return s.buildVersion(), ""
 	default:
@@ -468,6 +472,22 @@ func (s *Server) buildDrain() string {
 	return "Drain initiated: nodes marked NotReady. Pods will be evicted by the scheduler."
 }
 
+// buildStop performs an active drain: marks every pawn NotReady+Unschedulable
+// AND stops all running pods on each pawn before returning. Used by `apsis stop`
+// to drain a host before invoking systemctl stop perigeos.
+func (s *Server) buildStop(ctx context.Context) string {
+	s.mu.RLock()
+	gambits := s.gambits
+	s.mu.RUnlock()
+	for _, g := range gambits {
+		g.Shutdown()
+	}
+	for _, g := range gambits {
+		g.DrainPods(ctx)
+	}
+	return fmt.Sprintf("Stop drain complete: %d pawn(s) drained, pods stopped.", len(gambits))
+}
+
 func (s *Server) buildVersion() map[string]any {
 	return toMap(VersionResponse{
 		Version: version.Version, GoVersion: runtime.Version(),
@@ -507,6 +527,10 @@ func (s *Server) varlinkImages(ctx context.Context, c *varlink.Call) error {
 
 func (s *Server) varlinkDrain(ctx context.Context, c *varlink.Call) error {
 	return c.Reply(ctx, s.buildDrain())
+}
+
+func (s *Server) varlinkStop(ctx context.Context, c *varlink.Call) error {
+	return c.Reply(ctx, s.buildStop(ctx))
 }
 
 // toMap converts any struct to map[string]any via JSON round-trip.
@@ -842,4 +866,9 @@ func (c *Client) Images(ctx context.Context) (*ImagesResponse, error) {
 func (c *Client) Drain(ctx context.Context) (string, error) {
 	var r string
 	return r, c.call(ctx, "Drain", &r)
+}
+
+func (c *Client) Stop(ctx context.Context) (string, error) {
+	var r string
+	return r, c.call(ctx, "Stop", &r)
 }

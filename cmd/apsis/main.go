@@ -25,7 +25,7 @@ func main() {
 	socketPath := flag.String("socket", control.DefaultSocketPath, "Path to control socket")
 	jsonOutput := flag.Bool("json", false, "Output raw JSON")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: apsis [flags] <command>\n  apsis <command> [flags]\n\nCommands:\n  status    Daemon status overview\n  pawns     List pawns with state and pod counts\n  pods      List pods across all pawns\n  showcase  Visual breakdown of cluster state\n  doctor    Compare pod state across all sources and report discrepancies\n  top       Live per-pawn cgroup stats (refreshes every 2s)\n  rollout   Stepped scale/rollout for a Deployment\n  version   Version info\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage: apsis [flags] <command>\n  apsis <command> [flags]\n\nCommands:\n  status    Daemon status overview\n  pawns     List pawns with state and pod counts\n  pods      List pods across all pawns\n  showcase  Visual breakdown of cluster state\n  doctor    Compare pod state across all sources and report discrepancies\n  images    List cached OCI images and on-disk sizes\n  drain     Mark nodes NotReady and evict pods (use before decommission)\n  top       Live per-pawn cgroup stats (refreshes every 2s)\n  rollout   Stepped scale/rollout for a Deployment\n  version   Version info\n\nFlags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -53,7 +53,7 @@ func main() {
 	// "rollout" also needs a long-lived context — no timeout.
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if cmd == "top" || cmd == "rollout" {
+	if cmd == "top" || cmd == "rollout" || cmd == "drain" {
 		ctx, cancel = context.WithCancel(context.Background())
 	} else {
 		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
@@ -72,6 +72,10 @@ func main() {
 		err = cmdShowcase(ctx, client, *jsonOutput)
 	case "doctor":
 		err = cmdDoctor(ctx, client, *jsonOutput)
+	case "images":
+		err = cmdImages(ctx, client, *jsonOutput)
+	case "drain":
+		err = cmdDrain(ctx, client)
 	case "version":
 		err = cmdVersion(ctx, client, *jsonOutput)
 	case "top":
@@ -457,5 +461,64 @@ func cmdShowcase(ctx context.Context, c *control.Client, asJSON bool) error {
 	fmt.Printf("  Perigeos overhead: %d MiB (%.2f%%)\n", status.PerigeosRSSMiB, overheadPercent)
 	fmt.Printf("  k8s node:          1 physical host\n")
 
+	return nil
+}
+
+func cmdImages(ctx context.Context, c *control.Client, asJSON bool) error {
+	resp, err := c.Images(ctx)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(resp)
+	}
+
+	fmt.Printf("Cache directory: %s\n\n", resp.CacheDir)
+
+	if len(resp.Images) == 0 {
+		fmt.Println("No cached images.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "IMAGE\tLAYERS\tSIZE\tDIGEST")
+	for _, img := range resp.Images {
+		digest := img.Digest
+		if len(digest) > 19 {
+			digest = digest[:19] + "…"
+		}
+		if digest == "" {
+			digest = "<unknown>"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
+			img.Name,
+			img.Layers,
+			formatBytes(img.SizeBytes),
+			digest,
+		)
+	}
+	w.Flush()
+	return nil
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func cmdDrain(ctx context.Context, c *control.Client) error {
+	resp, err := c.Drain(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp)
 	return nil
 }

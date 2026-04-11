@@ -65,6 +65,13 @@ type QueueProvider interface {
 }
 
 // Server exposes a Varlink socket for the apsis CLI and remote control.
+// ImageLister is implemented by image.ImageManager to list cached images.
+// Using a named interface avoids an import cycle between control and image packages.
+type ImageLister interface {
+	ListCachedImagesJSON() []map[string]any
+	GetLayerCachePath() string
+}
+
 type Server struct {
 	socketPath string
 	tcpAddr    string // optional TCP address for remote mTLS access
@@ -77,6 +84,8 @@ type Server struct {
 	mu      sync.RWMutex
 	gambits []*node.Gambit
 	queues  map[string]QueueProvider // pawn name → PodController
+
+	imageLister ImageLister // optional; set via SetImageLister
 
 	varlinkSrv *varlink.Service
 	tcpLn      net.Listener
@@ -111,6 +120,13 @@ func (s *Server) RegisterQueues(pawnName string, qp QueueProvider) {
 		s.queues = make(map[string]QueueProvider)
 	}
 	s.queues[pawnName] = qp
+	s.mu.Unlock()
+}
+
+// SetImageLister registers an image cache provider for the Images method.
+func (s *Server) SetImageLister(il ImageLister) {
+	s.mu.Lock()
+	s.imageLister = il
 	s.mu.Unlock()
 }
 
@@ -251,6 +267,10 @@ func (s *Server) dispatch(ctx context.Context, method string) (any, string) {
 		return s.buildTop(), ""
 	case "Doctor":
 		return s.buildDoctor(ctx), ""
+	case "Images":
+		return s.buildImages(), ""
+	case "Drain":
+		return s.buildDrain(), ""
 	case "Version":
 		return s.buildVersion(), ""
 	default:
@@ -419,6 +439,29 @@ func (s *Server) buildDoctor(ctx context.Context) map[string]any {
 		"pawns":   pawns,
 		"summary": toMap(resp.Summary),
 	}
+}
+
+func (s *Server) buildImages() any {
+	s.mu.RLock()
+	il := s.imageLister
+	s.mu.RUnlock()
+	if il == nil {
+		return map[string]any{"images": []any{}, "cache_dir": ""}
+	}
+	return map[string]any{
+		"images":    il.ListCachedImagesJSON(),
+		"cache_dir": il.GetLayerCachePath(),
+	}
+}
+
+func (s *Server) buildDrain() string {
+	s.mu.RLock()
+	gambits := s.gambits
+	s.mu.RUnlock()
+	for _, g := range gambits {
+		g.Shutdown() // marks node NotReady+Unschedulable, stops new scheduling
+	}
+	return "Drain initiated: nodes marked NotReady. Pods will be evicted by the scheduler."
 }
 
 func (s *Server) buildVersion() map[string]any {
@@ -763,4 +806,28 @@ func (c *Client) Doctor(ctx context.Context) (*DoctorResponse, error) {
 func (c *Client) Version(ctx context.Context) (*VersionResponse, error) {
 	var r VersionResponse
 	return &r, c.call(ctx, "Version", &r)
+}
+
+// ImagesResponse is the response from the Images varlink method.
+type ImagesResponse struct {
+	CacheDir string           `json:"cache_dir"`
+	Images   []ImageEntryResp `json:"images"`
+}
+
+// ImageEntryResp describes a single cached image.
+type ImageEntryResp struct {
+	Name      string `json:"name"`
+	Digest    string `json:"digest"`
+	Layers    int    `json:"layers"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+func (c *Client) Images(ctx context.Context) (*ImagesResponse, error) {
+	var r ImagesResponse
+	return &r, c.call(ctx, "Images", &r)
+}
+
+func (c *Client) Drain(ctx context.Context) (string, error) {
+	var r string
+	return r, c.call(ctx, "Drain", &r)
 }

@@ -39,8 +39,9 @@ LimitNPROC=infinity
 LimitMEMLOCK=infinity
 TasksMax=infinity
 
-# Only kill the main perigeos process — nspawn containers survive restarts
-# and are rediscovered via HydrateFromRuntime. See ADR-0009.
+# Only kill the main perigeos process — nspawn containers survive both
+# stop and restart. HydrateFromRuntime rediscovers running pods on startup.
+# For intentional decommission (drain all pods), use: apsis drain
 KillMode=process
 TimeoutStopSec=30s
 

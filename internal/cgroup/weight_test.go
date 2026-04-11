@@ -1,4 +1,4 @@
-package systemd
+package cgroup
 
 import "testing"
 
@@ -17,8 +17,8 @@ func TestMilliCPUToCPUWeight(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := milliCPUToCPUWeight(tt.milliCPU); got != tt.want {
-				t.Fatalf("milliCPUToCPUWeight(%d) = %d, want %d", tt.milliCPU, got, tt.want)
+			if got := MilliCPUToCPUWeight(tt.milliCPU); got != tt.want {
+				t.Fatalf("MilliCPUToCPUWeight(%d) = %d, want %d", tt.milliCPU, got, tt.want)
 			}
 		})
 	}

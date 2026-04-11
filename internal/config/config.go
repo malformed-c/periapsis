@@ -13,18 +13,13 @@ import (
 	toml "github.com/pelletier/go-toml"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/util/taints"
+
+	"github.com/malformed-c/periapsis/internal/cgroup"
 )
 
 var (
 	ErrInvalidCPUFormat    = errors.New("invalid CPU format")
 	ErrInvalidPercentValue = errors.New("invalid percentage value for CPU")
-)
-
-const (
-	// Kubernetes CPU "shares" range and default semantics.
-	// See kubelet milliCPU->shares conversion and cgroup v2 weight mapping.
-	minCPUShares = 2
-	maxCPUShares = 262144
 )
 
 func Load(rawConfigPath string) (*RawPerigeosConfig, error) {
@@ -88,26 +83,7 @@ func deriveCPUWeight(cpu resource.Quantity, configuredWeight uint64) uint64 {
 	if configuredWeight > 0 {
 		return configuredWeight
 	}
-
-	milliCPUs := cpu.MilliValue()
-	if milliCPUs <= 0 {
-		return 0
-	}
-
-	// Convert Kubernetes CPU units (millicores) to cgroup v1 CPU shares,
-	// then map shares to cgroup v2/systemd CPUWeight.
-	// shares = milliCPU * 1024 / 1000, clamped to [2, 262144]
-	shares := milliCPUs * 1024 / 1000
-	if shares < minCPUShares {
-		shares = minCPUShares
-	}
-	if shares > maxCPUShares {
-		shares = maxCPUShares
-	}
-
-	// cgroup v2 weight mapping:
-	// weight = 1 + ((shares - 2) * 9999) / 262142
-	return uint64(1 + ((shares-minCPUShares)*9999)/(maxCPUShares-minCPUShares))
+	return cgroup.MilliCPUToCPUWeight(cpu.MilliValue())
 }
 
 func (r *RawPerigeosConfig) Process(baseDir string) (*PerigeosConfig, error) {

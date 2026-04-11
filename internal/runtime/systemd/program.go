@@ -8,6 +8,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	dbusv5 "github.com/godbus/dbus/v5"
+	"github.com/malformed-c/periapsis/internal/cgroup"
 	"github.com/malformed-c/periapsis/internal/runtime"
 )
 
@@ -149,21 +150,9 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
-	if cfg.MemoryLimitBytes > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "MemoryMax", Value: dbusv5.MakeVariant(cfg.MemoryLimitBytes),
-		})
-	}
-	if cfg.CPULimitMillis > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "CPUQuotaPerSecUSec", Value: dbusv5.MakeVariant(uint64(cfg.CPULimitMillis * 1000)),
-		})
-	}
-	if cpuWeight := milliCPUToCPUWeight(cfg.CPURequestMillis); cpuWeight > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "CPUWeight", Value: dbusv5.MakeVariant(cpuWeight),
-		})
-	}
+	// See buildPodResources for the single seam where additional cgroup
+	// knobs (IO, Pids, memory.high, cpuset, ...) should be wired in.
+	properties = append(properties, cgroup.BuildSystemdProperties(buildPodResources(cfg))...)
 
 	if len(bindPaths) > 0 {
 		properties = append(properties, dbus.Property{

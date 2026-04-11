@@ -19,6 +19,7 @@ import (
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	dbusv5 "github.com/godbus/dbus/v5"
+	"github.com/malformed-c/periapsis/internal/cgroup"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/node/api"
@@ -325,21 +326,10 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
-	if cfg.MemoryLimitBytes > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "MemoryMax", Value: dbusv5.MakeVariant(cfg.MemoryLimitBytes),
-		})
-	}
-	if cfg.CPULimitMillis > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "CPUQuotaPerSecUSec", Value: dbusv5.MakeVariant(uint64(cfg.CPULimitMillis * 1000)),
-		})
-	}
-	if cpuWeight := milliCPUToCPUWeight(cfg.CPURequestMillis); cpuWeight > 0 {
-		properties = append(properties, dbus.Property{
-			Name: "CPUWeight", Value: dbusv5.MakeVariant(cpuWeight),
-		})
-	}
+	// Assembled as a cgroup2.Resources struct so future pod-label-driven
+	// cgroup knobs (IO, Pids, memory.high, etc.) plug in without touching
+	// this call site — the translation to D-Bus lives in internal/cgroup.
+	properties = append(properties, cgroup.BuildSystemdProperties(buildPodResources(cfg))...)
 
 	// We intentionally pass a nil channel instead of waiting for the job
 	// completion signal. go-systemd's startJob has a race condition: it

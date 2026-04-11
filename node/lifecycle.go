@@ -314,7 +314,7 @@ func (g *Gambit) launchContainer(
 		_ = writeResolvConf(rootfs, g.clusterDNS)
 	}
 
-	memLimit, cpuLimit := extractResourceLimits(c)
+	memLimit, cpuLimit, cpuRequest := extractResourceLimits(c)
 	ep, cmd := g.ImageManager.ImageEntrypoint(c.Image)
 
 	cfg := perigeos.PodConfig{
@@ -334,6 +334,7 @@ func (g *Gambit) launchContainer(
 		PodIP:                         podIP,
 		MemoryLimitBytes:              memLimit,
 		CPULimitMillis:                cpuLimit,
+		CPURequestMillis:              cpuRequest,
 		ImageEntrypoint:               ep,
 		ImageCmd:                      cmd,
 		TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
@@ -499,13 +500,18 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 // Helpers ---------------------------------------------------------------------
 
-func extractResourceLimits(c *corev1.Container) (memBytes uint64, cpuMillis int64) {
+func extractResourceLimits(c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
 	if c.Resources.Limits != nil {
 		if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
 			memBytes = uint64(mem.Value())
 		}
 		if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
-			cpuMillis = cpu.MilliValue()
+			cpuLimitMillis = cpu.MilliValue()
+		}
+	}
+	if c.Resources.Requests != nil {
+		if cpu, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+			cpuRequestMillis = cpu.MilliValue()
 		}
 	}
 	return

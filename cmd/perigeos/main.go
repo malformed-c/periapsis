@@ -85,8 +85,6 @@ func main() {
 	ctx = vklog.WithLogger(ctx, vkLogger)
 	defer cancel()
 
-
-
 	// Force-exit if goroutines don't drain within 60s of receiving signal
 	// (45s drain window + 15s for actual shutdown work).
 	go func() {
@@ -267,7 +265,6 @@ func main() {
 
 	// --- Control socket for apsis CLI and remote control (Varlink) ---
 	controlSrv := control.New(*controlSocketFlag, perigeoCfg, logger.With("component", "control"))
-	controlSrv.SetImageLister(sharedIM)
 
 	if *controlTCPFlag != "" && perigeoCfg.Global.ServerCAPath != "" {
 		caCert, caKey, err := pki.LoadCA(perigeoCfg.Global.ServerCAPath, perigeoCfg.Global.ServerCAKeyPath)
@@ -353,6 +350,8 @@ func main() {
 		Client: kubeClient,
 		SelfIP: pki.GetOutboundIP().String(),
 	})
+
+	controlSrv.SetImageLister(sharedIM)
 
 	// --- Plugin registration: watch CSI driver sockets, create CSINode per pawn ---
 	{

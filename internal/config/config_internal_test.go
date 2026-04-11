@@ -127,6 +127,32 @@ func TestParseCPU_InvalidFormat(t *testing.T) {
 	}
 }
 
+func TestDeriveCPUWeight(t *testing.T) {
+	tests := []struct {
+		name       string
+		cpu        string
+		configured uint64
+		want       uint64
+	}{
+		{name: "configured weight wins", cpu: "500m", configured: 777, want: 777},
+		{name: "derive from one core", cpu: "1000m", want: 39},
+		{name: "derive from half core", cpu: "500m", want: 20},
+		{name: "derive tiny cpu clamps to min share", cpu: "1m", want: 1},
+		{name: "zero cpu yields zero", cpu: "0", want: 0},
+		{name: "large cpu maps high weight", cpu: "200000m", want: 7812},
+		{name: "huge cpu clamps to max weight", cpu: "1000000m", want: 10000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu := resource.MustParse(tt.cpu)
+			if got := deriveCPUWeight(cpu, tt.configured); got != tt.want {
+				t.Fatalf("deriveCPUWeight(%s, %d) = %d, want %d", tt.cpu, tt.configured, got, tt.want)
+			}
+		})
+	}
+}
+
 // ─── Process – pawn set expansion ────────────────────────────────────────────
 
 func defaultPawnCfg() RawPawnConfig {

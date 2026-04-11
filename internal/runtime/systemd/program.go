@@ -149,6 +149,11 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 			Name: "CPUQuotaPerSecUSec", Value: dbusv5.MakeVariant(uint64(cfg.CPULimitMillis * 1000)),
 		})
 	}
+	if cpuWeight := milliCPUToCPUWeight(cfg.CPURequestMillis); cpuWeight > 0 {
+		properties = append(properties, dbus.Property{
+			Name: "CPUWeight", Value: dbusv5.MakeVariant(cpuWeight),
+		})
+	}
 
 	if len(bindPaths) > 0 {
 		properties = append(properties, dbus.Property{

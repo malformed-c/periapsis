@@ -147,6 +147,10 @@ type PodConfig struct {
 	// Security
 	Privileged bool // when true, grant all capabilities (--capability=all)
 	HostPID    bool // when true, skip nspawn isolation — run directly on host PID/cgroup namespace
+	// Effective run user/group for the container process. Container-level
+	// securityContext values override pod-level values.
+	RunAsUser  *int64
+	RunAsGroup *int64
 
 	// Tidal: fully resolved KEY=VALUE strings
 	Environment []string

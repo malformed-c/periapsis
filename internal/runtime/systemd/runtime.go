@@ -187,6 +187,13 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if cfg.Privileged {
 		execStart = append(execStart, "--capability=all")
 	}
+	if cfg.RunAsUser != nil {
+		if cfg.RunAsGroup != nil {
+			execStart = append(execStart, fmt.Sprintf("--user=%d:%d", *cfg.RunAsUser, *cfg.RunAsGroup))
+		} else {
+			execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
+		}
+	}
 
 	// Pass resolved env vars into the container via --setenv
 	for _, envVar := range cfg.Environment {

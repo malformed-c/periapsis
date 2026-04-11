@@ -137,6 +137,16 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		// The process inherits them from systemd, not via --setenv as in nspawn.
 		{Name: "Environment", Value: dbusv5.MakeVariant(allEnv)},
 	}
+	if cfg.RunAsUser != nil {
+		properties = append(properties, dbus.Property{
+			Name: "User", Value: dbusv5.MakeVariant(fmt.Sprintf("%d", *cfg.RunAsUser)),
+		})
+	}
+	if cfg.RunAsGroup != nil {
+		properties = append(properties, dbus.Property{
+			Name: "Group", Value: dbusv5.MakeVariant(fmt.Sprintf("%d", *cfg.RunAsGroup)),
+		})
+	}
 
 	// Per-container resource limits from pod spec Resources.Limits.
 	if cfg.MemoryLimitBytes > 0 {

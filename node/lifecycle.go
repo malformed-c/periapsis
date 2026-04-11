@@ -24,6 +24,14 @@ type pullCacheEntry struct {
 	cached bool
 }
 
+type containerRuntimeProfile struct {
+	MemoryLimitBytes uint64
+	CPULimitMillis   int64
+	CPURequestMillis int64
+	RunAsUser        *int64
+	RunAsGroup       *int64
+}
+
 func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	g.Logger.Info("CreatePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "pod", pod.Name)
 
@@ -156,6 +164,8 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	}
 
 	// Step 3: Init Containers (Strictly Sequential)
+	runtimeProfiles := buildContainerRuntimeProfiles(pod)
+
 	for i := range pod.Spec.InitContainers {
 		ic := &pod.Spec.InitContainers[i]
 
@@ -170,7 +180,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			continue // Standard init container finished successfully, move to next
 		}
 
-		err := g.launchContainer(ctx, pod, ic, uid, netPath, podIP, pullCache, !isSidecar)
+		err := g.launchContainer(ctx, pod, ic, uid, netPath, podIP, pullCache, runtimeProfiles, !isSidecar)
 		if err != nil {
 			// Init containers MUST succeed before proceeding. Abort and let BatchWatcher retry.
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedInit", "Init container %s: %v", ic.Name, err)
@@ -191,7 +201,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			continue
 		}
 
-		err := g.launchContainer(ctx, pod, c, uid, netPath, podIP, pullCache, false)
+		err := g.launchContainer(ctx, pod, c, uid, netPath, podIP, pullCache, runtimeProfiles, false)
 		if err != nil {
 			// CRITICAL DIFFERENCE: DO NOT RETURN HERE!
 			// If driver-registrar crashes because the socket isn't ready, we just log it.
@@ -270,6 +280,7 @@ func (g *Gambit) launchContainer(
 	c *corev1.Container,
 	uid, netPath, podIP string,
 	pullCache map[string]pullCacheEntry,
+	runtimeProfiles map[string]containerRuntimeProfile,
 	isInit bool,
 ) error {
 	// 1. Check Pull Cache
@@ -314,7 +325,7 @@ func (g *Gambit) launchContainer(
 		_ = writeResolvConf(rootfs, g.clusterDNS)
 	}
 
-	memLimit, cpuLimit, cpuRequest := extractResourceLimits(c)
+	profile := runtimeProfiles[c.Name]
 	ep, cmd := g.ImageManager.ImageEntrypoint(c.Image)
 
 	cfg := perigeos.PodConfig{
@@ -330,11 +341,13 @@ func (g *Gambit) launchContainer(
 		HostNetwork:                   pod.Spec.HostNetwork,
 		HostPID:                       pod.Spec.HostPID,
 		Privileged:                    isPrivileged(c),
+		RunAsUser:                     profile.RunAsUser,
+		RunAsGroup:                    profile.RunAsGroup,
 		Environment:                   resolvedEnv,
 		PodIP:                         podIP,
-		MemoryLimitBytes:              memLimit,
-		CPULimitMillis:                cpuLimit,
-		CPURequestMillis:              cpuRequest,
+		MemoryLimitBytes:              profile.MemoryLimitBytes,
+		CPULimitMillis:                profile.CPULimitMillis,
+		CPURequestMillis:              profile.CPURequestMillis,
 		ImageEntrypoint:               ep,
 		ImageCmd:                      cmd,
 		TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
@@ -473,7 +486,8 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// Dummy cache for individual container restart
 	dummyCache := make(map[string]pullCacheEntry)
 
-	err := g.launchContainer(ctx, pod, container, uid, netPath, podIP, dummyCache, false)
+	profiles := buildContainerRuntimeProfiles(pod)
+	err := g.launchContainer(ctx, pod, container, uid, netPath, podIP, dummyCache, profiles, false)
 	if err != nil {
 		g.Logger.Error("Restart: launch failed", "container", containerName, "err", err)
 		return
@@ -500,7 +514,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 // Helpers ---------------------------------------------------------------------
 
-func extractResourceLimits(c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
+func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
 	if c.Resources.Limits != nil {
 		if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
 			memBytes = uint64(mem.Value())
@@ -514,7 +528,73 @@ func extractResourceLimits(c *corev1.Container) (memBytes uint64, cpuLimitMillis
 			cpuRequestMillis = cpu.MilliValue()
 		}
 	}
+
+	// Fallback to pod-level resources when container-level values are not set.
+	// Pod-level resources are a shared budget, while container-level values are
+	// the primary source when present.
+	if pod != nil && pod.Spec.Resources != nil {
+		if memBytes == 0 {
+			if mem, ok := pod.Spec.Resources.Limits[corev1.ResourceMemory]; ok {
+				memBytes = uint64(mem.Value())
+			}
+		}
+		if cpuLimitMillis == 0 {
+			if cpu, ok := pod.Spec.Resources.Limits[corev1.ResourceCPU]; ok {
+				cpuLimitMillis = cpu.MilliValue()
+			}
+		}
+		if cpuRequestMillis == 0 {
+			if cpu, ok := pod.Spec.Resources.Requests[corev1.ResourceCPU]; ok {
+				cpuRequestMillis = cpu.MilliValue()
+			}
+		}
+	}
 	return
+}
+
+func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeProfile {
+	profiles := make(map[string]containerRuntimeProfile, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
+	for i := range pod.Spec.InitContainers {
+		c := &pod.Spec.InitContainers[i]
+		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		runAsUser, runAsGroup := effectiveRunAs(pod, c)
+		profiles[c.Name] = containerRuntimeProfile{
+			MemoryLimitBytes: memLimit,
+			CPULimitMillis:   cpuLimit,
+			CPURequestMillis: cpuRequest,
+			RunAsUser:        runAsUser,
+			RunAsGroup:       runAsGroup,
+		}
+	}
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		runAsUser, runAsGroup := effectiveRunAs(pod, c)
+		profiles[c.Name] = containerRuntimeProfile{
+			MemoryLimitBytes: memLimit,
+			CPULimitMillis:   cpuLimit,
+			CPURequestMillis: cpuRequest,
+			RunAsUser:        runAsUser,
+			RunAsGroup:       runAsGroup,
+		}
+	}
+	return profiles
+}
+
+func effectiveRunAs(pod *corev1.Pod, c *corev1.Container) (runAsUser, runAsGroup *int64) {
+	if pod != nil && pod.Spec.SecurityContext != nil {
+		runAsUser = pod.Spec.SecurityContext.RunAsUser
+		runAsGroup = pod.Spec.SecurityContext.RunAsGroup
+	}
+	if c != nil && c.SecurityContext != nil {
+		if c.SecurityContext.RunAsUser != nil {
+			runAsUser = c.SecurityContext.RunAsUser
+		}
+		if c.SecurityContext.RunAsGroup != nil {
+			runAsGroup = c.SecurityContext.RunAsGroup
+		}
+	}
+	return runAsUser, runAsGroup
 }
 
 func isPrivileged(c *corev1.Container) bool {

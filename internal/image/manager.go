@@ -53,6 +53,14 @@ type ImageManager struct {
 	// Exposed via /blobs/inflight so peers can discover and wait on our pulls
 	// instead of independently downloading the same layer from upstream.
 	inflightLayers sync.Map // hash → chan struct{}
+
+	// selfMarker is a random token registered as a permanent entry in
+	// inflightLayers. When peersWithInflight queries a peer and sees this
+	// marker in the response, it knows the "peer" is actually this same
+	// perigeos process — belt-and-braces against a misconfigured host
+	// filter sending us into a wait-on-self deadlock.
+	selfMarker   string
+	knownSelfEps sync.Map // ep → true, cached after first detection
 }
 
 // imageConfig holds the subset of OCI image config we need across restarts.
@@ -678,7 +686,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 		if peerEp, ok := inflightPeers[hash]; ok {
 			im.logger.Info("Layer inflight on peer, waiting", "hash", hash[:12], "peer", peerEp)
 			if eventFn != nil {
-				eventFn("Normal", "PeerWait", fmt.Sprintf("Layer %s is being pulled by peer %s, waiting", hash[:12], peerEp))
+				eventFn("Normal", "PeerWait", fmt.Sprintf("Layer %s is being pulled from peer %s, waiting", hash[:12], peerEp))
 			}
 			if waitForPeerLayer(ctx, im.peerClient, peerEp, hash) {
 				// Peer finished — fetch from it.

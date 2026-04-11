@@ -2,11 +2,14 @@ package image
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -27,19 +30,31 @@ const peerStallTimeout = 30 * time.Second
 const inflightPollInterval = 2 * time.Second
 
 // inflightWaitTimeout caps how long we wait for a peer to finish a layer
-// before giving up and pulling from upstream ourselves.
-const inflightWaitTimeout = 4 * time.Minute
+// before giving up and pulling from upstream ourselves. Kept short so a
+// single slow (or phantom-self) peer can't eat most of the outer pull
+// timeout before the upstream fallback gets a chance to run.
+const inflightWaitTimeout = 60 * time.Second
 
 // PeerConfig configures peer blob fetching.
 type PeerConfig struct {
-	Client kubernetes.Interface
-	SelfIP string // skip ourself during peer lookup
+	Client   kubernetes.Interface
+	SelfHost string // host label value for this perigeos instance — skipped during peer lookup
 }
 
 // SetPeers enables peer-to-peer blob fetching. Call once from main after the
 // kube client and pawn config are ready.
 func (im *ImageManager) SetPeers(cfg PeerConfig) {
 	im.peers = &cfg
+	// Register a random marker as a permanent entry in inflightLayers so that
+	// /blobs/inflight always surfaces it. peersWithInflight uses the marker to
+	// detect that a "peer" is actually this same perigeos process and skip it.
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		im.selfMarker = "self-" + hex.EncodeToString(buf[:])
+		done := make(chan struct{})
+		close(done)
+		im.inflightLayers.Store(im.selfMarker, done)
+	}
 	im.peerClient = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // content-addressed — digest is the integrity check
@@ -54,6 +69,12 @@ func (im *ImageManager) SetPeers(cfg PeerConfig) {
 // The port is read from node.Status.DaemonEndpoints.KubeletEndpoint.Port,
 // which perigeos sets to each pawn's serving port at registration time.
 // Multiple pawns on the same host are deduplicated — one endpoint per host IP.
+//
+// Self is filtered by the periapsis.io/host label (the perigeos host name),
+// not by IP. An IP-based filter is fragile because a host can have several
+// interfaces and the outbound-IP probe (dial 8.8.8.8) may pick one that
+// differs from the pawn's configured NodeIP — perigeos would then treat
+// itself as a peer and wait-deadlock on inflight layers.
 func (im *ImageManager) peerEndpoints(ctx context.Context) []string {
 	if im.peers == nil || im.peers.Client == nil {
 		return nil
@@ -68,12 +89,15 @@ func (im *ImageManager) peerEndpoints(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var endpoints []string
 	for _, n := range nodes.Items {
+		if im.peers.SelfHost != "" && n.Labels["periapsis.io/host"] == im.peers.SelfHost {
+			continue
+		}
 		port := n.Status.DaemonEndpoints.KubeletEndpoint.Port
 		if port == 0 {
 			continue
 		}
 		for _, addr := range n.Status.Addresses {
-			if addr.Type == "InternalIP" && addr.Address != im.peers.SelfIP {
+			if addr.Type == "InternalIP" {
 				ep := fmt.Sprintf("%s:%d", addr.Address, port)
 				if !seen[addr.Address] {
 					seen[addr.Address] = true
@@ -162,8 +186,12 @@ func (im *ImageManager) peersWithInflight(ctx context.Context, wantHashes map[st
 	}
 	ch := make(chan result, len(eps))
 
+	queried := 0
 	for _, ep := range eps {
-		ep := ep
+		if _, self := im.knownSelfEps.Load(ep); self {
+			continue
+		}
+		queried++
 		go func() {
 			hashes, err := fetchInflightHashes(ctx, im.peerClient, ep)
 			if err != nil {
@@ -176,8 +204,14 @@ func (im *ImageManager) peersWithInflight(ctx context.Context, wantHashes map[st
 
 	// hash → first peer that has it inflight
 	found := make(map[string]string)
-	for range eps {
+	for i := 0; i < queried; i++ {
 		r := <-ch
+		// Belt-and-braces self detection: if our self-marker appears in this
+		// peer's inflight list, the "peer" is actually us. Cache and skip.
+		if im.selfMarker != "" && slices.Contains(r.hashes, im.selfMarker) {
+			im.knownSelfEps.Store(r.ep, true)
+			continue
+		}
 		for _, h := range r.hashes {
 			if wantHashes[h] {
 				if _, exists := found[h]; !exists {

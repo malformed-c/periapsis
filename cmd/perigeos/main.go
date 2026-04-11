@@ -346,9 +346,10 @@ func main() {
 	// P2P blob cache — peers pull layers from each other before hitting upstream.
 	// Blobs are served via /blobs/{digest} on each pawn's HTTPS server.
 	// Port is read per-node from node.Status.DaemonEndpoints.KubeletEndpoint.Port.
+	selfHost, _ := os.Hostname()
 	sharedIM.SetPeers(image.PeerConfig{
-		Client: kubeClient,
-		SelfIP: pki.GetOutboundIP().String(),
+		Client:   kubeClient,
+		SelfHost: selfHost,
 	})
 
 	controlSrv.SetImageLister(sharedIM)

@@ -8,8 +8,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
+
+// internalIPFromCiliumNode returns the first InternalIP address in the
+// CiliumNode spec, or "" if none is set.
+func internalIPFromCiliumNode(u *unstructured.Unstructured) string {
+	addrs, found, err := unstructured.NestedSlice(u.Object, "spec", "addresses")
+	if err != nil || !found {
+		return ""
+	}
+	for _, a := range addrs {
+		m, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "InternalIP" {
+			if ip, _ := m["ip"].(string); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
 
 var ciliumNodeGVR = schema.GroupVersionResource{
 	Group:    "cilium.io",
@@ -47,10 +69,20 @@ func EnsureCiliumNode(ctx context.Context, client dynamic.Interface, logger *slo
 		},
 	}
 
-	// Try to get existing — if it exists, we're done (operator may have updated it).
 	existing, err := ciliumNodes.Get(ctx, pawnName, metav1.GetOptions{})
 	if err == nil {
-		logger.Info("CiliumNode already exists", "node", pawnName, "resourceVersion", existing.GetResourceVersion())
+		if currentIP := internalIPFromCiliumNode(existing); currentIP != nodeIP {
+			patch := fmt.Appendf(nil,
+				`{"spec":{"addresses":[{"type":"InternalIP","ip":%q}],"healthAddressing":{"ipv4":%q}}}`,
+				nodeIP, nodeIP,
+			)
+			if _, perr := ciliumNodes.Patch(ctx, pawnName, types.MergePatchType, patch, metav1.PatchOptions{}); perr != nil {
+				return fmt.Errorf("patching CiliumNode %s InternalIP %s -> %s: %w", pawnName, currentIP, nodeIP, perr)
+			}
+			logger.Info("Refreshed CiliumNode InternalIP", "node", pawnName, "old", currentIP, "new", nodeIP)
+			return nil
+		}
+		logger.Info("CiliumNode already current", "node", pawnName, "resourceVersion", existing.GetResourceVersion())
 		return nil
 	}
 

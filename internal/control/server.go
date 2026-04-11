@@ -50,6 +50,10 @@ func (m *managerIface) VarlinkDispatch(ctx context.Context, c varlink.Call, meth
 		return m.server.varlinkTop(ctx, &c)
 	case "Doctor":
 		return m.server.varlinkDoctor(ctx, &c)
+	case "Images":
+		return m.server.varlinkImages(ctx, &c)
+	case "Drain":
+		return m.server.varlinkDrain(ctx, &c)
 	case "Version":
 		return m.server.varlinkVersion(ctx, &c)
 	default:
@@ -495,6 +499,14 @@ func (s *Server) varlinkDoctor(ctx context.Context, c *varlink.Call) error {
 
 func (s *Server) varlinkVersion(ctx context.Context, c *varlink.Call) error {
 	return c.Reply(ctx, s.buildVersion())
+}
+
+func (s *Server) varlinkImages(ctx context.Context, c *varlink.Call) error {
+	return c.Reply(ctx, s.buildImages())
+}
+
+func (s *Server) varlinkDrain(ctx context.Context, c *varlink.Call) error {
+	return c.Reply(ctx, s.buildDrain())
 }
 
 // toMap converts any struct to map[string]any via JSON round-trip.

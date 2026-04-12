@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // uidbaseSlots is the number of deterministic UIDBASE buckets per node.
@@ -134,4 +135,116 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 		logger.Error("Failed to inject group entry", "error", err)
 	}
 	createHomeDir(rootfs, uid, gid, logger)
+}
+
+// ---------------------------------------------------------------------------
+// Host-side userns shim support (ADR-0010)
+//
+// The userns-shim binary runs inside the container, calls
+// unshare(CLONE_NEWUSER), then waits for perigeos to write uid_map/gid_map
+// and send the target uid:gid via a FIFO. This creates the user namespace
+// AFTER nspawn has joined the CNI netns, avoiding the --private-users +
+// --network-namespace-path incompatibility.
+// ---------------------------------------------------------------------------
+
+const (
+	// usernsShimHostPath is the install location of the static userns-shim binary.
+	usernsShimHostPath = "/usr/local/lib/perigeos/userns-shim"
+	// usernsShimContainerPath is where the shim is bind-mounted inside the container.
+	usernsShimContainerPath = "/usr/local/bin/userns-shim"
+	// usernsFIFOBase is the host-side directory for per-container FIFO dirs.
+	usernsFIFOBase = "/run/perigeos/userns"
+)
+
+// usernsShimExists returns true if the userns-shim binary is installed.
+func usernsShimExists() bool {
+	_, err := os.Stat(usernsShimHostPath)
+	return err == nil
+}
+
+// setupUserNSFIFOs creates a per-container directory containing the ready and
+// gate FIFOs used for the userns shim handshake. Returns the host-side path.
+func setupUserNSFIFOs(podUID, containerName string) (string, error) {
+	dir := filepath.Join(usernsFIFOBase, podUID+"-"+containerName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	for _, name := range []string{"ready", "gate"} {
+		p := filepath.Join(dir, name)
+		os.Remove(p) // remove stale FIFO from previous attempt
+		if err := syscall.Mkfifo(p, 0600); err != nil {
+			return "", fmt.Errorf("mkfifo %s: %w", p, err)
+		}
+	}
+	return dir, nil
+}
+
+// cleanupUserNSFIFOs removes the FIFO directory for a container.
+func cleanupUserNSFIFOs(podUID, containerName string) {
+	dir := filepath.Join(usernsFIFOBase, podUID+"-"+containerName)
+	os.RemoveAll(dir)
+}
+
+// completeUserNSSetup runs the host side of the userns shim protocol.
+// It blocks on the ready FIFO until the shim has called unshare(CLONE_NEWUSER),
+// then writes uid_map/gid_map for the shim process and sends the target
+// uid:gid through the gate FIFO. Runs as a goroutine after StartTransientUnit.
+func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string, targetUID, targetGID int64) {
+	logger := s.logger.With("machine", machineName, "op", "userns-setup")
+
+	// Step 1: Wait for shim to signal readiness (blocks until unshare is done).
+	readyPath := filepath.Join(fifoDir, "ready")
+	rf, err := os.Open(readyPath)
+	if err != nil {
+		logger.Error("Failed to open ready FIFO", "error", err)
+		return
+	}
+	buf := make([]byte, 4)
+	if _, err := rf.Read(buf); err != nil {
+		rf.Close()
+		logger.Error("Failed to read ready FIFO", "error", err)
+		return
+	}
+	rf.Close()
+	logger.Info("Shim signaled ready, writing uid_map/gid_map")
+
+	// Step 2: Find the shim's host PID via machined.
+	pid, err := s.getMachineLeaderPID(machineName)
+	if err != nil {
+		logger.Error("Failed to get shim PID", "error", err)
+		return
+	}
+
+	// Step 3: Write uid_map and gid_map.
+	// Map: inside 0-65535 → host UIDBASE to UIDBASE+65535.
+	// The shim (host uid 0) is unmapped (65534) in the new userns until
+	// it calls setuid() to adopt the target identity.
+	uidbase := computeUIDBASE(podUID)
+	mapLine := fmt.Sprintf("0 %d 65536\n", uidbase)
+
+	uidMapPath := fmt.Sprintf("/proc/%d/uid_map", pid)
+	if err := os.WriteFile(uidMapPath, []byte(mapLine), 0); err != nil {
+		logger.Error("Failed to write uid_map", "path", uidMapPath, "error", err)
+		return
+	}
+	gidMapPath := fmt.Sprintf("/proc/%d/gid_map", pid)
+	if err := os.WriteFile(gidMapPath, []byte(mapLine), 0); err != nil {
+		logger.Error("Failed to write gid_map", "path", gidMapPath, "error", err)
+		return
+	}
+	logger.Info("Wrote userns mappings", "uidbase", uidbase, "pid", pid)
+
+	// Step 4: Send target uid:gid through gate FIFO — shim will setgid/setuid and exec.
+	gatePath := filepath.Join(fifoDir, "gate")
+	gf, err := os.OpenFile(gatePath, os.O_WRONLY, 0)
+	if err != nil {
+		logger.Error("Failed to open gate FIFO", "error", err)
+		return
+	}
+	payload := fmt.Sprintf("%d:%d\n", targetUID, targetGID)
+	if _, err := gf.Write([]byte(payload)); err != nil {
+		logger.Error("Failed to write gate FIFO", "error", err)
+	}
+	gf.Close()
+	logger.Info("Userns setup complete", "targetUID", targetUID, "targetGID", targetGID)
 }

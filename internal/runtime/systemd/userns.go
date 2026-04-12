@@ -227,6 +227,13 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 		logger.Error("Failed to write uid_map", "path", uidMapPath, "error", err)
 		return
 	}
+
+	setgroupsPath := fmt.Sprintf("/proc/%d/setgroups", pid)
+	if err := os.WriteFile(setgroupsPath, []byte("deny"), 0); err != nil {
+		logger.Error("Failed to write setgroups", "path", setgroupsPath, "error", err)
+		return
+	}
+
 	gidMapPath := fmt.Sprintf("/proc/%d/gid_map", pid)
 	if err := os.WriteFile(gidMapPath, []byte(mapLine), 0); err != nil {
 		logger.Error("Failed to write gid_map", "path", gidMapPath, "error", err)

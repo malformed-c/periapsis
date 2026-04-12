@@ -239,6 +239,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 		logger.Error("Failed to write gid_map", "path", gidMapPath, "error", err)
 		return
 	}
+
 	logger.Info("Wrote userns mappings", "uidbase", uidbase, "pid", pid)
 
 	// Step 4: Send target uid:gid through gate FIFO — shim will setgid/setuid and exec.
@@ -248,10 +249,12 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 		logger.Error("Failed to open gate FIFO", "error", err)
 		return
 	}
+	gf.Close()
+
 	payload := fmt.Sprintf("%d:%d\n", targetUID, targetGID)
 	if _, err := gf.Write([]byte(payload)); err != nil {
 		logger.Error("Failed to write gate FIFO", "error", err)
 	}
-	gf.Close()
+
 	logger.Info("Userns setup complete", "targetUID", targetUID, "targetGID", targetGID)
 }

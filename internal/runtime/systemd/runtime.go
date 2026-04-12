@@ -164,6 +164,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		}
 	}
 
+	// TODO: Can we rely on ENV?
 	execStart := []string{
 		"/usr/bin/systemd-nspawn",
 		"--console=" + consoleMode,

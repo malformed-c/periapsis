@@ -348,8 +348,13 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
-	g.Logger.Debug("notifyPodStatus", "pod", pod.Name, "phase", pod.Status.Phase, "caller", caller)
-
+	g.Logger.Debug("notifyPodStatus",
+		"pod", pod.Name,
+		"phase", pod.Status.Phase,
+		"reason", pod.Status.Reason,
+		"containers", summarizeContainerStatuses(pod.Status.ContainerStatuses),
+		"caller", caller,
+	)
 	if g.podNotify != nil {
 		g.podNotify(pod)
 	}

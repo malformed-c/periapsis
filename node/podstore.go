@@ -43,11 +43,11 @@ type podState struct {
 type PodStore struct {
 	// registryMu protects the maps that hold the global pod topologies.
 	// It is ONLY locked when pods are added or removed, never during localized mutations.
-	registryMu sync.RWMutex
-	pods       map[string]*podState
-	nameIndex  map[string]string // "namespace/name" → UID
-	completed    map[string]completedEntry // "namespace/name" → entry (log fallback)
-	completedMu  sync.Mutex                 // separate lock — never held with registryMu
+	registryMu  sync.RWMutex
+	pods        map[string]*podState
+	nameIndex   map[string]string         // "namespace/name" → UID
+	completed   map[string]completedEntry // "namespace/name" → entry (log fallback)
+	completedMu sync.Mutex                // separate lock — never held with registryMu
 
 	// atomic global counters for instant 0-lock queries
 	usedCPU       atomic.Int64 // in millicores

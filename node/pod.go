@@ -291,8 +291,10 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		"namespace":  podFromProvider.Namespace,
 		"new phase":  string(podFromProvider.Status.Phase),
 		"new reason": podFromProvider.Status.Reason,
+		"new status": summarizeContainerStatuses(podFromProvider.Status.ContainerStatuses),
 		"old phase":  string(podFromKubernetes.Status.Phase),
 		"old reason": podFromKubernetes.Status.Reason,
+		"old status": summarizeContainerStatuses(podFromKubernetes.Status.ContainerStatuses),
 		"caller":     caller,
 	}).Debug("Updated pod status in kubernetes")
 

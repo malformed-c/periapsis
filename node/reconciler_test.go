@@ -54,6 +54,9 @@ func (m *mockRuntime) CheckMachined(_ context.Context) error {
 func (m *mockRuntime) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
 	return nil
 }
+func (m *mockRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perigeos.BindMount) error {
+	return nil
+}
 func (m *mockRuntime) ResetUnit(_ context.Context, _, _ string) error {
 	return nil
 }

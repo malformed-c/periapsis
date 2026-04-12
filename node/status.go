@@ -68,6 +68,10 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 // container state given (uid, containerName).
 func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, containerName string) perigeos.MachineState) *corev1.PodStatus {
 	uid := string(pod.UID)
+	previousStatusesByContainer := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
+	for _, status := range pod.Status.ContainerStatuses {
+		previousStatusesByContainer[status.Name] = status
+	}
 
 	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
 	podPhase := corev1.PodRunning
@@ -98,7 +102,20 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			cs.State = corev1.ContainerState{
 				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.node.StartTime())},
 			}
-		case perigeos.StateCreating, perigeos.StateUnknown:
+		case perigeos.StateCreating:
+			podPhase = corev1.PodPending
+			cs.State = corev1.ContainerState{
+				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+			}
+		case perigeos.StateUnknown:
+			// Keep the last known Running status if we've already reported it.
+			// This avoids transient stateCache misses regressing a visible
+			// Running container back to ContainerCreating.
+			if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
+				cs.Ready = previous.Ready
+				cs.State = previous.State
+				break
+			}
 			podPhase = corev1.PodPending
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},

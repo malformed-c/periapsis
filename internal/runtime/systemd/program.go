@@ -138,6 +138,8 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		// The process inherits them from systemd, not via --setenv as in nspawn.
 		{Name: "Environment", Value: dbusv5.MakeVariant(allEnv)},
 	}
+	// User identity setup (ADR-0010 Phase 3).
+	prepareUserIdentity(cfg.RootFS, cfg.RunAsUser, cfg.RunAsGroup, s.logger)
 	if cfg.RunAsUser != nil {
 		properties = append(properties, dbus.Property{
 			Name: "User", Value: dbusv5.MakeVariant(fmt.Sprintf("%d", *cfg.RunAsUser)),
@@ -147,6 +149,17 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		properties = append(properties, dbus.Property{
 			Name: "Group", Value: dbusv5.MakeVariant(fmt.Sprintf("%d", *cfg.RunAsGroup)),
 		})
+	}
+
+	// Sandbox hardening for non-privileged, non-hostNetwork workloads (ADR-0010).
+	if !cfg.Privileged && !cfg.HostNetwork {
+		properties = append(properties,
+			dbus.Property{Name: "NoNewPrivileges", Value: dbusv5.MakeVariant(true)},
+			dbus.Property{Name: "ProtectKernelTunables", Value: dbusv5.MakeVariant(true)},
+			dbus.Property{Name: "ProtectKernelModules", Value: dbusv5.MakeVariant(true)},
+			dbus.Property{Name: "PrivateDevices", Value: dbusv5.MakeVariant(true)},
+			dbus.Property{Name: "LockPersonality", Value: dbusv5.MakeVariant(true)},
+		)
 	}
 
 	// Per-container resource limits from pod spec Resources.Limits.

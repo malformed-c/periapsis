@@ -188,7 +188,17 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if cfg.Privileged {
 		execStart = append(execStart, "--capability=all")
 	}
+	// User namespace isolation and identity setup (ADR-0010 Phase 2).
+	prepareUserIdentity(cfg.RootFS, cfg.RunAsUser, cfg.RunAsGroup, s.logger)
 	if cfg.RunAsUser != nil {
+		uidbase := computeUIDBASE(podUID)
+		execStart = append(execStart,
+			fmt.Sprintf("--private-users=%d:65536", uidbase),
+			"--private-users-ownership=chown",
+		)
+		if *cfg.RunAsUser != 0 {
+			ensureGetentShim(cfg.RootFS, s.logger)
+		}
 		if cfg.RunAsGroup != nil {
 			execStart = append(execStart, fmt.Sprintf("--user=%d:%d", *cfg.RunAsUser, *cfg.RunAsGroup))
 		} else {

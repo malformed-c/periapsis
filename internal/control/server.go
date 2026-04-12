@@ -29,38 +29,31 @@ import (
 
 const ifaceName = "io.perigeos.Manager"
 
+// methodEntry is a single entry in the server's unified dispatch table.
+// handler is called on every invocation; tcpAllowed gates access on the
+// TCP+mTLS path (remote operators). Methods that mutate local state —
+// Drain, Stop — are unix-socket-only: an mTLS certificate does not grant
+// the right to shut down running pods.
+type methodEntry struct {
+	handler    func(ctx context.Context) any
+	tcpAllowed bool
+}
+
 // managerIface implements varlink's dispatcher interface for the perigeos
-// manager methods. It dispatches method calls to the Server's handlers.
+// manager methods. It dispatches through the Server's unified method table.
 type managerIface struct {
 	server *Server
 }
 
-func (m *managerIface) VarlinkGetName() string        { return ifaceName }
-func (m *managerIface) VarlinkGetDescription() string  { return "" }
+func (m *managerIface) VarlinkGetName() string       { return ifaceName }
+func (m *managerIface) VarlinkGetDescription() string { return "" }
 
 func (m *managerIface) VarlinkDispatch(ctx context.Context, c varlink.Call, methodname string) error {
-	switch methodname {
-	case "Status":
-		return m.server.varlinkStatus(ctx, &c)
-	case "Pawns":
-		return m.server.varlinkPawns(ctx, &c)
-	case "Pods":
-		return m.server.varlinkPods(ctx, &c)
-	case "Top":
-		return m.server.varlinkTop(ctx, &c)
-	case "Doctor":
-		return m.server.varlinkDoctor(ctx, &c)
-	case "Images":
-		return m.server.varlinkImages(ctx, &c)
-	case "Drain":
-		return m.server.varlinkDrain(ctx, &c)
-	case "Stop":
-		return m.server.varlinkStop(ctx, &c)
-	case "Version":
-		return m.server.varlinkVersion(ctx, &c)
-	default:
+	entry, ok := m.server.methods[methodname]
+	if !ok {
 		return c.ReplyMethodNotFound(ctx, methodname)
 	}
+	return c.Reply(ctx, entry.handler(ctx))
 }
 
 // QueueProvider exposes work queue depths for a pawn's PodController.
@@ -93,17 +86,36 @@ type Server struct {
 
 	imageLister ImageLister // optional; set via SetImageLister
 
+	methods map[string]methodEntry // unified dispatch table; built in New()
+
 	varlinkSrv *varlink.Service
 	tcpLn      net.Listener
 }
 
 func New(socketPath string, cfg *config.PerigeosConfig, logger *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		socketPath: socketPath,
 		startTime:  time.Now(),
 		config:     cfg,
 		logger:     logger,
 	}
+	// Build the unified method table.
+	// tcpAllowed=true  → available on both unix socket and TCP+mTLS.
+	// tcpAllowed=false → unix socket only (root-only, local operations).
+	// Adding a method: one entry here, one Client method. That's it.
+	s.methods = map[string]methodEntry{
+		"Status":  {func(ctx context.Context) any { return s.buildStatus() }, true},
+		"Pawns":   {func(ctx context.Context) any { return s.buildPawns() }, true},
+		"Pods":    {func(ctx context.Context) any { return s.buildPods() }, true},
+		"Top":     {func(ctx context.Context) any { return s.buildTop() }, true},
+		"Doctor":  {func(ctx context.Context) any { return s.buildDoctor(ctx) }, true},
+		"Images":  {func(ctx context.Context) any { return s.buildImages() }, true},
+		"Version": {func(ctx context.Context) any { return s.buildVersion() }, true},
+		// Mutating/local-only — not exposed over TCP.
+		"Drain": {func(ctx context.Context) any { return s.buildDrain() }, false},
+		"Stop":  {func(ctx context.Context) any { return s.buildStop(ctx) }, false},
+	}
+	return s
 }
 
 // SetTCPListener configures an optional TCP+mTLS listener for remote access.
@@ -260,30 +272,17 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 	}
 }
 
-// dispatch calls the appropriate handler and returns the result map.
+// dispatch is the TCP+mTLS path. It looks up the unified method table and
+// enforces tcpAllowed — mutating/local methods are unix-socket-only.
 func (s *Server) dispatch(ctx context.Context, method string) (any, string) {
-	switch method {
-	case "Status":
-		return s.buildStatus(), ""
-	case "Pawns":
-		return s.buildPawns(), ""
-	case "Pods":
-		return s.buildPods(), ""
-	case "Top":
-		return s.buildTop(), ""
-	case "Doctor":
-		return s.buildDoctor(ctx), ""
-	case "Images":
-		return s.buildImages(), ""
-	case "Drain":
-		return s.buildDrain(), ""
-	case "Stop":
-		return s.buildStop(ctx), ""
-	case "Version":
-		return s.buildVersion(), ""
-	default:
+	entry, ok := s.methods[method]
+	if !ok {
 		return nil, "org.varlink.service.MethodNotFound"
 	}
+	if !entry.tcpAllowed {
+		return nil, "org.varlink.service.PermissionDenied"
+	}
+	return entry.handler(ctx), ""
 }
 
 func (s *Server) Stop(_ context.Context) error {
@@ -495,43 +494,7 @@ func (s *Server) buildVersion() map[string]any {
 	})
 }
 
-// ── Varlink handlers (thin wrappers that reply with built responses) ─────────
 
-func (s *Server) varlinkStatus(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildStatus())
-}
-
-func (s *Server) varlinkPawns(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildPawns())
-}
-
-func (s *Server) varlinkPods(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildPods())
-}
-
-func (s *Server) varlinkTop(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildTop())
-}
-
-func (s *Server) varlinkDoctor(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildDoctor(ctx))
-}
-
-func (s *Server) varlinkVersion(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildVersion())
-}
-
-func (s *Server) varlinkImages(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildImages())
-}
-
-func (s *Server) varlinkDrain(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildDrain())
-}
-
-func (s *Server) varlinkStop(ctx context.Context, c *varlink.Call) error {
-	return c.Reply(ctx, s.buildStop(ctx))
-}
 
 // toMap converts any struct to map[string]any via JSON round-trip.
 func toMap(v any) map[string]any {

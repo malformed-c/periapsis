@@ -12,6 +12,6 @@ spec:
   containers:
   - name: test
     image: docker.io/library/alpine:latest
-    command: ["/bin/sh", "-c", "echo uid=$(id -u) gid=$(id -g); cat /proc/self/uid_map; sleep 300"]
+    command: ["/bin/sh", "-c", "echo uid=$(id -u) gid=$(id -g); cat /proc/self/uid_map; sleep 30"]
   tolerations:
   - operator: Exists

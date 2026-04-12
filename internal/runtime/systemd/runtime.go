@@ -188,22 +188,20 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if cfg.Privileged {
 		execStart = append(execStart, "--capability=all")
 	}
-	// User namespace isolation and identity setup (ADR-0010 Phase 2).
+	// User identity setup (ADR-0010). Inject passwd/group entries for the
+	// target UID/GID so nspawn's --user= can resolve them.
 	prepareUserIdentity(cfg.RootFS, cfg.RunAsUser, cfg.RunAsGroup, s.logger)
 	if cfg.RunAsUser != nil {
-		uidbase := computeUIDBASE(podUID)
-		execStart = append(execStart,
-			fmt.Sprintf("--private-users=%d:65536", uidbase),
-			"--private-users-ownership=chown",
-		)
+		// NOTE: --private-users (userns isolation) is NOT applied here because
+		// it is incompatible with --network-namespace-path — the userns child
+		// cannot setns() into an external netns without CAP_SYS_ADMIN in the
+		// initial user namespace. All perigeos pods require an external netns
+		// (CNI-allocated or host). Userns isolation requires a different
+		// approach (e.g., idmap mounts or pre-configured user namespace).
 		if *cfg.RunAsUser != 0 {
 			ensureGetentShim(cfg.RootFS, s.logger)
 		}
-		if cfg.RunAsGroup != nil {
-			execStart = append(execStart, fmt.Sprintf("--user=%d:%d", *cfg.RunAsUser, *cfg.RunAsGroup))
-		} else {
-			execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
-		}
+		execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
 	}
 
 	// Pass resolved env vars into the container via --setenv

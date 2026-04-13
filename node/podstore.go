@@ -11,6 +11,7 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // completedEntry records a recently-deleted pod for log retrieval.
@@ -422,6 +423,22 @@ func (s *PodStore) SetContainerState(uid string, containerName string, state cor
 		ps.mu.Lock()
 		defer ps.mu.Unlock()
 
+		// Enrich timestamps from restart state so callers don't need to.
+		if rs := ps.restarts[containerName]; rs != nil && !rs.lastStarted.IsZero() {
+			startedAt := metav1.NewTime(rs.lastStarted)
+			if r := state.Running; r != nil && r.StartedAt.IsZero() {
+				r.StartedAt = startedAt
+			}
+			if t := state.Terminated; t != nil {
+				if t.StartedAt.IsZero() {
+					t.StartedAt = startedAt
+				}
+				if t.FinishedAt.IsZero() {
+					t.FinishedAt = metav1.Now()
+				}
+			}
+		}
+
 		// Step 1: Ensure Status is healthy/complete
 		ps.syncStatusToSpec()
 
@@ -557,6 +574,19 @@ func (s *PodStore) RestartState(uid, containerName string) *containerRestartStat
 		return ps.restarts[containerName]
 	}
 	return nil
+}
+
+// ContainerStartedAt returns the time the container last entered Running.
+// Returns a zero metav1.Time if unknown.
+func (s *PodStore) ContainerStartedAt(uid, containerName string) metav1.Time {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.RLock()
+		defer ps.mu.RUnlock()
+		if rs := ps.restarts[containerName]; rs != nil && !rs.lastStarted.IsZero() {
+			return metav1.NewTime(rs.lastStarted)
+		}
+	}
+	return metav1.Time{}
 }
 
 func (s *PodStore) ProbeState(uid, containerName string) *ContainerProbeState {

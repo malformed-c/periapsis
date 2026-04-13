@@ -100,8 +100,9 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 		switch state {
 		case perigeos.StateRunning:
 			cs.Ready = g.store.IsContainerReady(uid, c.Name)
+			startedAt := g.store.ContainerStartedAt(uid, c.Name)
 			cs.State = corev1.ContainerState{
-				Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(g.node.StartTime())},
+				Running: &corev1.ContainerStateRunning{StartedAt: startedAt},
 			}
 		case perigeos.StateCreating:
 			podPhase = corev1.PodPending
@@ -135,8 +136,14 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			} else {
 				// Don't set podPhase to Failed here — terminal phase is
 				// handled by checkPod/SetPhase.
+				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"},
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode:   1,
+						Reason:     "Error",
+						StartedAt:  startedAt,
+						FinishedAt: metav1.Now(),
+					},
 				}
 			}
 		case perigeos.StateExited:
@@ -150,8 +157,14 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 				// phase transition is handled by checkPod/SetPhase.
 				// Setting it per-container would override CrashLoopBackOff
 				// from other containers in multi-container pods.
+				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode:   0,
+						Reason:     "Completed",
+						StartedAt:  startedAt,
+						FinishedAt: metav1.Now(),
+					},
 				}
 			}
 		}

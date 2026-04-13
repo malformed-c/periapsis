@@ -8,6 +8,23 @@ import (
 	"github.com/malformed-c/periapsis/node/api"
 )
 
+func (g *Gambit) PortForward(ctx context.Context, namespace, podName string, port int32, stream io.ReadWriteCloser) error {
+	uid, err := g.findPodUID(namespace, podName)
+	if err != nil {
+		return err
+	}
+	// PortForward targets the first running container — pick any; all share the pod netns.
+	pod, err := g.store.GetPod(namespace, podName)
+	if err != nil {
+		return fmt.Errorf("portforward: get pod %s/%s: %w", namespace, podName, err)
+	}
+	if len(pod.Spec.Containers) == 0 {
+		return fmt.Errorf("portforward: pod %s/%s has no containers", namespace, podName)
+	}
+	containerName := pod.Spec.Containers[0].Name
+	return g.Runtime.PortForward(ctx, uid, containerName, port, stream)
+}
+
 func (g *Gambit) GetContainerLogs(
 	ctx context.Context,
 	namespace, podName, containerName string,

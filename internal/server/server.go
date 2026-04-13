@@ -51,6 +51,7 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		GetContainerLogs:  g.GetContainerLogs,
 		RunInContainer:    g.RunInContainer,
 		AttachToContainer: g.AttachToContainer,
+		PortForward:       g.PortForward,
 	}, mux, true)
 
 	// /blobs/{digest} — serves cached compressed OCI layer tarballs to peers.

@@ -37,6 +37,10 @@ type Runtime interface {
 	// RunInContainer executes a command inside a running container.
 	RunInContainer(ctx context.Context, podUID, containerName string, cmd []string, attach api.AttachIO) error
 
+	// PortForward proxies a TCP connection to the given port inside the container's
+	// network namespace. stream is bidirectionally copied to/from the connection.
+	PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error
+
 	// AttachToContainer attaches to the stdio of a running container's PID 1.
 	AttachToContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
 

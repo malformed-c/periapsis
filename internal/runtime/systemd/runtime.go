@@ -1387,6 +1387,15 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 		return nil
 	}
 
+	// Tell systemd to emit PropertiesChanged signals for units on this
+	// connection. Without this call, systemd won't send any property
+	// change notifications regardless of match rules.
+	sysObj := s.sigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+		s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", call.Err)
+		return nil
+	}
+
 	// Build the D-Bus object path prefix for this pawn's units.
 	// systemd encodes unit names using bus_label_escape: non-alphanumeric
 	// bytes become _XX (hex). E.g. "perigeos-compute-00-" becomes

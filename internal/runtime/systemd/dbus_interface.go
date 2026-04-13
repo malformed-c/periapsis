@@ -36,6 +36,7 @@ type signalDBus interface {
 	Signal(ch chan<- *dbusv5.Signal)
 	RemoveSignal(ch chan<- *dbusv5.Signal)
 	AddMatchSignal(options ...dbusv5.MatchOption) error
+	Object(dest string, path dbusv5.ObjectPath) dbusv5.BusObject
 }
 
 // Ensure concrete types satisfy interfaces.

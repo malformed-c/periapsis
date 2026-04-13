@@ -228,9 +228,12 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 		return
 	}
 
+	// Deny setgroups inside the userns (defense in depth). The kernel
+	// already blocks setgroups() before gid_map is written, but this
+	// makes the restriction permanent for child processes too.
 	setgroupsPath := fmt.Sprintf("/proc/%d/setgroups", pid)
 	if err := os.WriteFile(setgroupsPath, []byte("deny"), 0); err != nil {
-		logger.Error("Failed to write setgroups", "path", setgroupsPath, "error", err)
+		logger.Error("Failed to write setgroups deny", "path", setgroupsPath, "error", err)
 		return
 	}
 
@@ -249,7 +252,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 		logger.Error("Failed to open gate FIFO", "error", err)
 		return
 	}
-	gf.Close()
+	defer gf.Close()
 
 	payload := fmt.Sprintf("%d:%d\n", targetUID, targetGID)
 	if _, err := gf.Write([]byte(payload)); err != nil {

@@ -9,7 +9,7 @@
  * Protocol:
  *   1. Shim calls unshare(CLONE_NEWUSER)
  *   2. Shim writes "1\n" to /run/userns/ready  (FIFO)
- *   3. Host writes /proc/<pid>/uid_map + gid_map
+ *   3. Host writes /proc/<pid>/uid_map, setgroups "deny", gid_map
  *   4. Host writes "<uid>:<gid>\n" to /run/userns/gate (FIFO)
  *   5. Shim parses target, calls setgid()+setuid()
  *   6. Shim exec()s argv[1:]
@@ -21,7 +21,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
@@ -89,15 +88,10 @@ int main(int argc, char **argv)
 	}
 
 	/*
-	 * Adopt the mapped identity. After unshare, the process has all
-	 * capabilities in the new userns (as its creator), so setgid/setuid
-	 * are permitted even though current uid is 65534 (unmapped).
-	 *
-	 * Order: groups → gid → uid. Once uid is non-zero we lose
-	 * CAP_SETGID in the userns.
+	 * Adopt the mapped identity. Host wrote setgroups "deny" so
+	 * supplementary groups cannot be re-added.
+	 * Order: gid → uid. Once uid is non-zero we lose CAP_SETGID.
 	 */
-	if (setgroups(0, NULL) < 0)
-		die("setgroups");
 	if (setgid(target_gid) < 0)
 		die("setgid");
 	if (setuid(target_uid) < 0)

@@ -843,17 +843,27 @@ func (s *SystemdRuntime) GetLogStream(
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
 
+	// Resolve the target invocation ID so we only return logs from one
+	// lifecycle of the unit — not entries from previous restarts.
+	ids := s.loadInvocationIDs(j, podUID, containerName)
+	var targetID string
 	if opts.Previous {
-		prevID := s.loadPreviousInvocationID(j, podUID, containerName)
-		if prevID == "" {
+		if len(ids) < 2 {
 			j.Close()
 			return nil, fmt.Errorf("no previous logs available for pod %s container %s", podUID, containerName)
 		}
-		if err := j.AddMatch("_SYSTEMD_INVOCATION_ID" + "=" + prevID); err != nil {
+		targetID = ids[len(ids)-2]
+	} else if len(ids) > 0 {
+		targetID = ids[len(ids)-1]
+	}
+
+	if targetID != "" {
+		if err := j.AddMatch("_SYSTEMD_INVOCATION_ID" + "=" + targetID); err != nil {
 			j.Close()
 			return nil, fmt.Errorf("journal match invocation: %w", err)
 		}
 	} else {
+		// No invocation IDs found — fall back to unit name match.
 		if err := j.AddMatch("_SYSTEMD_UNIT" + "=" + unitName); err != nil {
 			j.Close()
 			return nil, fmt.Errorf("journal match unit: %w", err)
@@ -1190,13 +1200,11 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 	}
 }
 
-// loadPreviousInvocationID uses the provided journal (already open, matches will
-// be added and reset) to find all _SYSTEMD_INVOCATION_ID values for the unit
-// in chronological order and returns the second-to-last — the previous run.
-//
-// The journal is seeked back to head before returning so the caller can
-// add their own matches and seek position afterward.
-func (s *SystemdRuntime) loadPreviousInvocationID(j *sdjournal.Journal, podUID, containerName string) string {
+// loadInvocationIDs walks the journal for the given unit and returns all
+// distinct _SYSTEMD_INVOCATION_ID values in chronological order (oldest first).
+// The journal's matches are flushed before returning so the caller can set
+// up its own filters afterward.
+func (s *SystemdRuntime) loadInvocationIDs(j *sdjournal.Journal, podUID, containerName string) []string {
 	unitName := wrapperUnitName(s.pawnName, podUID, containerName)
 
 	// Temporarily match only on this unit to walk all invocations.
@@ -1204,7 +1212,7 @@ func (s *SystemdRuntime) loadPreviousInvocationID(j *sdjournal.Journal, podUID, 
 	defer j.FlushMatches()
 
 	if err := j.SeekHead(); err != nil {
-		return ""
+		return nil
 	}
 
 	seen := make(map[string]struct{})
@@ -1228,11 +1236,7 @@ func (s *SystemdRuntime) loadPreviousInvocationID(j *sdjournal.Journal, podUID, 
 		}
 	}
 
-	if len(ids) < 2 {
-		return ""
-	}
-	// ids is oldest-first; second-to-last is the previous invocation.
-	return ids[len(ids)-2]
+	return ids
 }
 
 // mapActiveState converts a systemd ActiveState string to a runtime.MachineState.

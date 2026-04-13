@@ -35,6 +35,7 @@ type SystemdRuntime struct {
 	conn         systemdDBus // go-systemd wrapper (unit lifecycle)
 	rawConn      machineDBus // raw godbus (machine1 interface, unit object properties)
 	sigConn      signalDBus  // raw godbus (pawn-scoped PropertiesChanged signals)
+	ownsSigConn  bool        // true when sigConn was created by this runtime (not shared)
 	logger       *slog.Logger
 	imageManager *image.ImageManager
 
@@ -67,17 +68,21 @@ var _ runtime.Runtime = (*SystemdRuntime)(nil)
 func (s *SystemdRuntime) Close() {
 	s.conn.Close()
 	s.rawConn.Close()
-	if s.sigConn != nil {
+	if s.sigConn != nil && s.ownsSigConn {
 		s.sigConn.Close()
 	}
 }
 
+// NewSystemdRuntime creates a new SystemdRuntime. If sharedSigConn is non-nil,
+// it is used for D-Bus signal subscriptions (caller retains ownership and must
+// close it). If nil, a dedicated connection is opened and owned by the runtime.
 func NewSystemdRuntime(
 	ctx context.Context,
 	pawnName string,
 	im *image.ImageManager,
 	logger *slog.Logger,
 	execStrategy runtime.ExecStrategy,
+	sharedSigConn *dbusv5.Conn,
 ) (*SystemdRuntime, error) {
 	conn, err := dbus.NewSystemConnectionContext(ctx)
 	if err != nil {
@@ -90,14 +95,22 @@ func NewSystemdRuntime(
 		return nil, fmt.Errorf("failed to open raw dbus connection: %w", err)
 	}
 
-	sigConn, err := dbusv5.ConnectSystemBus()
-	if err != nil {
-		conn.Close()
-		rawConn.Close()
-		return nil, fmt.Errorf("failed to open signal dbus connection: %w", err)
+	sigConn := sharedSigConn
+	ownsSigConn := false
+	if sigConn == nil {
+		sc, err := dbusv5.ConnectSystemBus()
+		if err != nil {
+			conn.Close()
+			rawConn.Close()
+			return nil, fmt.Errorf("failed to open signal dbus connection: %w", err)
+		}
+		sigConn = sc
+		ownsSigConn = true
 	}
 
-	return NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn, sigConn), nil
+	rt := NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn, sigConn)
+	rt.ownsSigConn = ownsSigConn
+	return rt, nil
 }
 
 // NewSystemdRuntimeWithConns creates a SystemdRuntime with the provided D-Bus connections.
@@ -1390,10 +1403,14 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 	// Tell systemd to emit PropertiesChanged signals for units on this
 	// connection. Without this call, systemd won't send any property
 	// change notifications regardless of match rules.
-	sysObj := s.sigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
-	if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
-		s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", call.Err)
-		return nil
+	// When using a shared connection, the caller must have already called
+	// Manager.Subscribe (it errors with "already subscribed" on repeat calls).
+	if s.ownsSigConn {
+		sysObj := s.sigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+		if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+			s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", call.Err)
+			return nil
+		}
 	}
 
 	// Build the D-Bus object path prefix for this pawn's units.

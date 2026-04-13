@@ -46,7 +46,7 @@ func newTestRuntime(t *testing.T) *rtsd.SystemdRuntime {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(t.TempDir(), logger)
 
-	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawnName(t), im, logger, runtime.ExecNsenter)
+	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawnName(t), im, logger, runtime.ExecNsenter, nil)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestSystemd_ListManagedMachines_DoesNotLeakAcrossPawns(t *testing.T) {
 	// Spawn unit under pawnA's naming scheme directly via dbus
 	loggerA := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rtA, err := rtsd.NewSystemdRuntime(context.Background(), pawnA, image.NewImageManager(t.TempDir(), loggerA),
-		loggerA, runtime.ExecNsenter)
+		loggerA, runtime.ExecNsenter, nil)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime for pawnA: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestSystemd_ListManagedMachines_DoesNotLeakAcrossPawns(t *testing.T) {
 
 	loggerB := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rtB, err := rtsd.NewSystemdRuntime(context.Background(), pawnB, image.NewImageManager(t.TempDir(), loggerB),
-		loggerB, runtime.ExecNsenter)
+		loggerB, runtime.ExecNsenter, nil)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime for pawnB: %v", err)
 	}

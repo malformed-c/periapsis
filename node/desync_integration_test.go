@@ -68,7 +68,7 @@ func newHarness(t *testing.T) *testHarness {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(base, logger)
 
-	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawn, im, logger, perigeos.ExecNsenter)
+	rt, err := rtsd.NewSystemdRuntime(context.Background(), pawn, im, logger, perigeos.ExecNsenter, nil)
 	if err != nil {
 		t.Fatalf("NewSystemdRuntime: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-systemd/v22/daemon"
+	dbusv5 "github.com/godbus/dbus/v5"
 	"github.com/lmittmann/tint"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/config"
@@ -237,7 +238,7 @@ func main() {
 		for i, p := range perigeoCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
-		cleanupRT, err := systemd.NewSystemdRuntime(ctx, "_cleanup", nil, logger, execStrategy)
+		cleanupRT, err := systemd.NewSystemdRuntime(ctx, "_cleanup", nil, logger, execStrategy, nil)
 		if err != nil {
 			logger.Warn("Could not create cleanup runtime for stale slice check", "err", err)
 		} else {
@@ -368,6 +369,23 @@ func main() {
 		})
 	}
 
+	// Shared D-Bus connection for PropertiesChanged signal subscriptions.
+	// One connection serves all pawns — each pawn's SubscribeEvents filters
+	// by path prefix. Caller owns the connection and closes it on shutdown.
+	sharedSigConn, err := dbusv5.ConnectSystemBus()
+	if err != nil {
+		logger.Warn("Could not open shared signal D-Bus connection; event subscriptions will be disabled", "err", err)
+	}
+	if sharedSigConn != nil {
+		defer sharedSigConn.Close()
+		// Subscribe once for the shared connection — individual pawns skip
+		// Manager.Subscribe when using a shared conn (ownsSigConn == false).
+		sysObj := sharedSigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+		if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+			logger.Warn("Manager.Subscribe failed on shared signal connection", "err", call.Err)
+		}
+	}
+
 	var (
 		serversMu  sync.Mutex
 		allGambits []*node.Gambit
@@ -388,7 +406,7 @@ func main() {
 
 			// Use Background context for D-Bus connection — it must survive
 			// signal cancellation so DrainPods can stop containers during shutdown.
-			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, sharedIM, pawnLogger, execStrategy)
+			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, sharedIM, pawnLogger, execStrategy, sharedSigConn)
 			if err != nil {
 				pawnLogger.Error("Failed to init runtime", "err", err)
 				return

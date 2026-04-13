@@ -1012,3 +1012,19 @@ func (s *PodStore) MarkRestarted(uid, containerName string) {
                 ps.mu.Unlock()
         }
 }
+
+// ResetBackoff resets the CrashLoopBackOff duration for a container that has
+// been running stably for longer than restartBackoffReset. This is the
+// funnel for backoff resets — callers MUST use this method instead of
+// directly mutating the containerRestartState struct, because RestartState()
+// returns a pointer under only an RLock. Direct mutation outside the write
+// lock is a data race with BumpBackoff().
+func (s *PodStore) ResetBackoff(uid, containerName string) {
+        if ps := s.getPodState(uid); ps != nil {
+                ps.mu.Lock()
+                if rs, ok := ps.restarts[containerName]; ok {
+                        rs.backoff = restartBackoffInit
+                }
+                ps.mu.Unlock()
+        }
+}

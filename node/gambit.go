@@ -299,6 +299,8 @@ func (g *Gambit) HasPod(uid string) bool {
 // no systemd unit and are no longer desired by Kubernetes.
 func (g *Gambit) EvictGhost(uid string) {
         g.store.EvictGhost(uid)
+        // Clean up persisted state so the ghost doesn't rehydrate on restart.
+        deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 }
 
 func (g *Gambit) BuildNode() *corev1.Node {
@@ -379,6 +381,28 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 // NotifyPodStatus is the exported wrapper for notifyPodStatus, used as a BatchWatcher callback.
 func (g *Gambit) NotifyPodStatus(pod *corev1.Pod) {
         g.notifyPodStatus(pod)
+}
+
+// PersistPodState writes the current in-memory state for a pod to disk
+// without pushing a status update to Kubernetes. Use this funnel when
+// internal state changes (e.g. backoff reset, restart count bump) need
+// to survive a perigeos restart but don't warrant a k8s status push.
+// The full notifyPodStatus path is preferred when a k8s push is also
+// desired, as it calls writePodState internally.
+func (g *Gambit) PersistPodState(pod *corev1.Pod) {
+        uid := string(pod.UID)
+        podIP := g.store.PodIP(uid)
+        counts := g.store.RestartCounts(uid)
+        backoffs := g.store.RestartBackoffs(uid)
+        if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
+                Pod:      pod,
+                PodIP:    podIP,
+                Phase:    g.store.PodPhase(uid),
+                Restarts: counts,
+                Backoffs: backoffs,
+        }); err != nil {
+                g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
+        }
 }
 
 // RestartContainerCB is the exported wrapper for restartContainer callback.

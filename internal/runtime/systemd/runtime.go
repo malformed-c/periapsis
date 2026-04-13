@@ -1400,16 +1400,14 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 	// systemd encodes unit names using bus_label_escape: non-alphanumeric
 	// bytes become _XX (hex). E.g. "perigeos-compute-00-" becomes
 	// "perigeos_2dcompute_2d00_2d" under /org/freedesktop/systemd1/unit/.
-	pathPrefix := dbusv5.ObjectPath(
-		"/org/freedesktop/systemd1/unit/" + dbusUnitEscape("perigeos-"+s.pawnName+"-"),
-	)
+	pathPrefix := "/org/freedesktop/systemd1/unit/" + dbusUnitEscape("perigeos-"+s.pawnName+"-")
 
-	// Register a targeted match rule: only PropertiesChanged signals from
-	// object paths under our pawn's unit namespace.
+	// Register a match rule for PropertiesChanged signals from systemd units.
+	// Note: path_namespace filtering is not reliable across D-Bus daemon versions,
+	// so we filter by path prefix in Go after receiving the signal.
 	err := s.sigConn.AddMatchSignal(
 		dbusv5.WithMatchInterface("org.freedesktop.DBus.Properties"),
 		dbusv5.WithMatchMember("PropertiesChanged"),
-		dbusv5.WithMatchPathNamespace(pathPrefix),
 	)
 	if err != nil {
 		s.logger.Warn("Failed to add D-Bus match rule, falling back to poll-only", "err", err)
@@ -1420,7 +1418,7 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 	s.sigConn.Signal(sigCh)
 
 	s.logger.Info("D-Bus event subscription active",
-		"path_namespace", string(pathPrefix))
+		"path_prefix", pathPrefix)
 
 	eventCh := make(chan runtime.UnitEvent, 64)
 	go func() {
@@ -1433,6 +1431,10 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 			case sig, ok := <-sigCh:
 				if !ok {
 					return
+				}
+				// Filter to this pawn's units by object path prefix.
+				if !strings.HasPrefix(string(sig.Path), pathPrefix) {
+					continue
 				}
 				// PropertiesChanged signal body:
 				//   [0] string - interface name

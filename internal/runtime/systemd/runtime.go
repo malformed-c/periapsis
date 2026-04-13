@@ -1340,7 +1340,8 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 	errCh := make(chan error, 8)
 	s.conn.SetPropertiesSubscriber(propCh, errCh)
 
-	prefix := "perigeos-"
+	// Only listen for units belonging to this specific pawn
+	prefix := "perigeos-" + s.pawnName + "-"
 	go func() {
 		defer close(eventCh)
 		for {

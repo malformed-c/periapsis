@@ -1,17 +1,24 @@
+---
 apiVersion: v1
 kind: Pod
 metadata:
   name: security-test
   namespace: default
+
 spec:
+  restartPolicy: OnFailure
   nodeSelector:
     kubernetes.io/hostname: compute-00
+
   securityContext:
     runAsUser: 1000
     runAsGroup: 1000
+
   containers:
   - name: test
     image: docker.io/library/alpine:latest
-    command: ["/bin/sh", "-c", "echo uid=$(id -u) gid=$(id -g); cat /proc/self/uid_map; sleep 30"]
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-c", "echo uid=$(id -u) gid=$(id -g); cat /proc/self/uid_map; sleep 5; exit 1"]
+
   tolerations:
   - operator: Exists

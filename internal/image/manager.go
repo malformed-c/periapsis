@@ -502,8 +502,14 @@ func (im *ImageManager) manifestDigestFile(imageName string) string {
 // saveManifestDigest persists the manifest digest for an image to disk.
 func (im *ImageManager) saveManifestDigest(imageName, digest string) {
 	path := im.manifestDigestFile(imageName)
-	os.MkdirAll(filepath.Dir(path), 0755)
-	os.WriteFile(path, []byte(digest), 0644)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		im.logger.Error("Failed to create manifest dir", "path", filepath.Dir(path), "err", err)
+		return
+	}
+
+	if err := os.WriteFile(path, []byte(digest), 0644); err != nil {
+		im.logger.Error("Failed to save manifest digest", "path", path, "err", err)
+	}
 }
 
 // loadManifestDigest loads the cached manifest digest for an image.

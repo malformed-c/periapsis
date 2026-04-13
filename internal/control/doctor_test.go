@@ -15,8 +15,8 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
-	"github.com/malformed-c/periapsis/node"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/node"
 	"github.com/malformed-c/periapsis/node/api"
 	"k8s.io/client-go/tools/record"
 )
@@ -60,6 +60,9 @@ func (r *doctorMockRuntime) CheckMachined(_ context.Context) error {
 	return nil
 }
 func (r *doctorMockRuntime) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
+	return nil
+}
+func (r *doctorMockRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perigeos.BindMount) error {
 	return nil
 }
 func (r *doctorMockRuntime) ResetUnit(_ context.Context, _, _ string) error {

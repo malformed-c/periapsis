@@ -408,9 +408,9 @@ func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawnstats.Summary, error
 // names via the cluster DNS (coredns).
 // /etc/resolv.conf in many images is a symlink to systemd-resolved's stub;
 // we remove the symlink first so we write a real file, not the host's stub.
-func writeResolvConf(rootfs, dnsIP string) error {
+func writeResolvConf(rootfs, dnsIP, namespace string) error {
 	content := "nameserver " + dnsIP + "\n" +
-		"search default.svc.cluster.local svc.cluster.local cluster.local\n" +
+		"search " + namespace + ".svc.cluster.local svc.cluster.local cluster.local\n" +
 		"options ndots:5\n"
 	path := filepath.Join(rootfs, "etc", "resolv.conf")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

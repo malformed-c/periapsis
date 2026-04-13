@@ -338,7 +338,7 @@ func (g *Gambit) launchContainer(
 	}
 
 	if g.clusterDNS != "" {
-		_ = writeResolvConf(rootfs, g.clusterDNS)
+		_ = writeResolvConf(rootfs, g.clusterDNS, pod.Namespace)
 	}
 
 	profile := runtimeProfiles[c.Name]

@@ -549,7 +549,8 @@ func main() {
 			// didn't exist yet when it looked.
 			if sharedNM != nil {
 				nodeIP := g.NodeIP()
-				if err := network.EnsureCiliumNode(ctx, dynClient, pawnLogger, pawnName, nodeIP); err != nil {
+				nodeLabels := pawnNode.BuildNode().Labels
+				if err := network.EnsureCiliumNode(ctx, dynClient, pawnLogger, pawnName, nodeIP, nodeLabels); err != nil {
 					pawnLogger.Warn("Failed to ensure CiliumNode (non-fatal)", "err", err)
 				}
 			}

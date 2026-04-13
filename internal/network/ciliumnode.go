@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -33,6 +34,35 @@ func internalIPFromCiliumNode(u *unstructured.Unstructured) string {
 	return ""
 }
 
+// updatedAddresses returns the existing addresses slice with InternalIP
+// replaced (or appended). Preserves other address types like CiliumInternalIP.
+func updatedAddresses(u *unstructured.Unstructured, newIP string) []any {
+	addrs, _, _ := unstructured.NestedSlice(u.Object, "spec", "addresses")
+	entry := map[string]any{"type": "InternalIP", "ip": newIP}
+
+	for i, a := range addrs {
+		m, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "InternalIP" {
+			addrs[i] = entry
+			return addrs
+		}
+	}
+	return append(addrs, entry)
+}
+
+// labelsMatch checks whether all desired labels are already present on the object.
+func labelsMatch(existing map[string]string, desired map[string]string) bool {
+	for k, v := range desired {
+		if existing[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 var ciliumNodeGVR = schema.GroupVersionResource{
 	Group:    "cilium.io",
 	Version:  "v2",
@@ -42,16 +72,25 @@ var ciliumNodeGVR = schema.GroupVersionResource{
 // EnsureCiliumNode creates or updates a CiliumNode resource for the given pawn.
 // The constellation operator fills in the IPAM section (CIDR allocation);
 // perigeos only creates the skeleton with InternalIP so the operator can find it.
-func EnsureCiliumNode(ctx context.Context, client dynamic.Interface, logger *slog.Logger, pawnName, nodeIP string) error {
+func EnsureCiliumNode(ctx context.Context, client dynamic.Interface, logger *slog.Logger, pawnName, nodeIP string, labels map[string]string) error {
 	ciliumNodes := client.Resource(ciliumNodeGVR)
+
+	meta := map[string]any{
+		"name": pawnName,
+	}
+	if len(labels) > 0 {
+		lbls := make(map[string]any, len(labels))
+		for k, v := range labels {
+			lbls[k] = v
+		}
+		meta["labels"] = lbls
+	}
 
 	cn := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "cilium.io/v2",
 			"kind":       "CiliumNode",
-			"metadata": map[string]any{
-				"name": pawnName,
-			},
+			"metadata":   meta,
 			"spec": map[string]any{
 				"addresses": []any{
 					map[string]any{
@@ -71,15 +110,29 @@ func EnsureCiliumNode(ctx context.Context, client dynamic.Interface, logger *slo
 
 	existing, err := ciliumNodes.Get(ctx, pawnName, metav1.GetOptions{})
 	if err == nil {
-		if currentIP := internalIPFromCiliumNode(existing); currentIP != nodeIP {
-			patch := fmt.Appendf(nil,
-				`{"spec":{"addresses":[{"type":"InternalIP","ip":%q}],"healthAddressing":{"ipv4":%q}}}`,
-				nodeIP, nodeIP,
-			)
-			if _, perr := ciliumNodes.Patch(ctx, pawnName, types.MergePatchType, patch, metav1.PatchOptions{}); perr != nil {
-				return fmt.Errorf("patching CiliumNode %s InternalIP %s -> %s: %w", pawnName, currentIP, nodeIP, perr)
+		ipChanged := internalIPFromCiliumNode(existing) != nodeIP
+		labelsChanged := !labelsMatch(existing.GetLabels(), labels)
+
+		if ipChanged || labelsChanged {
+			addrs := updatedAddresses(existing, nodeIP)
+			patch := map[string]any{
+				"spec": map[string]any{
+					"addresses":        addrs,
+					"healthAddressing": map[string]any{"ipv4": nodeIP},
+				},
 			}
-			logger.Info("Refreshed CiliumNode InternalIP", "node", pawnName, "old", currentIP, "new", nodeIP)
+			if labelsChanged && len(labels) > 0 {
+				lbls := make(map[string]any, len(labels))
+				for k, v := range labels {
+					lbls[k] = v
+				}
+				patch["metadata"] = map[string]any{"labels": lbls}
+			}
+			patchBytes, _ := json.Marshal(patch)
+			if _, perr := ciliumNodes.Patch(ctx, pawnName, types.MergePatchType, patchBytes, metav1.PatchOptions{}); perr != nil {
+				return fmt.Errorf("patching CiliumNode %s: %w", pawnName, perr)
+			}
+			logger.Info("Updated CiliumNode", "node", pawnName, "ipChanged", ipChanged, "labelsChanged", labelsChanged)
 			return nil
 		}
 		logger.Info("CiliumNode already current", "node", pawnName, "resourceVersion", existing.GetResourceVersion())

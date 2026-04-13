@@ -136,6 +136,8 @@ func cmdStatus(ctx context.Context, c *control.Client, asJSON bool) error {
 	fmt.Printf("Memory:      %d / %d MiB\n", s.MemUsedMiB, s.MemTotalMiB)
 	fmt.Printf("CPU cores:   %d\n", s.CPUCores)
 	fmt.Printf("Load avg:    %s\n", s.LoadAvg)
+	fmt.Printf("PSI cpu:     %.1f%%\n", s.PSICPUSome)
+	fmt.Printf("PSI memory:  %.1f%%\n", s.PSIMemFull)
 	fmt.Println()
 	fmt.Printf("Machines:    %d\n", s.Machines)
 	fmt.Printf("Disk dirs:   %d\n", s.DiskDirs)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/errdefs"
+	"github.com/malformed-c/periapsis/internal/psi"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -855,7 +856,27 @@ func (s *PodStore) ActiveUIDs() map[string]bool {
 
 // ─── Resource Admission ─────────────────────────────────────────────────────
 
+// PSI thresholds for pod admission. When host-wide pressure exceeds these
+// values (avg10, percentage of wall time), new pods are rejected until
+// pressure subsides. This prevents piling more work onto a stalled host.
+const (
+	psiCPUThreshold    = 70.0 // "some" — any task waiting for CPU
+	psiMemoryThreshold = 15.0 // "full" — all tasks stalled on memory
+)
+
 func (s *PodStore) AdmitPod(pod *corev1.Pod, nodeCPU, nodeMem resource.Quantity) string {
+	// Host-wide PSI check — reject early if the machine is under pressure.
+	if hp, err := psi.Read(); err == nil {
+		if hp.CPU.Avg10 > psiCPUThreshold {
+			return fmt.Sprintf("Host CPU pressure too high: avg10=%.1f%% (threshold %.0f%%)",
+				hp.CPU.Avg10, psiCPUThreshold)
+		}
+		if hp.Memory.Avg10 > psiMemoryThreshold {
+			return fmt.Sprintf("Host memory pressure too high: avg10=%.1f%% (threshold %.0f%%)",
+				hp.Memory.Avg10, psiMemoryThreshold)
+		}
+	}
+
 	podCPU, podMem := podResources(pod)
 	if podCPU == 0 && podMem == 0 {
 		return ""

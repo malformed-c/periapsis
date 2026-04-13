@@ -16,6 +16,10 @@ type StatusResponse struct {
 	CPUCores    int    `json:"cpu_cores"`
 	LoadAvg     string `json:"load_avg"`
 
+	// PSI (Pressure Stall Information) — host-wide avg10 values
+	PSICPUSome  float64 `json:"psi_cpu_some"`   // % time any task stalled on CPU
+	PSIMemFull  float64 `json:"psi_mem_full"`   // % time all tasks stalled on memory
+
 	// Extended stats
 	Machines       int   `json:"machines"`          // machinectl registered machines
 	DiskDirs       int   `json:"disk_dirs"`         // pod directories on disk

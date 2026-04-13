@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
+	"github.com/malformed-c/periapsis/internal/psi"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawnstats "github.com/malformed-c/periapsis/internal/stats"
 	"github.com/malformed-c/periapsis/internal/version"
@@ -321,6 +322,10 @@ func (s *Server) buildStatus() map[string]any {
 	}
 	if avg, err := readLoadAvg(); err == nil {
 		resp.LoadAvg = avg
+	}
+	if hp, err := psi.Read(); err == nil {
+		resp.PSICPUSome = hp.CPU.Avg10
+		resp.PSIMemFull = hp.Memory.Avg10
 	}
 	resp.Machines = countMachines(gambits)
 	resp.DiskDirs = countDiskDirs(gambits)

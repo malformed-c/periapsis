@@ -107,6 +107,7 @@ func (pn *PawnNode) BuildNode() *corev1.Node {
 	labels["kubernetes.io/arch"] = runtime.GOARCH
 	labels["beta.kubernetes.io/os"] = "linux"
 	labels["beta.kubernetes.io/arch"] = runtime.GOARCH
+	labels["topology.kubernetes.io/zone"] = hostName
 	if pn.cfg.IsPrimary {
 		labels["periapsis.io/primary"] = "true"
 		labels["node-role.kubernetes.io/primary"] = ""

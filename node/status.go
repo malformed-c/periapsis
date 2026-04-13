@@ -97,6 +97,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			RestartCount: restartCount,
 		}
 
+		// TODO Refactor
 		switch state {
 		case perigeos.StateRunning:
 			cs.Ready = g.store.IsContainerReady(uid, c.Name)

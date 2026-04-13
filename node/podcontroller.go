@@ -714,8 +714,10 @@ func running(podStatus *corev1.PodStatus) bool {
 	statuses := podStatus.ContainerStatuses
 	for _, status := range statuses {
 		if status.State.Terminated == nil && status.State.Waiting == nil {
+
 			return true
 		}
 	}
+
 	return false
 }

@@ -131,7 +131,9 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // It builds the network sandbox and injects the containers into systemd.
 func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Pod, pullCache map[string]pullCacheEntry) error {
 	uid := string(pod.UID)
-	g.setKind(pod)
+	
+	// TODO rm
+	// g.setKind(pod)
 
 	// Step 1: Network Setup (Idempotent)
 	podIP := g.store.PodIP(uid)
@@ -429,7 +431,9 @@ func (g *Gambit) launchContainer(
 func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	uid := string(pod.UID)
 	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
-	g.setKind(pod)
+
+	// TODO rm
+	// g.setKind(pod)
 
 	g.store.MarkDeleting(uid)
 	g.cancelInFlight(uid) // Stops any currently running CreatePod reconcile loop

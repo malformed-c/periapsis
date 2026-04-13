@@ -190,11 +190,13 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 	defer span.End()
 	ctx = addPodAttributes(ctx, span, pod)
 
+	// TODO copy into podlite
 	podCopy := pod.DeepCopy()
 
 	if err := pc.provider.DeletePod(ctx, podCopy); err != nil {
 		span.SetStatus(err)
 		pc.recorder.Event(pod, corev1.EventTypeWarning, podEventDeleteFailed, err.Error())
+
 		return err
 	}
 
@@ -262,6 +264,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 			"oldUID": string(podFromProvider.UID),
 			"newUID": string(podFromKubernetes.UID),
 		}).Debug("Ignoring status update for stale Pod UID")
+
 		return nil
 	}
 

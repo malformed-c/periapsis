@@ -391,11 +391,11 @@ func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, stri
 
 // ─── Pod Lifecycle ───────────────────────────────────────────────────────────
 
-// CreatePod dispatches pod creation to a goroutine and returns immediately.
-func (g *Gambit) setKind(pod *corev1.Pod) {
-	pod.Kind = "Pod"
-	pod.APIVersion = "v1"
-}
+// TODO rm
+// func (g *Gambit) setKind(pod *corev1.Pod) {
+// 	pod.Kind = "Pod"
+// 	pod.APIVersion = "v1"
+// }
 
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.

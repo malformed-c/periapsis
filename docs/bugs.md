@@ -1,11 +1,8 @@
 # Periapsis / Perigeos — Bug Tracker
 
-Last updated: 2026-04-13
+Last updated: 2026-04-14
 
 ## Open
-
-### Pod restart counts reset on perigeos restart
-Restart counts are held in-memory. When perigeos restarts, all counts reset to zero. Would need persistence (file or annotation) to survive restarts.
 
 ### Lost k8s events on perigeos restart
 Events are ephemeral in k8s — not persisted across perigeos restarts. Pods like nginx-engifire lose their event history. This is consistent with kubelet behavior but worth noting.
@@ -16,10 +13,11 @@ Events are ephemeral in k8s — not persisted across perigeos restarts. Pods lik
 ### CSI mount namespace isolation (globalmount workaround active)
 NodePublishVolume target paths under `/var/lib/apsis/perigeos/pawns/.../volumes/csi/...` are outside the CSI driver pod's Bidirectional mount at `/var/lib/kubelet/pods`. Bind mount silently fails. **Current workaround:** skip NodePublishVolume, use globalmount path directly (`/var/lib/kubelet/plugins/kubernetes.io/csi/<pvName>/globalmount`). Works on primary node (engix99), blocked on engifire by sidecar crash above.
 
-### go-systemd StartTransientUnit race condition
-Race in `startJob()` (dbus/methods.go:54): unit can start, run, and exit before the completion channel is registered, causing `<-ch` to block forever. Only manifests with `CollectMode=inactive-or-failed` + containers that exit in <1 second. **Workaround:** pass `nil` channel (fire-and-forget) and poll `MachineStatus` instead. Upstream issue not yet filed (coreos/go-systemd#485 placeholder).
-
 ## Resolved
+
+### 2026-04-14
+- **Pod restart counts reset on perigeos restart** — Restart counts were already persisted to disk, but CrashLoopBackOff durations were not. After restart, backoff reset to 10s even for containers at the 5-minute cap. Fixed: added `Backoffs` field to `PersistedPodState`, `RestartBackoffs()`/`PatchBackoff()` methods on `PodStore`, and updated `notifyPodStatus`/`HydrateFromRuntime` to persist and restore backoff durations.
+- **go-systemd StartTransientUnit race condition in program.go** — `runProgram()` (hostPID/RootDirectory path) used a blocking completion channel + `CollectMode=inactive-or-failed`, triggering the go-systemd#485 race: unit exits before channel registration, `<-ch` blocks forever. Fixed: removed CollectMode, pass nil channel (fire-and-forget), matching the existing `RunMachine()` workaround. Caller (`waitForContainer`) already polls `MachineStatus`.
 
 ### 2026-03-29
 - **nginx:alpine ENXIO on `/dev/stderr`** — nspawn `--console=pipe` gave journal socket for fd 2. Fixed: allocate PTY for stdout/stderr, forward to journald via `journal.Send`.

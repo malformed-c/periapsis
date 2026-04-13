@@ -34,6 +34,7 @@ const maxConcurrentStarts = 8
 type SystemdRuntime struct {
 	conn         systemdDBus // go-systemd wrapper (unit lifecycle)
 	rawConn      machineDBus // raw godbus (machine1 interface, unit object properties)
+	sigConn      signalDBus  // raw godbus (pawn-scoped PropertiesChanged signals)
 	logger       *slog.Logger
 	imageManager *image.ImageManager
 
@@ -66,6 +67,9 @@ var _ runtime.Runtime = (*SystemdRuntime)(nil)
 func (s *SystemdRuntime) Close() {
 	s.conn.Close()
 	s.rawConn.Close()
+	if s.sigConn != nil {
+		s.sigConn.Close()
+	}
 }
 
 func NewSystemdRuntime(
@@ -86,7 +90,14 @@ func NewSystemdRuntime(
 		return nil, fmt.Errorf("failed to open raw dbus connection: %w", err)
 	}
 
-	return NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn), nil
+	sigConn, err := dbusv5.ConnectSystemBus()
+	if err != nil {
+		conn.Close()
+		rawConn.Close()
+		return nil, fmt.Errorf("failed to open signal dbus connection: %w", err)
+	}
+
+	return NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn, sigConn), nil
 }
 
 // NewSystemdRuntimeWithConns creates a SystemdRuntime with the provided D-Bus connections.
@@ -97,10 +108,12 @@ func NewSystemdRuntimeWithConns(
 	execStrategy runtime.ExecStrategy,
 	conn systemdDBus,
 	rawConn machineDBus,
+	sigConn signalDBus,
 ) *SystemdRuntime {
 	return &SystemdRuntime{
 		conn:         conn,
 		rawConn:      rawConn,
+		sigConn:      sigConn,
 		imageManager: im,
 		logger:       logger,
 		pawnName:     pawnName,
@@ -1223,20 +1236,58 @@ func mapActiveState(s string) runtime.MachineState {
 	}
 }
 
-// dbusUnitEscape converts a systemd unit name to its dbus object path component.
-// e.g. "foo-bar.service" -> "foo_2dbar_2eservice"
-// func dbusUnitEscape(name string) string {
-// 	var b strings.Builder
-// 	for i := 0; i < len(name); i++ {
-// 		c := name[i]
-// 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-// 			b.WriteByte(c)
-// 		} else {
-// 			fmt.Fprintf(&b, "_%02x", c)
-// 		}
-// 	}
-// 	return b.String()
-// }
+// dbusUnitEscape converts a systemd unit name prefix to its D-Bus object path
+// component using systemd's bus_label_escape rules.
+// e.g. "perigeos-compute-00-" -> "perigeos_2dcompute_2d00_2d"
+func dbusUnitEscape(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		if isAlpha || (isDigit && i > 0) {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "_%02x", c)
+		}
+	}
+	return b.String()
+}
+
+// dbusUnitUnescape is the inverse of dbusUnitEscape: converts a D-Bus object
+// path component back to the original systemd unit name.
+func dbusUnitUnescape(escaped string) string {
+	if escaped == "_" {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < len(escaped); i++ {
+		if escaped[i] == '_' && i+2 < len(escaped) {
+			hi := unhex(escaped[i+1])
+			lo := unhex(escaped[i+2])
+			if hi >= 0 && lo >= 0 {
+				b.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(escaped[i])
+	}
+	return b.String()
+}
+
+func unhex(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c - 'a' + 10)
+	case c >= 'A' && c <= 'F':
+		return int(c - 'A' + 10)
+	default:
+		return -1
+	}
+}
 
 // Helpers
 
@@ -1319,45 +1370,77 @@ func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[s
 	return cleaned, nil
 }
 
-// SubscribeEvents subscribes to D-Bus unit state change signals and returns
-// a channel that emits UnitEvents for perigeos-managed units.
+// SubscribeEvents subscribes to D-Bus PropertiesChanged signals for this pawn's
+// units and returns a channel that emits UnitEvents.
 //
-// Uses SetPropertiesSubscriber instead of SetSubStateSubscriber because
-// the latter has an "ignore" mechanism that silently drops events for
-// units whose properties were recently queried (by ListManagedMachines
-// or GetUnitProperties). SetPropertiesSubscriber explicitly does NOT
-// have this problem (see go-systemd subscription.go:328-329).
+// Uses a dedicated raw godbus connection (sigConn) with a targeted match rule
+// using path_namespace to filter signals at the D-Bus level. This avoids
+// processing PropertiesChanged signals from every systemd unit on the host —
+// only units whose object path starts with our pawn prefix are delivered.
+//
+// Previous approach used go-systemd's Subscribe()+SetPropertiesSubscriber which
+// matches ALL PropertiesChanged signals and filters in userspace. That works but
+// wastes CPU on busy hosts with many units.
 func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.UnitEvent {
-	// Subscribe to systemd signals on the go-systemd connection.
-	if err := s.conn.Subscribe(); err != nil {
-		s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", err)
+	if s.sigConn == nil {
+		s.logger.Warn("No signal D-Bus connection, falling back to poll-only")
 		return nil
 	}
 
-	s.logger.Info("D-Bus event subscription active")
-	eventCh := make(chan runtime.UnitEvent, 64)
-	propCh := make(chan *dbus.PropertiesUpdate, 64)
-	errCh := make(chan error, 8)
-	s.conn.SetPropertiesSubscriber(propCh, errCh)
+	// Build the D-Bus object path prefix for this pawn's units.
+	// systemd encodes unit names using bus_label_escape: non-alphanumeric
+	// bytes become _XX (hex). E.g. "perigeos-compute-00-" becomes
+	// "perigeos_2dcompute_2d00_2d" under /org/freedesktop/systemd1/unit/.
+	pathPrefix := dbusv5.ObjectPath(
+		"/org/freedesktop/systemd1/unit/" + dbusUnitEscape("perigeos-"+s.pawnName+"-"),
+	)
 
-	// Only listen for units belonging to this specific pawn
-	prefix := "perigeos-" + s.pawnName + "-"
+	// Register a targeted match rule: only PropertiesChanged signals from
+	// object paths under our pawn's unit namespace.
+	err := s.sigConn.AddMatchSignal(
+		dbusv5.WithMatchInterface("org.freedesktop.DBus.Properties"),
+		dbusv5.WithMatchMember("PropertiesChanged"),
+		dbusv5.WithMatchPathNamespace(pathPrefix),
+	)
+	if err != nil {
+		s.logger.Warn("Failed to add D-Bus match rule, falling back to poll-only", "err", err)
+		return nil
+	}
+
+	sigCh := make(chan *dbusv5.Signal, 64)
+	s.sigConn.Signal(sigCh)
+
+	s.logger.Info("D-Bus event subscription active",
+		"path_namespace", string(pathPrefix))
+
+	eventCh := make(chan runtime.UnitEvent, 64)
 	go func() {
 		defer close(eventCh)
+		defer s.sigConn.RemoveSignal(sigCh)
 		for {
 			select {
 			case <-ctx.Done():
-				s.conn.SetPropertiesSubscriber(nil, nil)
 				return
-			case update := <-propCh:
-				if update == nil {
+			case sig, ok := <-sigCh:
+				if !ok {
+					return
+				}
+				// PropertiesChanged signal body:
+				//   [0] string - interface name
+				//   [1] map[string]dbus.Variant - changed properties
+				//   [2] []string - invalidated properties
+				if len(sig.Body) < 2 {
 					continue
 				}
-				if !strings.HasPrefix(update.UnitName, prefix) {
+				iface, _ := sig.Body[0].(string)
+				if iface != "org.freedesktop.systemd1.Unit" {
 					continue
 				}
-				// Extract SubState from changed properties if present.
-				subStateVar, ok := update.Changed["SubState"]
+				changed, _ := sig.Body[1].(map[string]dbusv5.Variant)
+				if changed == nil {
+					continue
+				}
+				subStateVar, ok := changed["SubState"]
 				if !ok {
 					continue
 				}
@@ -1365,25 +1448,32 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 				if !ok {
 					continue
 				}
-				s.logger.Debug("D-Bus unit event", "unit", update.UnitName, "substate", subState)
-				// Wake any WaitForMachineExit caller blocked on this unit.
-				s.notifyWaiters(update.UnitName, subState)
+
+				// Decode unit name from D-Bus object path.
+				unitName := dbusUnitUnescape(pathBase(string(sig.Path)))
+
+				s.logger.Debug("D-Bus unit event", "unit", unitName, "substate", subState)
+				s.notifyWaiters(unitName, subState)
 				select {
 				case eventCh <- runtime.UnitEvent{
-					UnitName: update.UnitName,
+					UnitName: unitName,
 					SubState: subState,
 				}:
 				default:
 					s.logger.Debug("Unit event channel full, dropping event",
-						"unit", update.UnitName, "substate", subState)
-				}
-			case err := <-errCh:
-				if err != nil {
-					s.logger.Warn("D-Bus subscription error", "err", err)
+						"unit", unitName, "substate", subState)
 				}
 			}
 		}
 	}()
 
 	return eventCh
+}
+
+// pathBase returns the last component of a slash-separated path.
+func pathBase(p string) string {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }

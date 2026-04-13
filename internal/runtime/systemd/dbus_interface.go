@@ -28,6 +28,17 @@ type machineDBus interface {
 	Object(dest string, path dbusv5.ObjectPath) dbusv5.BusObject
 }
 
+// signalDBus defines the subset of *dbusv5.Conn used for D-Bus signal subscriptions.
+// A dedicated connection with targeted match rules avoids processing signals
+// from unrelated units (go-systemd's Subscribe() matches ALL PropertiesChanged).
+type signalDBus interface {
+	Close() error
+	Signal(ch chan<- *dbusv5.Signal)
+	RemoveSignal(ch chan<- *dbusv5.Signal)
+	AddMatchSignal(options ...dbusv5.MatchOption) error
+}
+
 // Ensure concrete types satisfy interfaces.
 var _ systemdDBus = (*dbus.Conn)(nil)
 var _ machineDBus = (*dbusv5.Conn)(nil)
+var _ signalDBus = (*dbusv5.Conn)(nil)

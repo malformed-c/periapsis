@@ -20,7 +20,7 @@ func TestRunMachine_Issue485Workaround(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(t.TempDir(), logger)
 
-	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine)
+	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine, nil)
 
 	podUID := "test-uid"
 	cfg := runtime.PodConfig{
@@ -55,7 +55,7 @@ func TestWaitForMachineExit_SuccessPath(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(t.TempDir(), logger)
 
-	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine)
+	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine, nil)
 
 	podUID := "test-uid"
 	containerName := "test-container"
@@ -109,7 +109,7 @@ func TestWaitForMachineExit_Timeout(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(t.TempDir(), logger)
 
-	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine)
+	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine, nil)
 
 	podUID := "test-uid"
 	containerName := "test-container"
@@ -131,7 +131,7 @@ func TestBatchWatcher_FastExit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	im := image.NewImageManager(t.TempDir(), logger)
 
-	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine)
+	rt := NewSystemdRuntimeWithConns("test-pawn", im, logger, runtime.ExecNsenter, mockDBus, mockMachine, nil)
 
 	podUID := "fast-exit-uid"
 	containerName := "main"

@@ -86,6 +86,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 
 	for _, c := range pod.Spec.Containers {
 		state := stateLookup(uid, c.Name)
+		g.Logger.Debug("buildPodStatus state lookup", "container", c.Name, "state", state)
 
 		restartCount := podRestarts[c.Name]
 
@@ -108,18 +109,23 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
 		case perigeos.StateUnknown:
-			// Keep the last known Running status if we've already reported it.
-			// This avoids transient stateCache misses regressing a visible
-			// Running container back to ContainerCreating.
-			if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
-				cs.Ready = previous.Ready
-				cs.State = previous.State
-				break
+			// Only keep the last known Running status if the pod is still in the
+			// process of being created (Pending). If the pod is already Running, a
+			// transition to Unknown should be treated as Not Ready.
+			if podPhase == corev1.PodPending {
+				if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
+					cs.Ready = previous.Ready
+					cs.State = previous.State
+					break
+				}
 			}
-			podPhase = corev1.PodPending
+
+			// For all other cases, if we don't know the state, it's not ready.
+			cs.Ready = false
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
+			// Don't force podPhase = Pending here if the pod is already Running
 		case perigeos.StateFailed:
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				podPhase = corev1.PodRunning
@@ -127,7 +133,8 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
 			} else {
-				podPhase = corev1.PodFailed
+				// Don't set podPhase to Failed here — terminal phase is
+				// handled by checkPod/SetPhase.
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"},
 				}
@@ -139,9 +146,10 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
 			} else {
-				if podPhase == corev1.PodRunning {
-					podPhase = corev1.PodSucceeded
-				}
+				// Don't set podPhase to Succeeded here — the terminal
+				// phase transition is handled by checkPod/SetPhase.
+				// Setting it per-container would override CrashLoopBackOff
+				// from other containers in multi-container pods.
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},
 				}

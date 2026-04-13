@@ -153,6 +153,55 @@ func (s *PodStore) getPodState(uid string) *podState {
 	return s.pods[uid]
 }
 
+// 1. Move the synchronization logic to the PodState.
+// This keeps the SetContainerState method clean and focused.
+func (ps *podState) syncStatusToSpec() {
+	ps.syncSlice(ps.pod.Spec.Containers, &ps.pod.Status.ContainerStatuses)
+	ps.syncSlice(ps.pod.Spec.InitContainers, &ps.pod.Status.InitContainerStatuses)
+}
+
+// syncSlice ensures every container in the Spec has a corresponding entry in the Status.
+func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.ContainerStatus) {
+	if len(spec) == 0 {
+		return
+	}
+
+	// Use a map for O(1) lookup to keep the complexity O(N)
+	existing := make(map[string]int, len(*status))
+	for i, s := range *status {
+		existing[s.Name] = i
+	}
+
+	needsSync := false
+	for _, c := range spec {
+		if _, ok := existing[c.Name]; !ok {
+			needsSync = true
+			break
+		}
+	}
+
+	if !needsSync {
+		return
+	}
+
+	// If we need to sync, we rebuild the status list to ensure
+	// it exactly matches the Spec order and content.
+	newStatuses := make([]corev1.ContainerStatus, len(spec))
+	for i, c := range spec {
+		if idx, ok := existing[c.Name]; ok {
+			// Keep existing data (State, Ready, etc.)
+			newStatuses[i] = (*status)[idx]
+		} else {
+			// Create new entry
+			newStatuses[i] = corev1.ContainerStatus{
+				Name:  c.Name,
+				Ready: false,
+			}
+		}
+	}
+	*status = newStatuses
+}
+
 // ─── PodTracker interface ───────────────────────────────────────────────────
 
 func (s *PodStore) IsInFlight(uid string) bool {
@@ -356,6 +405,71 @@ func (s *PodStore) SetPhase(uid string, phase corev1.PodPhase) {
 		ps.mu.Lock()
 		ps.phase = phase
 		ps.mu.Unlock()
+		s.triggerSnapshot()
+	}
+}
+
+func (s *PodStore) SetContainerState(uid string, containerName string, state corev1.ContainerState, ready bool) {
+	ps := s.getPodState(uid)
+	if ps == nil {
+		return
+	}
+
+	changed := false
+
+	// Scope the lock strictly to the memory update
+	func() {
+		ps.mu.Lock()
+		defer ps.mu.Unlock()
+
+		// Step 1: Ensure Status is healthy/complete
+		ps.syncStatusToSpec()
+
+		// Step 2: Attempt to update
+		// We check both slices. We use a simple loop for performance.
+		updated := func(statuses []corev1.ContainerStatus) bool {
+			for i := range statuses {
+				if statuses[i].Name == containerName {
+					statuses[i].State = state
+					statuses[i].Ready = ready
+					return true
+				}
+			}
+			return false
+		}(ps.pod.Status.ContainerStatuses)
+
+		if !updated {
+			updated = func(statuses []corev1.ContainerStatus) bool {
+				for i := range statuses {
+					if statuses[i].Name == containerName {
+						statuses[i].State = state
+						statuses[i].Ready = ready
+						return true
+					}
+				}
+				return false
+			}(ps.pod.Status.InitContainerStatuses)
+		}
+
+		if updated {
+			changed = true
+		} else {
+			// Efficient error logging without heavy functional transformations
+			var names []string
+			for _, c := range ps.pod.Status.ContainerStatuses {
+				names = append(names, c.Name)
+			}
+			for _, c := range ps.pod.Status.InitContainerStatuses {
+				names = append(names, c.Name)
+			}
+			s.logger.Error("Container wasn't found", "name", containerName, "available", names)
+		}
+	}()
+
+	// Step 3: Trigger snapshot OUTSIDE the lock.
+	// If triggerSnapshot involves I/O or channel communication,
+	// holding the lock would freeze the entire PodStore for this UID.
+	if changed {
 		s.triggerSnapshot()
 	}
 }

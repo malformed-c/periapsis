@@ -3,12 +3,12 @@ package node
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 )
 
@@ -23,7 +23,7 @@ type BatchWatcherDeps struct {
 
 	// Callbacks into Gambit (avoids circular import).
 	NotifyStatus     func(*corev1.Pod)
-	RestartContainer func(ctx context.Context, uid string, pod *corev1.Pod, containerName string)
+	RestartContainer func(ctx context.Context, uid string, pod *corev1.Pod, containerName string, count int32, backoff time.Duration)
 	BuildPodStatus   func(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus
 	ParseUnitName    func(unitName string) (uid, containerName string)
 }
@@ -186,11 +186,24 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 // This is more targeted than a full poll — it only touches the affected
 // container, giving sub-second detection for fast-exit containers.
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
+	// QUICK FILTER: Does this unit even belong to this pawn?
+	// The unit name starts with "perigeos-<pawnName>-..."
+	if !strings.HasPrefix(ev.UnitName, "perigeos-"+bw.deps.PawnName+"-") {
+		return
+	}
+
 	// Parse uid and containerName from the unit name.
 	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 	uid, containerName := bw.deps.ParseUnitName(ev.UnitName)
 	if uid == "" {
 		return
+	}
+
+	// The moment we see ANY signal that the container is stopping
+	// or has failed, wipe the readiness state.
+	if ev.SubState != "running" && ev.SubState != "start" {
+		// TODO: Fill Reason and Message
+		bw.deps.Store.SetContainerState(uid, containerName, corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
 	}
 
 	// Map substate to MachineState.
@@ -212,14 +225,12 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
 				"Container %s received SIGTERM, waiting for graceful exit", containerName)
 		}
-		return
 	case "stop-sigkill", "stop-kill":
 		// Grace period expired; systemd is sending SIGKILL.
 		if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
 			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Killing",
 				"Container %s grace period expired, sending SIGKILL", containerName)
 		}
-		return
 	}
 
 	var state perigeos.MachineState
@@ -285,10 +296,10 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 
 	// Snapshot pods efficiently using store's atomic snapshot.
 	type podEntry struct {
-		uid    string
-		pod    *corev1.Pod
-		phase  corev1.PodPhase
-		podIP  string
+		uid   string
+		pod   *corev1.Pod
+		phase corev1.PodPhase
+		podIP string
 	}
 	storeEntries := bw.deps.Store.Snapshot()
 	entries := make([]podEntry, len(storeEntries))
@@ -317,13 +328,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				if stateMap[e.uid+"/"+c.Name] != perigeos.StateRunning {
 					continue
 				}
-				probeWg.Add(1)
-				go func() {
-					defer probeWg.Done()
+				probeWg.Go(func() {
 					sem <- struct{}{}
 					defer func() { <-sem }()
 					bw.runProbes(ctx, e.uid, e.pod, c, e.podIP)
-				}()
+				})
 			}
 		}
 		probeWg.Wait()
@@ -384,12 +393,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 
 	// Coalescer: push status updates only for pods with actual changes.
 	// The downstream enqueuePodStatusUpdate has cmp.Equal dedup as a safety net.
-	stateLookup := func(uid, containerName string) perigeos.MachineState {
-		if s, ok := stateMap[uid+"/"+containerName]; ok {
-			return s
-		}
-		return perigeos.StateUnknown
-	}
+	stateLookup := bw.makeStateLookup(stateMap)
 	for _, e := range entries {
 		if !changedPods[e.uid] {
 			continue
@@ -398,9 +402,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
+			bw.logger.Debug("Coalescer: skipping pod (phase filter)", "pod", e.pod.Name, "storePhase", currentPhase)
 			continue
 		}
 		status := bw.deps.BuildPodStatus(e.pod, stateLookup)
+		bw.logger.Debug("Coalescer: pushing status", "pod", e.pod.Name, "computedPhase", status.Phase,
+			"containers", len(status.ContainerStatuses))
 		updated := e.pod.DeepCopy()
 		status.DeepCopyInto(&updated.Status)
 		bw.deps.NotifyStatus(updated)
@@ -445,6 +452,23 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		}
 		bw.logger.Debug("checkPod container state", "pod", pod.Name, "container", c.Name, "state", state, "exists", exists, "policy", policy)
 
+		// If a restart goroutine is in-flight for this container
+		// (backoff sleep, unit cleanup, or re-launch), the old unit
+		// may already be gone from ListManagedMachines while the new
+		// one hasn't appeared yet.  Treat it as not-exited to prevent
+		// a premature terminal phase (the classic Succeeded-instead-
+		// of-CrashLoopBackOff race).
+		bw.restartingMu.Lock()
+		isRestarting := bw.restarting[key]
+		bw.restartingMu.Unlock()
+		if isRestarting {
+			bw.logger.Debug("Container restart in progress — skipping terminal eval",
+				"pod", pod.Name, "container", c.Name)
+			allExited = false
+			allSucceeded = false
+			continue
+		}
+
 		// If the container appears exited but was never observed running,
 		// it may be in a brief inactive/dead state during unit startup
 		// (systemd transitions through inactive→active for transient units,
@@ -487,6 +511,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			}
 
 		case perigeos.StateFailed:
+			bw.deps.Store.SetContainerState(uid, c.Name, corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
+
 			allSucceeded = false
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
@@ -494,6 +520,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			}
 
 		case perigeos.StateExited:
+			bw.deps.Store.SetContainerState(uid, c.Name, corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
+
 			if policy == corev1.RestartPolicyAlways {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 				allExited = false
@@ -504,6 +532,17 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	}
 
 	if !allExited {
+		// At least one container is being restarted.  Eagerly push a
+		// CrashLoopBackOff status so kubectl sees it immediately rather
+		// than waiting for the coalescer (which may miss the window if
+		// the state transition and the next poll overlap).
+		stateLookup := bw.makeStateLookup(stateMap)
+		status := bw.deps.BuildPodStatus(pod, stateLookup)
+		if status.Phase == corev1.PodRunning {
+			updated := pod.DeepCopy()
+			status.DeepCopyInto(&updated.Status)
+			bw.deps.NotifyStatus(updated)
+		}
 		return
 	}
 
@@ -516,20 +555,19 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	}
 	bw.logger.Info("Setting terminal phase", "pod", pod.Name, "phase", terminalPhase, "allSucceeded", allSucceeded)
 
-	// Build terminal status.
-	updated := pod.DeepCopy()
-	updated.Status.Phase = terminalPhase
-	now := metav1.NewTime(time.Now())
-	for i, cs := range updated.Status.ContainerStatuses {
-		if cs.State.Running != nil {
-			updated.Status.ContainerStatuses[i].State.Terminated = &corev1.ContainerStateTerminated{
-				Reason:     "Completed",
-				FinishedAt: now,
-				StartedAt:  cs.State.Running.StartedAt,
-			}
-			updated.Status.ContainerStatuses[i].State.Running = nil
+	// Build terminal status with a full buildPodStatus so restart counts,
+	// container states, and conditions are all consistent.
+	stateLookup := func(u, cn string) perigeos.MachineState {
+		if s, ok := stateMap[u+"/"+cn]; ok {
+			return s
 		}
+		return perigeos.StateExited
 	}
+	status := bw.deps.BuildPodStatus(pod, stateLookup)
+	status.Phase = terminalPhase
+
+	updated := pod.DeepCopy()
+	status.DeepCopyInto(&updated.Status)
 
 	// Update both the phase map AND the pod's Status in-place so that
 	// GetPodStatus returns the terminal status even after the systemd
@@ -540,7 +578,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	if existingPod := bw.deps.Store.GetPodCopy(uid); existingPod != nil {
 		updated.Status.DeepCopyInto(&existingPod.Status)
 		// Update the store with the modified pod.
-		bw.deps.Store.PromoteRunning(uid, existingPod, bw.deps.Store.PodIP(uid))
+		// bw.deps.Store.PromoteRunning(uid, existingPod, bw.deps.Store.PodIP(uid))
 	}
 
 	bw.deps.NotifyStatus(updated)
@@ -664,6 +702,32 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 	}
 }
 
+// makeStateLookup returns a stateLookup function for buildPodStatus that
+// correctly handles containers missing from ListManagedMachines:
+//   - restarting → StateFailed (produces CrashLoopBackOff)
+//   - previously seen running → StateExited (produces Completed)
+//   - otherwise → StateUnknown (produces ContainerCreating)
+func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineState) func(uid, containerName string) perigeos.MachineState {
+	return func(uid, containerName string) perigeos.MachineState {
+		key := uid + "/" + containerName
+		if s, ok := stateMap[key]; ok {
+			return s
+		}
+		bw.restartingMu.Lock()
+		restarting := bw.restarting[key]
+		bw.restartingMu.Unlock()
+		if restarting {
+			return perigeos.StateFailed
+		}
+		// Container was seen running but its unit is gone and it's not
+		// being restarted — it completed.
+		if bw.seenRunning[key] {
+			return perigeos.StateExited
+		}
+		return perigeos.StateUnknown
+	}
+}
+
 // maybeRestart launches a restart goroutine for a container if one isn't
 // already running. Prevents double-restarts between poll cycles.
 // Skips the restart if the pod has been removed from gambit (DeletePod in progress).
@@ -683,12 +747,23 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 	bw.restarting[key] = true
 	bw.restartingMu.Unlock()
 
+	// Bump backoff BEFORE launching the goroutine so that the eager
+	// CrashLoopBackOff status push (which reads RestartCounts from the
+	// store) already sees the incremented count.
+	count, backoff := bw.deps.Store.BumpBackoff(uid, containerName)
+	if count == 0 {
+		bw.restartingMu.Lock()
+		delete(bw.restarting, key)
+		bw.restartingMu.Unlock()
+		return
+	}
+
 	go func() {
 		defer func() {
 			bw.restartingMu.Lock()
 			delete(bw.restarting, key)
 			bw.restartingMu.Unlock()
 		}()
-		bw.deps.RestartContainer(ctx, uid, pod, containerName)
+		bw.deps.RestartContainer(ctx, uid, pod, containerName, count, backoff)
 	}()
 }

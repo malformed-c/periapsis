@@ -43,7 +43,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if reason := g.admitPod(pod); reason != "" {
 		g.Logger.Warn("Pod admission rejected", "pod", pod.Name, "reason", reason)
 		if g.EventRecorder != nil {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedAdmission", reason)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "AdmissionFailed", reason)
 		}
 		return fmt.Errorf("pod admission: %s", reason)
 	}
@@ -96,7 +96,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 
 			g.Logger.Warn("Pod sandbox/init sync failed, backing off", "pod", pod.Name, "attempt", attempt, "err", err)
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedCreate", "sandbox/init attempt %d failed: %v", attempt, err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "sandbox/init attempt %d failed: %v", attempt, err)
 
 			if neverRestart {
 				g.Logger.Error("CreatePod failed (restartPolicy=Never)", "pod", pod.Name, "err", err)
@@ -144,9 +144,10 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		var err error
 		netPath, podIP, err = g.NetworkManager.Setup(ctx, uid, pod.Namespace, pod.Name, pod.Spec.NodeName)
 		if err != nil {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedNetwork", "CNI setup failed: %v", err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "NetworkFailed", "CNI setup failed: %v", err)
 			return fmt.Errorf("network setup: %w", err)
 		}
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkReady", "CNI network configured, podIP=%s", podIP)
 		g.store.PromoteRunning(uid, pod, podIP)
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
@@ -159,7 +160,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	pod.Status.HostIP = resolveNodeIP(g.Config)
 	rm, _ := manager.NewResourceManager(nil, g.secretLister, g.cmLister, g.svcLister)
 	if err := podutils.PopulateEnvironmentVariables(ctx, pod, rm, g.EventRecorder); err != nil {
-		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPopulateEnv", "environment variable resolution failed: %v", err)
+		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "PopulateEnvFailed", "environment variable resolution failed: %v", err)
 		return fmt.Errorf("env population: %w", err)
 	}
 
@@ -183,7 +184,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		err := g.launchContainer(ctx, pod, ic, uid, netPath, podIP, pullCache, runtimeProfiles, !isSidecar)
 		if err != nil {
 			// Init containers MUST succeed before proceeding. Abort and let BatchWatcher retry.
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedInit", "Init container %s: %v", ic.Name, err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "InitFailed", "Init container %s: %v", ic.Name, err)
 			return fmt.Errorf("init container %s failed: %w", ic.Name, err)
 		}
 	}
@@ -207,7 +208,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			// If driver-registrar crashes because the socket isn't ready, we just log it.
 			// We MUST continue the loop so the CSI Plugin gets launched and creates the socket!
 			// The BatchWatcher will CrashLoopBackOff this failed container automatically later.
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedStart", "Container %s: %v", c.Name, err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "StartFailed", "Container %s: %v", c.Name, err)
 			g.Logger.Warn("App container failed to start (will crash-loop)", "container", c.Name, "err", err)
 		} else {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Created", "Created container %s", c.Name)
@@ -222,12 +223,26 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	g.Logger.Info("Pod sandbox and initial containers injected", "pod", pod.Name, "ip", podIP)
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
 
-	g.pushImmediateRunningStatus(pod, podIP)
-
-	if g.batchWatcher != nil {
-		for _, c := range pod.Spec.Containers {
-			g.batchWatcher.MarkRunning(uid, c.Name)
+	// Push ContainerCreating — batchwatcher will promote to Running once
+	// it observes the systemd unit in "running" substate via D-Bus.
+	// Previously we pushed Running immediately here, which created a
+	// window where K8s showed Running 1/1 even if the container died
+	// before batchwatcher's first poll.
+	// Only push ContainerCreating if the BatchWatcher hasn't already observed
+	// the containers starting. If the pod is already Running, pushing
+	// "Pending/ContainerCreating" causes a status flip in the K8s API.
+	alreadyRunning := false
+	for _, c := range pod.Spec.Containers {
+		if g.batchWatcher.ContainerState(uid, c.Name) == perigeos.StateRunning {
+			alreadyRunning = true
+			break
 		}
+	}
+
+	if !alreadyRunning {
+		g.pushContainerCreatingStatus(pod, podIP)
+	} else {
+		g.Logger.Debug("Skipping ContainerCreating status push; BatchWatcher already observed containers running", "pod", pod.Name)
 	}
 
 	return nil
@@ -311,6 +326,7 @@ func (g *Gambit) launchContainer(
 	if err != nil {
 		return fmt.Errorf("mount: %w", err)
 	}
+	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted overlay for container %s", c.Name)
 
 	// 3. Resolve Environment and Volumes
 	resolvedEnv := g.Tidal.ResolveEnv(pod, c, podIP)
@@ -354,6 +370,15 @@ func (g *Gambit) launchContainer(
 	}
 
 	// 4. Start the Machine
+	if profile.RunAsUser != nil {
+		if isPrivileged(c) {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "UserIdentity",
+				"Container %s: running as uid %d (privileged, no userns)", c.Name, *profile.RunAsUser)
+		} else {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "UserIdentity",
+				"Container %s: running as uid %d via userns shim", c.Name, *profile.RunAsUser)
+		}
+	}
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		// Immediately clean up the mount if systemd rejects the Run request
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
@@ -391,7 +416,7 @@ func (g *Gambit) launchContainer(
 		// Run PostStart lifecycle hook
 		if c.Lifecycle != nil && c.Lifecycle.PostStart != nil {
 			if err := g.runLifecycleHook(ctx, pod, c, uid, c.Lifecycle.PostStart, "PostStart"); err != nil {
-				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "FailedPostStartHook",
+				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "PostStartHookFailed",
 					"PostStart hook failed for container %s: %v", c.Name, err)
 				return fmt.Errorf("PostStart hook: %w", err)
 			}
@@ -434,13 +459,8 @@ func (g *Gambit) UpdatePod(_ context.Context, pod *corev1.Pod) error {
 	return nil
 }
 
-func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.Pod, containerName string) {
+func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.Pod, containerName string, count int32, backoff time.Duration) {
 	if g.node.IsShuttingDown() {
-		return
-	}
-
-	count, backoff := g.store.BumpBackoff(uid, containerName)
-	if count == 0 {
 		return
 	}
 
@@ -720,35 +740,26 @@ func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid strin
 	}
 }
 
-func (g *Gambit) pushImmediateRunningStatus(pod *corev1.Pod, podIP string) {
+func (g *Gambit) pushContainerCreatingStatus(pod *corev1.Pod, podIP string) {
 	updated := pod.DeepCopy()
-	updated.Status.Phase = corev1.PodRunning
+	updated.Status.Phase = corev1.PodPending
 	updated.Status.HostIP = resolveNodeIP(g.Config)
 	updated.Status.PodIP = podIP
 	now := metav1.NewTime(time.Now())
 	updated.Status.StartTime = &now
-	allReady := true
 	for _, c := range pod.Spec.Containers {
-		ready := g.store.IsContainerReady(string(pod.UID), c.Name)
-		if !ready {
-			allReady = false
-		}
 		updated.Status.ContainerStatuses = append(updated.Status.ContainerStatuses, corev1.ContainerStatus{
 			Name:  c.Name,
 			Image: c.Image,
-			Ready: ready,
+			Ready: false,
 			State: corev1.ContainerState{
-				Running: &corev1.ContainerStateRunning{StartedAt: now},
+				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			},
 		})
 	}
-	readyCondition := corev1.ConditionFalse
-	if allReady {
-		readyCondition = corev1.ConditionTrue
-	}
 	updated.Status.Conditions = []corev1.PodCondition{{
 		Type:   corev1.PodReady,
-		Status: readyCondition,
+		Status: corev1.ConditionFalse,
 	}}
 	g.notifyPodStatus(updated)
 }

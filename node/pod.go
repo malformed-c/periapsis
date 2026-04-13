@@ -43,9 +43,9 @@ const (
 	podEventDeleteSuccess         = "Delete"
 	podEventUpdateFailed          = "UpdateFailed"
 	podEventUpdateSuccess         = "Update"
-	podEventStatusUpdateFailed    = "FailedStatusUpdate"
-	podEventForceDeleteFailed     = "FailedForceDelete"
-	podEventDeleteDanglingFailed  = "FailedDeleteDangling"
+	podEventStatusUpdateFailed    = "StatusUpdateFailed"
+	podEventForceDeleteFailed     = "ForceDeleteFailed"
+	podEventDeleteDanglingFailed  = "DeleteDanglingFailed"
 	podEventSyncRetriesExhausted  = "SyncRetriesExhausted"
 
 	// 151 milliseconds is just chosen as a small prime number to retry between
@@ -251,6 +251,20 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		// been fully hydrated from the provider.
 		return nil
 	}
+
+	// UID Guard
+	// If the provider's version of the pod has a different UID than the current
+	// version in Kubernetes, this is a status update for a deleted pod.
+	// Ignore it to prevent "Precondition failed" StorageErrors.
+	if podFromProvider.UID != podFromKubernetes.UID {
+		log.G(ctx).WithFields(log.Fields{
+			"pod":    podFromProvider.Name,
+			"oldUID": string(podFromProvider.UID),
+			"newUID": string(podFromKubernetes.UID),
+		}).Debug("Ignoring status update for stale Pod UID")
+		return nil
+	}
+
 	// Pod deleted by provider due some reasons. e.g. a K8s provider, pod created by deployment would be evicted when node is not ready.
 	// If we do not delete pod in K8s, deployment would not create a new one.
 	if podFromProvider.DeletionTimestamp != nil && podFromKubernetes.DeletionTimestamp == nil {

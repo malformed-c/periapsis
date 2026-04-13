@@ -380,8 +380,8 @@ func (g *Gambit) NotifyPodStatus(pod *corev1.Pod) {
 }
 
 // RestartContainerCB is the exported wrapper for restartContainer callback.
-func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1.Pod, containerName string) {
-	g.restartContainer(ctx, uid, pod, containerName)
+func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1.Pod, containerName string, count int32, backoff time.Duration) {
+	g.restartContainer(ctx, uid, pod, containerName, count, backoff)
 }
 
 // BuildPodStatusCB is the exported wrapper for buildPodStatus callback.

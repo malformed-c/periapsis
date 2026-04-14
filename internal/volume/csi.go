@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	corev1 "k8s.io/api/core/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // CSIClient manages CSI gRPC calls for a single CSI driver.
@@ -112,7 +112,7 @@ func (c *CSIClient) NodePublishVolume(
 
 	req := &csi.NodePublishVolumeRequest{
 		VolumeId:          volumeID,
-		PublishContext:     publishContext,
+		PublishContext:    publishContext,
 		StagingTargetPath: stagingPath,
 		TargetPath:        targetPath,
 		VolumeCapability: &csi.VolumeCapability{

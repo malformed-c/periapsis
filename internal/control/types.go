@@ -17,16 +17,16 @@ type StatusResponse struct {
 	LoadAvg     string `json:"load_avg"`
 
 	// PSI (Pressure Stall Information) — host-wide avg10 values
-	PSICPUSome  float64 `json:"psi_cpu_some"`   // % time any task stalled on CPU
-	PSIMemFull  float64 `json:"psi_mem_full"`   // % time all tasks stalled on memory
+	PSICPUSome float64 `json:"psi_cpu_some"` // % time any task stalled on CPU
+	PSIMemFull float64 `json:"psi_mem_full"` // % time all tasks stalled on memory
 
 	// Extended stats
-	Machines       int   `json:"machines"`          // machinectl registered machines
-	DiskDirs       int   `json:"disk_dirs"`         // pod directories on disk
-	SystemdUnits   int   `json:"systemd_units"`     // perigeos pod service units
-	PerigeosRSSMiB int64 `json:"perigeos_rss_mib"`  // perigeos process RSS
-	LxcVeths       int   `json:"lxc_veths"`         // lxc* veth interfaces
-	NetnsCount     int   `json:"netns_count"`       // /var/run/netns entries
+	Machines       int   `json:"machines"`         // machinectl registered machines
+	DiskDirs       int   `json:"disk_dirs"`        // pod directories on disk
+	SystemdUnits   int   `json:"systemd_units"`    // perigeos pod service units
+	PerigeosRSSMiB int64 `json:"perigeos_rss_mib"` // perigeos process RSS
+	LxcVeths       int   `json:"lxc_veths"`        // lxc* veth interfaces
+	NetnsCount     int   `json:"netns_count"`      // /var/run/netns entries
 }
 
 // PawnInfo in GET /v1/pawns
@@ -61,7 +61,7 @@ type PawnTopInfo struct {
 	Name          string `json:"name"`
 	IsPrimary     bool   `json:"is_primary"`
 	PodCount      int    `json:"pod_count"`
-	CPUUsageNs    uint64 `json:"cpu_usage_ns"`    // cumulative usage_usec * 1000
+	CPUUsageNs    uint64 `json:"cpu_usage_ns"` // cumulative usage_usec * 1000
 	MemoryBytes   uint64 `json:"memory_bytes"`
 	MemoryWSBytes uint64 `json:"memory_ws_bytes"` // working set
 }
@@ -83,9 +83,9 @@ type PodsResponse struct {
 
 // DoctorResponse from GET /v1/doctor
 type DoctorResponse struct {
-	Healthy bool             `json:"healthy"`
-	Pawns   []PawnDiagnosis  `json:"pawns"`
-	Summary DoctorSummary    `json:"summary"`
+	Healthy bool            `json:"healthy"`
+	Pawns   []PawnDiagnosis `json:"pawns"`
+	Summary DoctorSummary   `json:"summary"`
 }
 
 // PawnDiagnosis is the per-pawn state comparison.
@@ -98,10 +98,10 @@ type PawnDiagnosis struct {
 	DiskDirs     int `json:"disk_dirs"`
 
 	// Discrepancies — UIDs that exist in one source but not another.
-	GhostPods       []DoctorEntry `json:"ghost_pods,omitempty"`        // in gambit, not in systemd
-	OrphanMachines  []DoctorEntry `json:"orphan_machines,omitempty"`   // in systemd, not in gambit
-	StaleDirs       []string      `json:"stale_dirs,omitempty"`        // on disk, not in gambit
-	MissingDirs     []DoctorEntry `json:"missing_dirs,omitempty"`      // in gambit, not on disk
+	GhostPods      []DoctorEntry `json:"ghost_pods,omitempty"`      // in gambit, not in systemd
+	OrphanMachines []DoctorEntry `json:"orphan_machines,omitempty"` // in systemd, not in gambit
+	StaleDirs      []string      `json:"stale_dirs,omitempty"`      // on disk, not in gambit
+	MissingDirs    []DoctorEntry `json:"missing_dirs,omitempty"`    // in gambit, not on disk
 
 	// StaleUnits are dead/failed systemd units not associated with any active pod.
 	// These accumulate when perigeos crashes before BatchWatcher cleans them up.
@@ -119,12 +119,12 @@ type DoctorEntry struct {
 
 // DoctorSummary aggregates counts across all pawns.
 type DoctorSummary struct {
-	TotalGambit    int `json:"total_gambit"`
-	TotalSystemd   int `json:"total_systemd"`
-	TotalDisk      int `json:"total_disk"`
-	TotalGhosts    int `json:"total_ghosts"`
-	TotalOrphans   int `json:"total_orphans"`
-	TotalStaleDirs int `json:"total_stale_dirs"`
+	TotalGambit     int `json:"total_gambit"`
+	TotalSystemd    int `json:"total_systemd"`
+	TotalDisk       int `json:"total_disk"`
+	TotalGhosts     int `json:"total_ghosts"`
+	TotalOrphans    int `json:"total_orphans"`
+	TotalStaleDirs  int `json:"total_stale_dirs"`
 	TotalStaleUnits int `json:"total_stale_units"`
 	ActiveSlices    int `json:"active_slices"`
 	StaleSlices     int `json:"stale_slices"`

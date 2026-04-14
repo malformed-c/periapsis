@@ -191,4 +191,3 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 }
 
 // ─── Node ────────────────────────────────────────────────────────────────────
-

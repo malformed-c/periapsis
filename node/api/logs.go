@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/log"
+	"github.com/pkg/errors"
 )
 
 // ContainerLogsHandlerFunc is used in place of backend implementations for getting container logs

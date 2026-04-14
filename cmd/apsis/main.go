@@ -380,15 +380,15 @@ func cmdShowcase(ctx context.Context, c *control.Client, asJSON bool) error {
 	}
 
 	type showcaseData struct {
-		ClusterName     string         `json:"cluster_name"`
-		PawnCount       int            `json:"pawn_count"`
-		PodCount        int            `json:"pod_count"`
-		TotalCPUCores   int            `json:"total_cpu_cores"`
-		MemoryTotalMiB  int64          `json:"memory_total_mib"`
-		MemoryUsedMiB   int64          `json:"memory_used_mib"`
-		MemoryPercent   int            `json:"memory_percent"`
-		PerigeosRSSMiB  int64          `json:"perigeos_rss_mib"`
-		OverheadPercent float64        `json:"overhead_percent"`
+		ClusterName     string           `json:"cluster_name"`
+		PawnCount       int              `json:"pawn_count"`
+		PodCount        int              `json:"pod_count"`
+		TotalCPUCores   int              `json:"total_cpu_cores"`
+		MemoryTotalMiB  int64            `json:"memory_total_mib"`
+		MemoryUsedMiB   int64            `json:"memory_used_mib"`
+		MemoryPercent   int              `json:"memory_percent"`
+		PerigeosRSSMiB  int64            `json:"perigeos_rss_mib"`
+		OverheadPercent float64          `json:"overhead_percent"`
 		Pawns           []map[string]any `json:"pawns"`
 	}
 

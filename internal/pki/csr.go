@@ -222,11 +222,11 @@ func approveCSR(ctx context.Context, client kubernetes.Interface, csrName string
 	}
 
 	csr.Status.Conditions = append(csr.Status.Conditions, certificatesv1.CertificateSigningRequestCondition{
-		Type:               certificatesv1.CertificateApproved,
-		Status:             "True",
-		Reason:             "PerigeosSelfApproval",
-		Message:            "Approved by perigeos (self-approval)",
-		LastUpdateTime:     metav1.Now(),
+		Type:           certificatesv1.CertificateApproved,
+		Status:         "True",
+		Reason:         "PerigeosSelfApproval",
+		Message:        "Approved by perigeos (self-approval)",
+		LastUpdateTime: metav1.Now(),
 	})
 
 	_, err = client.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csrName, csr, metav1.UpdateOptions{})

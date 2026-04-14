@@ -17,13 +17,13 @@ limitations under the License.
 package podutils
 
 import (
-        "fmt"
-        "strings"
+	"fmt"
+	"strings"
 
-        corev1 "k8s.io/api/core/v1"
-        "k8s.io/apimachinery/pkg/api/meta"
-        "k8s.io/apimachinery/pkg/util/sets"
-        "k8s.io/apimachinery/pkg/util/validation"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // ConvertDownwardAPIFieldLabel converts the specified downward API field label
@@ -31,98 +31,98 @@ import (
 // and returns the converted label and value. This function returns an error if
 // the conversion fails.
 func ConvertDownwardAPIFieldLabel(version, label, value string) (string, string, error) {
-        if version != "v1" {
-                return "", "", fmt.Errorf("unsupported pod version: %s", version)
-        }
+	if version != "v1" {
+		return "", "", fmt.Errorf("unsupported pod version: %s", version)
+	}
 
-        if path, _, ok := SplitMaybeSubscriptedPath(label); ok {
-                switch path {
-                case "metadata.annotations", "metadata.labels":
-                        return label, value, nil
-                default:
-                        return "", "", fmt.Errorf("field label does not support subscript: %s", label)
-                }
-        }
+	if path, _, ok := SplitMaybeSubscriptedPath(label); ok {
+		switch path {
+		case "metadata.annotations", "metadata.labels":
+			return label, value, nil
+		default:
+			return "", "", fmt.Errorf("field label does not support subscript: %s", label)
+		}
+	}
 
-        switch label {
-        case "metadata.annotations",
-                "metadata.labels",
-                "metadata.name",
-                "metadata.namespace",
-                "metadata.uid",
-                "spec.nodeName",
-                "spec.restartPolicy",
-                "spec.serviceAccountName",
-                "spec.schedulerName",
-                "status.phase",
-                "status.hostIP",
-                "status.podIP",
-                "status.podIPs":
-                return label, value, nil
-        // This is for backwards compatibility with old v1 clients which send spec.host
-        case "spec.host":
-                return "spec.nodeName", value, nil
-        default:
-                return "", "", fmt.Errorf("field label not supported: %s", label)
-        }
+	switch label {
+	case "metadata.annotations",
+		"metadata.labels",
+		"metadata.name",
+		"metadata.namespace",
+		"metadata.uid",
+		"spec.nodeName",
+		"spec.restartPolicy",
+		"spec.serviceAccountName",
+		"spec.schedulerName",
+		"status.phase",
+		"status.hostIP",
+		"status.podIP",
+		"status.podIPs":
+		return label, value, nil
+	// This is for backwards compatibility with old v1 clients which send spec.host
+	case "spec.host":
+		return "spec.nodeName", value, nil
+	default:
+		return "", "", fmt.Errorf("field label not supported: %s", label)
+	}
 }
 
 // ExtractFieldPathAsString extracts the field from the given object
 // and returns it as a string.  The object must be a pointer to an
 // API type.
 func ExtractFieldPathAsString(obj any, fieldPath string) (string, error) {
-        accessor, err := meta.Accessor(obj)
-        if err != nil {
-                return "", err
-        }
+	accessor, err := meta.Accessor(obj)
+	if err != nil {
+		return "", err
+	}
 
-        if path, subscript, ok := SplitMaybeSubscriptedPath(fieldPath); ok {
-                switch path {
-                case "metadata.annotations":
-                        if errs := validation.IsQualifiedName(strings.ToLower(subscript)); len(errs) != 0 {
-                                return "", fmt.Errorf("invalid key subscript in %s: %s", fieldPath, strings.Join(errs, ";"))
-                        }
-                        annotations := accessor.GetAnnotations()
-                        if annotations == nil {
-                                return "", nil
-                        }
-                        // Annotations are case-insensitive in Kubernetes; normalize the lookup key.
-                        // Iterate all keys to find a case-insensitive match since Go maps are case-sensitive.
-                        lowerSub := strings.ToLower(subscript)
-                        for k, v := range annotations {
-                                if strings.ToLower(k) == lowerSub {
-                                        return v, nil
-                                }
-                        }
-                        return "", nil
-                case "metadata.labels":
-                        if errs := validation.IsQualifiedName(subscript); len(errs) != 0 {
-                                return "", fmt.Errorf("invalid key subscript in %s: %s", fieldPath, strings.Join(errs, ";"))
-                        }
-                        labels := accessor.GetLabels()
-                        if labels == nil {
-                                return "", nil
-                        }
-                        return labels[subscript], nil
-                default:
-                        return "", fmt.Errorf("fieldPath %q does not support subscript", fieldPath)
-                }
-        }
+	if path, subscript, ok := SplitMaybeSubscriptedPath(fieldPath); ok {
+		switch path {
+		case "metadata.annotations":
+			if errs := validation.IsQualifiedName(strings.ToLower(subscript)); len(errs) != 0 {
+				return "", fmt.Errorf("invalid key subscript in %s: %s", fieldPath, strings.Join(errs, ";"))
+			}
+			annotations := accessor.GetAnnotations()
+			if annotations == nil {
+				return "", nil
+			}
+			// Annotations are case-insensitive in Kubernetes; normalize the lookup key.
+			// Iterate all keys to find a case-insensitive match since Go maps are case-sensitive.
+			lowerSub := strings.ToLower(subscript)
+			for k, v := range annotations {
+				if strings.ToLower(k) == lowerSub {
+					return v, nil
+				}
+			}
+			return "", nil
+		case "metadata.labels":
+			if errs := validation.IsQualifiedName(subscript); len(errs) != 0 {
+				return "", fmt.Errorf("invalid key subscript in %s: %s", fieldPath, strings.Join(errs, ";"))
+			}
+			labels := accessor.GetLabels()
+			if labels == nil {
+				return "", nil
+			}
+			return labels[subscript], nil
+		default:
+			return "", fmt.Errorf("fieldPath %q does not support subscript", fieldPath)
+		}
+	}
 
-        switch fieldPath {
-        case "metadata.annotations":
-                return FormatMap(accessor.GetAnnotations()), nil
-        case "metadata.labels":
-                return FormatMap(accessor.GetLabels()), nil
-        case "metadata.name":
-                return accessor.GetName(), nil
-        case "metadata.namespace":
-                return accessor.GetNamespace(), nil
-        case "metadata.uid":
-                return string(accessor.GetUID()), nil
-        }
+	switch fieldPath {
+	case "metadata.annotations":
+		return FormatMap(accessor.GetAnnotations()), nil
+	case "metadata.labels":
+		return FormatMap(accessor.GetLabels()), nil
+	case "metadata.name":
+		return accessor.GetName(), nil
+	case "metadata.namespace":
+		return accessor.GetNamespace(), nil
+	case "metadata.uid":
+		return string(accessor.GetUID()), nil
+	}
 
-        return "", fmt.Errorf("unsupported fieldPath: %v", fieldPath)
+	return "", fmt.Errorf("unsupported fieldPath: %v", fieldPath)
 }
 
 // SplitMaybeSubscriptedPath checks whether the specified fieldPath is
@@ -137,36 +137,36 @@ func ExtractFieldPathAsString(obj any, fieldPath string) (string, error) {
 //   - "metadata.labels[”]"           --> ("metadata.labels", "", true)
 //   - "metadata.labels"               --> ("metadata.labels", "", false)
 func SplitMaybeSubscriptedPath(fieldPath string) (string, string, bool) {
-        if !strings.HasSuffix(fieldPath, "']") {
-                return fieldPath, "", false
-        }
-        s := strings.TrimSuffix(fieldPath, "']")
-        parts := strings.SplitN(s, "['", 2)
-        if len(parts) < 2 {
-                return fieldPath, "", false
-        }
-        if len(parts[0]) == 0 {
-                return fieldPath, "", false
-        }
-        return parts[0], parts[1], true
+	if !strings.HasSuffix(fieldPath, "']") {
+		return fieldPath, "", false
+	}
+	s := strings.TrimSuffix(fieldPath, "']")
+	parts := strings.SplitN(s, "['", 2)
+	if len(parts) < 2 {
+		return fieldPath, "", false
+	}
+	if len(parts[0]) == 0 {
+		return fieldPath, "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // FormatMap formats map[string]string to a string.
 func FormatMap(m map[string]string) (fmtStr string) {
-        // output with keys in sorted order to provide stable output
-        keys := sets.NewString()
-        for key := range m {
-                keys.Insert(key)
-        }
-        for _, key := range keys.List() {
-                fmtStr += fmt.Sprintf("%v=%q\n", key, m[key])
-        }
-        fmtStr = strings.TrimSuffix(fmtStr, "\n")
+	// output with keys in sorted order to provide stable output
+	keys := sets.NewString()
+	for key := range m {
+		keys.Insert(key)
+	}
+	for _, key := range keys.List() {
+		fmtStr += fmt.Sprintf("%v=%q\n", key, m[key])
+	}
+	fmtStr = strings.TrimSuffix(fmtStr, "\n")
 
-        return
+	return
 }
 
 // IsServiceIPSet aims to check if the service's ClusterIP is set or not the objective is not to perform validation here
 func IsServiceIPSet(service *corev1.Service) bool {
-        return service.Spec.ClusterIP != corev1.ClusterIPNone && service.Spec.ClusterIP != ""
+	return service.Spec.ClusterIP != corev1.ClusterIPNone && service.Spec.ClusterIP != ""
 }

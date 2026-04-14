@@ -19,8 +19,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/pkg/errors"
 	"github.com/malformed-c/periapsis/node/api/statsv1alpha1"
+	"github.com/pkg/errors"
 )
 
 // PodStatsSummaryHandlerFunc defines the handler for getting pod stats summaries

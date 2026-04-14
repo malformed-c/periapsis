@@ -12,8 +12,8 @@ import (
 	"github.com/malformed-c/periapsis/internal/network"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/volume"
-	v1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	v1 "k8s.io/client-go/listers/core/v1"
 )
 
 const (
@@ -44,7 +44,7 @@ type Reconciler struct {
 	logger        *slog.Logger
 	baseDir       string
 	pawnName      string
-	hostNodeName  string // Real host node name, used for CSI volume cleanup
+	hostNodeName  string                       // Real host node name, used for CSI volume cleanup
 	syncRequester func(namespace, name string) // forward reconciler callback
 }
 

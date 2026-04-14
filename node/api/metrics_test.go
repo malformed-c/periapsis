@@ -21,11 +21,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/malformed-c/periapsis/node/api"
 	"github.com/pkg/errors"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/malformed-c/periapsis/node/api"
 	"google.golang.org/protobuf/proto"
 )
 

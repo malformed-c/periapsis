@@ -14,6 +14,8 @@
 
 package node
 
+// TODO God object
+
 import (
 	"context"
 	"fmt"

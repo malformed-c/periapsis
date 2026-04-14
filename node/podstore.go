@@ -843,10 +843,12 @@ func (s *PodStore) GetPodCopy(uid string) *corev1.Pod {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		if ps.pod != nil {
 			return ps.pod.DeepCopy()
 		}
 	}
+
 	return nil
 }
 

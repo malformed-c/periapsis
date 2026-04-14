@@ -92,6 +92,25 @@ type BatchWatcher struct {
 	restarting   map[string]bool // key: uid/containerName
 }
 
+// Lock helpers
+func withLock(mu sync.Locker, fn func()) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	fn()
+}
+
+type readLocker interface {
+	RLock()
+	RUnlock()
+}
+
+func withRLock(mu readLocker, fn func()) {
+	mu.RLock()
+	defer mu.RUnlock()
+	fn()
+}
+
 // StartBatchWatcher creates and starts the batch watcher for a Gambit pawn.
 func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,10 +200,13 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+
 		case <-ticker.C:
 			bw.poll(ctx)
+
 		case ev := <-eventCh:
 			bw.handleUnitEvent(ctx, ev)
+
 		case <-bw.pokeCh:
 			bw.poll(ctx)
 		}
@@ -197,7 +219,7 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 // container, giving sub-second detection for fast-exit containers.
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// QUICK FILTER: Does this unit even belong to this pawn?
-	// The unit name starts with "perigeos-<pawnName>-..."
+	// The unit name starts with "perigeos-<pawn>-..."
 	if !strings.HasPrefix(ev.UnitName, "perigeos-"+bw.deps.PawnName+"-") {
 		return
 	}
@@ -235,6 +257,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
 				"Container %s received SIGTERM, waiting for graceful exit", containerName)
 		}
+
 	case "stop-sigkill", "stop-kill":
 		// Grace period expired; systemd is sending SIGKILL.
 		if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
@@ -247,10 +270,13 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	switch ev.SubState {
 	case "running":
 		state = perigeos.StateRunning
+
 	case "failed":
 		state = perigeos.StateFailed
+
 	case "start-pre", "start", "start-post":
 		state = perigeos.StateCreating
+
 	default:
 		return // ignore "dead" and other transient states
 	}
@@ -742,6 +768,7 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 		if seen {
 			return perigeos.StateExited
 		}
+
 		return perigeos.StateUnknown
 	}
 }

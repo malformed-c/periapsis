@@ -347,8 +347,10 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	defer span.End()
 	ctx = span.WithField(ctx, "method", "enqueuePodStatusUpdate")
 
-	// TODO (Sargun): Make this asynchronousish. Right now, if we are not cache synced, and we receive notifications
-	// from the provider for pods that do not exist yet in our known pods map, we can get into an awkward situation.
+	// TODO: Make this async.
+	// Right now, if we are not cache synced, and we receive notifications
+	// from the provider for pods that do not exist yet in our known pods map,
+	// we can get into an awkward situation.
 	key, err := cache.MetaNamespaceKeyFunc(pod)
 	if err != nil {
 		log.G(ctx).WithError(err).Error("Error getting pod meta namespace key")
@@ -365,14 +367,17 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 			return true, nil
 		}
 
-		// Blind sync. Partial sync is better than nothing. If this returns false, the poll loop should not be invoked
+		// Blind sync. Partial sync is better than nothing.
+		// If this returns false, the poll loop should not be invoked
 		// again as it means the context has timed out.
 		if !cache.WaitForNamedCacheSync("enqueuePodStatusUpdate", ctx.Done(), pc.podsInformer.Informer().HasSynced) {
 			log.G(ctx).Warn("enqueuePodStatusUpdate proceeding with unsynced cache")
 		}
 
-		// The only transient error that pod lister returns is not found. The only case where not found
-		// should happen, and the pod *actually* exists is the above -- where we haven't been able to finish sync
+		// The only transient error that pod lister returns is not found.
+		// The only case where not found should happen,
+		// and the pod *actually* exists is the above
+		// -- where we haven't been able to finish sync
 		// before context times out.
 		// The other class of errors is non-transient
 		_, err = pc.podsLister.Pods(pod.Namespace).Get(pod.Name)
@@ -380,9 +385,10 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 			return false, err
 		}
 
-		// err is nil, and therefore the pod exists in k8s, but does not exist in our known pods map. This likely means
-		// that we're in some kind of startup synchronization issue where the provider knows about a pod (as it performs
-		// recover, that we do not yet know about).
+		// err is nil, and therefore the pod exists in k8s,
+		// but does not exist in our known pods map. This likely means
+		// that we're in some kind of startup synchronization issue where the provider knows about a pod
+		// (as it performs recover, that we do not yet know about).
 		return false, nil
 	})
 

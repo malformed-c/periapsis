@@ -295,7 +295,7 @@ func (g *Gambit) HasPod(uid string) bool {
 
 // EvictGhost removes a pod from Gambit's in-memory state without running
 // the full DeletePod teardown (no machine stop, no CNI DEL).
-// Used by the Reconciler for ghost pods — pods in gambit's map that have
+// Used by the Reconciler for ghost pods - pods in gambit's map that have
 // no systemd unit and are no longer desired by Kubernetes.
 func (g *Gambit) EvictGhost(uid string) {
 	g.store.EvictGhost(uid)
@@ -343,9 +343,12 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 
 // notifyPodStatus pushes an updated pod to the PodController if a callback
 // is registered, and persists the pod state to disk so it survives restarts.
-// This is the single funnel for all status changes — persist here rather
+// This is the single funnel for all status changes - persist here rather
 // than scattering writePodState across every call site.
 func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
+	// Create a snapshot of the pod right now
+	podCopy := pod.DeepCopy()
+
 	var caller string
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
@@ -358,7 +361,7 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 		"caller", caller,
 	)
 	if g.podNotify != nil {
-		g.podNotify(pod)
+		g.podNotify(podCopy)
 	}
 
 	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted

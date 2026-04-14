@@ -130,16 +130,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	perigeoCfg, err := rawCfg.Process(*baseDirFlag)
+	perigeosCfg, err := rawCfg.Process(*baseDirFlag)
 	if err != nil {
 		logger.Error("Config process failed", "err", err)
 		os.Exit(1)
 	}
 
-	pawnCount := len(perigeoCfg.Pawns)
-	if pawnCount < 1 {
-		pawnCount = 1
-	}
+	pawnCount := max(len(perigeosCfg.Pawns), 1)
 
 	kubeConfig, err := clientcmd.BuildConfigFromFlags("", *kubeConfigPath)
 	if err != nil {
@@ -234,8 +231,8 @@ func main() {
 
 	// --- Clean up stale pawn slices from previous config ---
 	{
-		pawnNames := make([]string, len(perigeoCfg.Pawns))
-		for i, p := range perigeoCfg.Pawns {
+		pawnNames := make([]string, len(perigeosCfg.Pawns))
+		for i, p := range perigeosCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
 		cleanupRT, err := systemd.NewSystemdRuntime(ctx, "_cleanup", nil, logger, execStrategy, nil)
@@ -265,10 +262,10 @@ func main() {
 	)
 
 	// --- Control socket for apsis CLI and remote control (Varlink) ---
-	controlSrv := control.New(*controlSocketFlag, perigeoCfg, logger.With("component", "control"))
+	controlSrv := control.New(*controlSocketFlag, perigeosCfg, logger.With("component", "control"))
 
-	if *controlTCPFlag != "" && perigeoCfg.Global.ServerCAPath != "" {
-		caCert, caKey, err := pki.LoadCA(perigeoCfg.Global.ServerCAPath, perigeoCfg.Global.ServerCAKeyPath)
+	if *controlTCPFlag != "" && perigeosCfg.Global.ServerCAPath != "" {
+		caCert, caKey, err := pki.LoadCA(perigeosCfg.Global.ServerCAPath, perigeosCfg.Global.ServerCAKeyPath)
 		if err != nil {
 			logger.Warn("Could not load CA for control TCP listener - remote access disabled", "err", err)
 		} else {
@@ -290,14 +287,14 @@ func main() {
 	// The agent/operator are deployed separately (not by perigeos).
 	// Perigeos only consumes the CNI interface (ADD/DEL via libcni).
 	var sharedNM network.NetworkManager
-	if perigeoCfg.Global.CNI != nil {
+	if perigeosCfg.Global.CNI != nil {
 		cnm, err := network.NewConstellationNetworkManager(
 			ctx,
 			logger.With("component", "network"),
 			network.ConstellationConfig{
-				ConfDir: perigeoCfg.Global.CNI.ConfDir,
-				BinDir:  perigeoCfg.Global.CNI.BinDir,
-				Debug:   perigeoCfg.Global.CNI.Debug,
+				ConfDir: perigeosCfg.Global.CNI.ConfDir,
+				BinDir:  perigeosCfg.Global.CNI.BinDir,
+				Debug:   perigeosCfg.Global.CNI.Debug,
 			},
 		)
 		if err != nil {
@@ -314,7 +311,7 @@ func main() {
 	// If a real kubelet already registered a node with our hostname (e.g.
 	// k3s agent), just label it. Otherwise the config processor already
 	// added a primary virtual node that will be created like any pawn.
-	if perigeoCfg.Global.Primary {
+	if perigeosCfg.Global.Primary {
 		hostName, _ := os.Hostname()
 		if hostName != "" {
 			existingNode, err := kubeClient.CoreV1().Nodes().Get(ctx, hostName, metav1.GetOptions{})
@@ -331,7 +328,7 @@ func main() {
 					logger.Info("Labeled existing primary node", "node", hostName)
 				}
 				// Drop the auto-generated primary pawn - real kubelet handles it.
-				perigeoCfg.Pawns = slices.DeleteFunc(perigeoCfg.Pawns, func(p config.PawnConfig) bool {
+				perigeosCfg.Pawns = slices.DeleteFunc(perigeosCfg.Pawns, func(p config.PawnConfig) bool {
 					return p.IsPrimary
 				})
 			} else {
@@ -341,7 +338,7 @@ func main() {
 	}
 
 	// Shared image manager - one manifest cache + singleflight across all pawns.
-	sharedIM := image.NewImageManager(perigeoCfg.Global.BaseDir, logger)
+	sharedIM := image.NewImageManager(perigeosCfg.Global.BaseDir, logger)
 	sharedIM.SweepStaleTmpDirs()
 
 	// P2P blob cache - peers pull layers from each other before hitting upstream.
@@ -357,8 +354,8 @@ func main() {
 
 	// --- Plugin registration: watch CSI driver sockets, create CSINode per pawn ---
 	{
-		pawnNames := make([]string, len(perigeoCfg.Pawns))
-		for i, p := range perigeoCfg.Pawns {
+		pawnNames := make([]string, len(perigeosCfg.Pawns))
+		for i, p := range perigeosCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
 		pw := plugin.NewPluginWatcher(kubeClient, pawnNames, logger.With("component", "plugin-watcher"))
@@ -392,7 +389,7 @@ func main() {
 		gambitsMu  sync.Mutex
 	)
 
-	for _, pawnCfg := range perigeoCfg.Pawns {
+	for _, pawnCfg := range perigeosCfg.Pawns {
 		wg.Go(func() {
 
 			pawnName := pawnCfg.Name
@@ -414,7 +411,7 @@ func main() {
 
 			sliceCfg := perigeos.PawnSliceConfig{
 				Name:                pawnCfg.Name,
-				BaseDir:             perigeoCfg.Global.BaseDir,
+				BaseDir:             perigeosCfg.Global.BaseDir,
 				CPU:                 pawnCfg.CPU,
 				Memory:              pawnCfg.Memory,
 				CPUWeight:           pawnCfg.CPUWeight,
@@ -589,8 +586,8 @@ func main() {
 			})
 
 			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{
-				CACertPath:   perigeoCfg.Global.ServerCAPath,
-				CAKeyPath:    perigeoCfg.Global.ServerCAKeyPath,
+				CACertPath:   perigeosCfg.Global.ServerCAPath,
+				CAKeyPath:    perigeosCfg.Global.ServerCAKeyPath,
 				ConfigDir:    filepath.Dir(*perigeosConfigPath),
 				KubeClient:   kubeClient,
 				ImageManager: sharedIM,
@@ -622,7 +619,7 @@ func main() {
 		logger.Warn("No pawns started within 2s, waiting for all to complete...")
 	}
 
-	logger.Info("Perigeos running", "pawns", len(perigeoCfg.Pawns), "base-dir", *baseDirFlag)
+	logger.Info("Perigeos running", "pawns", len(perigeosCfg.Pawns), "base-dir", *baseDirFlag)
 
 	// Notify systemd that startup is complete. With Type=notify, systemd
 	// waits for this before reporting the unit as active.

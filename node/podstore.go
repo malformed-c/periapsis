@@ -398,15 +398,41 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 		if wasDeleting {
 			s.deletingCount.Add(-1)
 		}
+
 		s.triggerSnapshot()
+	}
+}
+
+func (s *PodStore) setPhase(ps *podState, phase corev1.PodPhase) {
+	ps.phase = phase
+
+	if ps.pod != nil {
+		ps.pod.Status.Phase = phase
 	}
 }
 
 func (s *PodStore) SetPhase(uid string, phase corev1.PodPhase) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		ps.phase = phase
+		s.setPhase(ps, phase)
 		ps.mu.Unlock()
+
+		s.triggerSnapshot()
+	}
+}
+
+func (s *PodStore) SetPodStatus(uid string, status corev1.PodStatus) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+
+		s.setPhase(ps, status.Phase)
+
+		if ps.pod != nil {
+			status.DeepCopyInto(&ps.pod.Status)
+		}
+
+		ps.mu.Unlock()
+
 		s.triggerSnapshot()
 	}
 }
@@ -471,15 +497,17 @@ func (s *PodStore) SetContainerState(uid string, containerName string, state cor
 
 		if updated {
 			changed = true
+
 		} else {
-			// Efficient error logging without heavy functional transformations
 			var names []string
-			for _, c := range ps.pod.Status.ContainerStatuses {
-				names = append(names, c.Name)
-			}
+
 			for _, c := range ps.pod.Status.InitContainerStatuses {
 				names = append(names, c.Name)
 			}
+			for _, c := range ps.pod.Status.ContainerStatuses {
+				names = append(names, c.Name)
+			}
+
 			s.logger.Error("Container wasn't found", "name", containerName, "available", names)
 		}
 	}()
@@ -505,6 +533,7 @@ func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message strin
 		ps.mu.Unlock()
 		s.triggerSnapshot()
 	}
+
 	return failedPod
 }
 

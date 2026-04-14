@@ -123,7 +123,6 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		dbus.PropSlice(slice),
 		dbus.PropExecStart(fullCmd, false),
 		{Name: "SyslogIdentifier", Value: dbusv5.MakeVariant(cfg.Container.Name)},
-		{Name: "CollectMode", Value: dbusv5.MakeVariant("inactive-or-failed")},
 		{Name: "Delegate", Value: dbusv5.MakeVariant(true)},
 		{Name: "KillMode", Value: dbusv5.MakeVariant("mixed")},
 		// RootDirectory performs a chroot into the container image rootfs.
@@ -167,6 +166,15 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 	// knobs (IO, Pids, memory.high, cpuset, ...) should be wired in.
 	properties = append(properties, cgroup.BuildSystemdProperties(buildPodResources(cfg))...)
 
+	// No CollectMode — we manage unit lifecycle explicitly via MachineStatus
+	// polling, just like the nspawn path in RunMachine. Using CollectMode=inactive-or-failed
+	// with a blocking completion channel triggers the go-systemd StartTransientUnit
+	// race condition: the unit can start, run, and exit before the completion
+	// channel is registered, causing <-ch to block forever.
+	//
+	// We pass nil as the channel (fire-and-forget) and rely on the caller
+	// (waitForContainer) to poll MachineStatus for startup detection.
+
 	if len(bindPaths) > 0 {
 		properties = append(properties, dbus.Property{
 			Name:  "BindPaths",
@@ -180,12 +188,12 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		})
 	}
 
-	ch := make(chan string, 1)
-	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, ch); err != nil {
+	// Fire-and-forget: pass nil channel to avoid the go-systemd
+	// StartTransientUnit race condition (coreos/go-systemd#485).
+	// The caller (waitForContainer) polls MachineStatus to detect
+	// that the unit has started.
+	if _, err := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); err != nil {
 		return fmt.Errorf("start transient unit %s: %w", serviceName, err)
-	}
-	if res := <-ch; res != "done" {
-		return fmt.Errorf("start program job for %s: %s", serviceName, res)
 	}
 	return nil
 }

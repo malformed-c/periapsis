@@ -49,11 +49,17 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 			continue
 		}
 		g.store.InitRestartState(state.Pod)
-		// InitRestartState resets restarts — re-apply the persisted counts.
+		// InitRestartState resets restarts — re-apply the persisted counts
+		// and backoff durations.
+		uid := string(state.Pod.UID)
 		if len(state.Restarts) > 0 {
-			uid := string(state.Pod.UID)
 			for cname, count := range state.Restarts {
 				g.store.PatchRestartCount(uid, cname, count)
+			}
+		}
+		if len(state.Backoffs) > 0 {
+			for cname, backoffSec := range state.Backoffs {
+				g.store.PatchBackoff(uid, cname, backoffSec)
 			}
 		}
 	}

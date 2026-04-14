@@ -544,7 +544,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			if state == perigeos.StateRunning {
 				rs := bw.deps.Store.RestartState(uid, c.Name)
 				if rs != nil && time.Since(rs.lastStarted) > restartBackoffReset {
-					rs.backoff = restartBackoffInit
+					bw.deps.Store.ResetBackoff(uid, c.Name)
 				}
 
 				// Run probes for running containers.
@@ -614,13 +614,6 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	// GetPodStatus returns the terminal status even after the systemd
 	// unit is cleaned up.
 	bw.deps.Store.SetPhase(uid, terminalPhase)
-	// Also update the pod's status in the store for GetPodStatus consistency.
-	// Note: This modifies the existing pod reference.
-	if existingPod := bw.deps.Store.GetPodCopy(uid); existingPod != nil {
-		updated.Status.DeepCopyInto(&existingPod.Status)
-		// Update the store with the modified pod.
-		// bw.deps.Store.PromoteRunning(uid, existingPod, bw.deps.Store.PodIP(uid))
-	}
 
 	bw.deps.NotifyStatus(updated)
 

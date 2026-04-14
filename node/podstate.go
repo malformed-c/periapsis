@@ -25,6 +25,12 @@ type PersistedPodState struct {
 
 	// Restarts is the per-container restart count at last update.
 	Restarts map[string]int32 `json:"restarts,omitempty"`
+
+	// Backoffs is the per-container CrashLoopBackOff duration in seconds.
+	// Persisted alongside restart counts so that backoff delays survive
+	// perigeos restarts. Without this, a container that had accumulated
+	// a 5-minute backoff resets to 10 seconds after restart.
+	Backoffs map[string]float64 `json:"backoffs,omitempty"`
 }
 
 const podStateFile = "pod-state.json"

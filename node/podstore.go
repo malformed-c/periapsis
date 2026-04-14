@@ -568,6 +568,25 @@ func (s *PodStore) RestartCounts(uid string) map[string]int32 {
 	return nil
 }
 
+// RestartBackoffs returns the per-container CrashLoopBackOff durations in seconds.
+// Used to persist backoff state to disk so it survives perigeos restarts.
+func (s *PodStore) RestartBackoffs(uid string) map[string]float64 {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.RLock()
+		defer ps.mu.RUnlock()
+
+		if len(ps.restarts) == 0 {
+			return nil
+		}
+		backoffs := make(map[string]float64, len(ps.restarts))
+		for c, r := range ps.restarts {
+			backoffs[c] = r.backoff.Seconds()
+		}
+		return backoffs
+	}
+	return nil
+}
+
 func (s *PodStore) RestartState(uid, containerName string) *containerRestartState {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
@@ -691,6 +710,18 @@ func (s *PodStore) PatchRestartCount(uid, containerName string, count int32) {
 		ps.mu.Lock()
 		if rs, ok := ps.restarts[containerName]; ok {
 			rs.count = count
+		}
+		ps.mu.Unlock()
+	}
+}
+
+// PatchBackoff restores a CrashLoopBackOff duration for a container from disk.
+// Called during HydrateFromRuntime to re-apply persisted backoff values.
+func (s *PodStore) PatchBackoff(uid, containerName string, backoffSec float64) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+		if rs, ok := ps.restarts[containerName]; ok {
+			rs.backoff = time.Duration(backoffSec * float64(time.Second))
 		}
 		ps.mu.Unlock()
 	}
@@ -977,6 +1008,22 @@ func (s *PodStore) MarkRestarted(uid, containerName string) {
 		ps.mu.Lock()
 		if rs, ok := ps.restarts[containerName]; ok {
 			rs.lastStarted = time.Now()
+		}
+		ps.mu.Unlock()
+	}
+}
+
+// ResetBackoff resets the CrashLoopBackOff duration for a container that has
+// been running stably for longer than restartBackoffReset. This is the
+// funnel for backoff resets — callers MUST use this method instead of
+// directly mutating the containerRestartState struct, because RestartState()
+// returns a pointer under only an RLock. Direct mutation outside the write
+// lock is a data race with BumpBackoff().
+func (s *PodStore) ResetBackoff(uid, containerName string) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+		if rs, ok := ps.restarts[containerName]; ok {
+			rs.backoff = restartBackoffInit
 		}
 		ps.mu.Unlock()
 	}

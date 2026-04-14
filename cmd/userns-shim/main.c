@@ -18,85 +18,98 @@
  *   cc -static -o userns-shim main.c
  */
 
+#define __noreturn __attribute__((noreturn))
+
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#include <errno.h>
+#endif
+
 #include <fcntl.h>
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #define READY_FIFO "/run/userns/ready"
-#define GATE_FIFO  "/run/userns/gate"
+#define GATE_FIFO "/run/userns/gate"
 #define TIMEOUT_MS 30000
 
-static void die(const char *msg)
-{
-	perror(msg);
-	_exit(1);
+__noreturn static void die(const char *msg) {
+  perror(msg);
+
+  _exit(1);
 }
 
-int main(int argc, char **argv)
-{
-	if (argc < 2) {
-		fprintf(stderr, "usage: userns-shim <command> [args...]\n");
-		return 1;
-	}
+int main(int argc, char *argv[]) {
+  if (argc < 2) {
+    fprintf(stderr, "usage: userns-shim <command> [args...]\n");
 
-	/* Enter new user namespace. Process becomes uid 65534 (unmapped). */
-	if (unshare(CLONE_NEWUSER) < 0)
-		die("unshare(CLONE_NEWUSER)");
+    return 1;
+  }
 
-	/* Signal host: uid_map can be written now. */
-	int rfd = open(READY_FIFO, O_WRONLY);
-	if (rfd < 0)
-		die("open " READY_FIFO);
-	if (write(rfd, "1\n", 2) < 0)
-		die("write ready");
-	close(rfd);
+  /* Enter new user namespace. Process becomes uid 65534 (unmapped). */
+  if (unshare(CLONE_NEWUSER) < 0)
+    die("unshare(CLONE_NEWUSER)");
 
-	/* Wait for host to send target identity via gate pipe. */
-	int gfd = open(GATE_FIFO, O_RDONLY);
-	if (gfd < 0)
-		die("open " GATE_FIFO);
+  /* Signal host: uid_map can be written now. */
+  int rfd = open(READY_FIFO, O_WRONLY);
+  if (rfd < 0)
+    die("open " READY_FIFO);
 
-	struct pollfd pfd = {.fd = gfd, .events = POLLIN};
-	int ret = poll(&pfd, 1, TIMEOUT_MS);
-	if (ret == 0) {
-		fprintf(stderr, "userns-shim: timed out waiting for uid_map\n");
-		_exit(1);
-	}
-	if (ret < 0)
-		die("poll");
+  if (write(rfd, "1\n", 2) < 0)
+    die("write ready");
 
-	/* Read "uid:gid\n" from gate. */
-	char buf[32];
-	ssize_t n = read(gfd, buf, sizeof(buf) - 1);
-	close(gfd);
-	if (n <= 0)
-		die("read gate");
-	buf[n] = '\0';
+  close(rfd);
 
-	uid_t target_uid = 0;
-	gid_t target_gid = 0;
-	if (sscanf(buf, "%u:%u", &target_uid, &target_gid) != 2) {
-		fprintf(stderr, "userns-shim: bad gate payload: %s\n", buf);
-		_exit(1);
-	}
+  /* Wait for host to send target identity via gate pipe. */
+  int gfd = open(GATE_FIFO, O_RDONLY);
+  if (gfd < 0)
+    die("open " GATE_FIFO);
 
-	/*
-	 * Adopt the mapped identity. Host wrote setgroups "deny" so
-	 * supplementary groups cannot be re-added.
-	 * Order: gid → uid. Once uid is non-zero we lose CAP_SETGID.
-	 */
-	if (setgid(target_gid) < 0)
-		die("setgid");
-	if (setuid(target_uid) < 0)
-		die("setuid");
+  struct pollfd pfd = {.fd = gfd, .events = POLLIN};
+  int ret = poll(&pfd, 1, TIMEOUT_MS);
+  if (ret == 0) {
+    fprintf(stderr, "userns-shim: timed out waiting for uid_map\n");
 
-	execvp(argv[1], &argv[1]);
-	die("execvp");
+    die("poll");
+  }
+
+  if (ret < 0)
+    die("poll");
+
+  /* Read "uid:gid\n" from gate. */
+  char buf[32];
+  ssize_t n = read(gfd, buf, sizeof(buf) - 1);
+  close(gfd);
+  if (n <= 0)
+    die("read gate");
+
+  buf[n] = '\0';
+
+  uid_t target_uid = 0;
+  gid_t target_gid = 0;
+  if (sscanf(buf, "%u:%u", &target_uid, &target_gid) != 2) {
+    fprintf(stderr, "userns-shim: bad gate payload: %s\n", buf);
+
+    die("read gate");
+  }
+
+  /*
+   * Adopt the mapped identity. Host wrote setgroups "deny" so
+   * supplementary groups cannot be re-added.
+   * Order: gid → uid. Once uid is non-zero we lose CAP_SETGID.
+   */
+  if (setgid(target_gid) < 0)
+    die("setgid");
+
+  if (setuid(target_uid) < 0)
+    die("setuid");
+
+  if (execvp(argv[1], &argv[1]) == -1) {
+    die("execvp");
+  }
+
+  __builtin_unreachable();
 }

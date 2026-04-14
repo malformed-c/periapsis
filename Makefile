@@ -38,7 +38,7 @@ install: build
 	sudo systemctl start perigeos
 	@echo "Installed $(INSTALL_DIR)/$(PERIGEOS) and $(INSTALL_DIR)/$(APSIS)"
 	@if [ ! -f "$(CONFIG_DIR)/perigeos.toml" ]; then \
-		echo "No config at $(CONFIG_DIR)/perigeos.toml — copy one from configs/"; \
+		echo "No config at $(CONFIG_DIR)/perigeos.toml - copy one from configs/"; \
 	fi
 
 uninstall:
@@ -48,4 +48,4 @@ uninstall:
 	sudo rm -f $(SERVICE_DST)
 	sudo systemctl daemon-reload
 	@echo "Uninstalled perigeos and apsis binaries and service"
-	@echo "Config left in $(CONFIG_DIR) — remove manually if desired"
+	@echo "Config left in $(CONFIG_DIR) - remove manually if desired"

@@ -22,12 +22,12 @@ WatchdogSec=120s
 StateDirectory=apsis
 RuntimeDirectory=apsis
 
-# Logging — stdout/stderr go to journal
+# Logging - stdout/stderr go to journal
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=perigeos
 
-# Hardening — perigeos needs root for systemd-nspawn and D-Bus machine1.
+# Hardening - perigeos needs root for systemd-nspawn and D-Bus machine1.
 # ProtectHome/ProtectSystem that create private mount namespaces must be
 # disabled: overlay mounts done here must be visible to transient nspawn
 # units that systemd starts in the init mount namespace (PID 1).
@@ -39,7 +39,7 @@ LimitNPROC=infinity
 LimitMEMLOCK=infinity
 TasksMax=infinity
 
-# Only kill the main perigeos process — nspawn containers survive both
+# Only kill the main perigeos process - nspawn containers survive both
 # stop and restart. HydrateFromRuntime rediscovers running pods on startup.
 # For intentional decommission (drain all pods), use: apsis drain
 KillMode=process

@@ -112,7 +112,7 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 5
         volumeMounts:
-        # Host API filesystems — triggers MountAPIVFS so mount points exist
+        # Host API filesystems - triggers MountAPIVFS so mount points exist
         # in the chroot. Recursive binds carry submounts (e.g. /sys/fs/bpf).
         - name: host-proc
           mountPath: /proc

@@ -17,7 +17,7 @@ import (
 //
 // setns(2) is per-thread, so the goroutine is locked to an OS thread for the
 // duration of the enter/dial/restore sequence. The connection fd survives the
-// netns restore — it remains bound to the container's network stack.
+// netns restore - it remains bound to the container's network stack.
 func (s *SystemdRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
 	machineName := "pod-" + podUID + "-" + containerName
 	pid, err := s.getMachineLeaderPID(machineName)

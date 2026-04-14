@@ -240,7 +240,7 @@ func (r *RawPerigeosConfig) Process(baseDir string) (*PerigeosConfig, error) {
 			return &PerigeosConfig{}, fmt.Errorf("failed to parse taints for pawn %s: %w", name, err)
 		}
 
-		// Parse IO Limits (optional — zero value means no limit)
+		// Parse IO Limits (optional - zero value means no limit)
 		var ioRead, ioWrite resource.Quantity
 		if currentPawn.IOReadBandwidthMax != "" {
 			ioRead, err = resource.ParseQuantity(currentPawn.IOReadBandwidthMax)
@@ -293,7 +293,7 @@ func constellationSocketPath() string {
 // socket exists at /var/run/cilium/cilium.sock, CNI is enabled automatically.
 // Explicit [global.cni] always wins.
 //
-// Returns nil when no block is present AND no agent socket is found —
+// Returns nil when no block is present AND no agent socket is found -
 // callers fall back to per-pawn built-in veth networking.
 func buildCNIConfig(raw *RawCNIConfig) *CNIConfig {
 	if raw == nil {

@@ -14,7 +14,7 @@ FAIL=0
 TOTAL=0
 
 pass() { ((PASS++)); ((TOTAL++)); echo "  PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 — $2"; }
+fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 - $2"; }
 
 force_delete_ns() {
     local ns="$1"

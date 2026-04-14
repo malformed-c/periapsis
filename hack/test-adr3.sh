@@ -13,7 +13,7 @@ FAIL=0
 TOTAL=0
 
 pass() { ((PASS++)); ((TOTAL++)); echo "  PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 — $2"; }
+fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 - $2"; }
 
 force_delete_ns() {
     local ns="$1"
@@ -49,7 +49,7 @@ kubectl $KC create ns "$NS"
 echo
 
 # ============================================================
-# Test 1: Event emission — create success event
+# Test 1: Event emission - create success event
 # ============================================================
 echo "--- Test 1: Create success event ---"
 
@@ -89,7 +89,7 @@ else
 fi
 
 # ============================================================
-# Test 2: Event emission — delete success event
+# Test 2: Event emission - delete success event
 # ============================================================
 echo "--- Test 2: Delete success event ---"
 
@@ -104,7 +104,7 @@ else
 fi
 
 # ============================================================
-# Test 3: Graceful termination — PreStop exec hook runs
+# Test 3: Graceful termination - PreStop exec hook runs
 # ============================================================
 echo "--- Test 3: PreStop exec hook ---"
 
@@ -147,7 +147,7 @@ else
         fail "PreStop marker exists before delete" "unexpected"
     fi
 
-    # Delete the pod — PreStop hook should run before container stops.
+    # Delete the pod - PreStop hook should run before container stops.
     # We can verify by checking if the hook ran by looking at events.
     kubectl $KC delete pod prestop-test -n "$NS" --grace-period=30 --wait=true 2>/dev/null
 
@@ -168,7 +168,7 @@ else
 fi
 
 # ============================================================
-# Test 4: Graceful termination — terminationGracePeriodSeconds respected
+# Test 4: Graceful termination - terminationGracePeriodSeconds respected
 # ============================================================
 echo "--- Test 4: terminationGracePeriodSeconds timing ---"
 
@@ -215,9 +215,9 @@ else
 fi
 
 # ============================================================
-# Test 5: Pod admission — pod within capacity admitted
+# Test 5: Pod admission - pod within capacity admitted
 # ============================================================
-echo "--- Test 5: Pod admission — fit check (admit) ---"
+echo "--- Test 5: Pod admission - fit check (admit) ---"
 
 cat <<YAML | kubectl $KC apply -f -
 apiVersion: v1
@@ -251,9 +251,9 @@ else
 fi
 
 # ============================================================
-# Test 6: Pod admission — overcommit rejected
+# Test 6: Pod admission - overcommit rejected
 # ============================================================
-echo "--- Test 6: Pod admission — overcommit rejected ---"
+echo "--- Test 6: Pod admission - overcommit rejected ---"
 
 # Get node capacity
 node_mem=$(kubectl $KC get node "$NODE" -o jsonpath='{.status.capacity.memory}' 2>/dev/null)
@@ -299,9 +299,9 @@ else
 fi
 
 # ============================================================
-# Test 7: Pod admission — best-effort (no requests) always admitted
+# Test 7: Pod admission - best-effort (no requests) always admitted
 # ============================================================
-echo "--- Test 7: Pod admission — best-effort always admitted ---"
+echo "--- Test 7: Pod admission - best-effort always admitted ---"
 
 cat <<YAML | kubectl $KC apply -f -
 apiVersion: v1
@@ -362,7 +362,7 @@ done
 echo "  Pod phase after wait: $phase"
 
 # Wait a moment for status propagation, then try to retrieve logs.
-# This tests the completedPods fallback — after DeletePod removes the pod
+# This tests the completedPods fallback - after DeletePod removes the pod
 # from g.pods, GetContainerLogs should still work via the UID cache.
 sleep 3
 logs=$(kubectl $KC logs log-complete -n "$NS" 2>/dev/null || echo "LOG_FETCH_FAILED")

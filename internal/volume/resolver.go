@@ -2,12 +2,12 @@
 // into concrete host→container bind mounts for systemd-nspawn.
 //
 // Supported volume types:
-//   - hostPath  — direct bind mount of a host path
-//   - emptyDir  — host-side tmpfs/dir created under the pod's state dir
-//   - configMap — files written to a host-side dir, then bind-mounted read-only
-//   - secret    — files written to a host-side dir, then bind-mounted read-only
-//   - projected — kube-api-access (service account token + CA cert + downward API)
-//   - persistentVolumeClaim — resolved to the underlying PV hostPath (local-path and local PV types) or CSI volumes
+//   - hostPath  - direct bind mount of a host path
+//   - emptyDir  - host-side tmpfs/dir created under the pod's state dir
+//   - configMap - files written to a host-side dir, then bind-mounted read-only
+//   - secret    - files written to a host-side dir, then bind-mounted read-only
+//   - projected - kube-api-access (service account token + CA cert + downward API)
+//   - persistentVolumeClaim - resolved to the underlying PV hostPath (local-path and local PV types) or CSI volumes
 package volume
 
 import (
@@ -49,7 +49,7 @@ type Resolver struct {
 
 	// kubeClient is used for TokenRequest (projected service account volumes)
 	// and VolumeAttachment creation (CSI volumes).
-	// Optional — if nil, those volume types are unsupported.
+	// Optional - if nil, those volume types are unsupported.
 	kubeClient kubernetes.Interface
 }
 
@@ -268,7 +268,7 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 	}
 	if pvc.Status.Phase != corev1.ClaimBound {
 		err := fmt.Errorf("PVC %s/%s is not bound (phase: %s)", namespace, claimName, pvc.Status.Phase)
-		// Pending phase is transient — the provisioner is working on creating the PV
+		// Pending phase is transient - the provisioner is working on creating the PV
 		if pvc.Status.Phase == corev1.ClaimPending {
 			return "", errdefs.AsTransient(err)
 		}
@@ -365,7 +365,7 @@ func (r *Resolver) resolveCSI(ctx context.Context, pvName string, pv *corev1.Per
 	// /var/lib/kubelet/ are invisible to the CSI driver and silently fail.
 	//
 	// Strategy: call NodeStageVolume (creates the FUSE mount at globalmount which
-	// propagates to the host), then return the globalmount path directly — skip
+	// propagates to the host), then return the globalmount path directly - skip
 	// NodePublishVolume entirely.
 	stagingPath := filepath.Join("/var/lib/kubelet/plugins/kubernetes.io/csi", pvName, "globalmount")
 
@@ -489,7 +489,7 @@ func (r *Resolver) writeSecret(_ context.Context, namespace string, vol *corev1.
 
 // writeProjected materialises a projected volume (kube-api-access pattern)
 // to a host directory. Handles ServiceAccountToken, ConfigMap, and DownwardAPI
-// sources — which covers the default kube-api-access volume injected by k8s.
+// sources - which covers the default kube-api-access volume injected by k8s.
 func (r *Resolver) writeProjected(ctx context.Context, pod *corev1.Pod, vol *corev1.Volume) (string, error) {
 	dir := filepath.Join(r.stateDir, "projected", vol.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -787,7 +787,7 @@ func removeStaleFiles(hostDir string, keep map[string]bool) error {
 
 func ensurePath(path string, t *corev1.HostPathType) error {
 	if t == nil || *t == corev1.HostPathUnset || *t == corev1.HostPathFile {
-		// Must already exist — don't create.
+		// Must already exist - don't create.
 		return nil
 	}
 	switch *t {

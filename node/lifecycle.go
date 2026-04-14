@@ -225,7 +225,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	g.Logger.Info("Pod sandbox and initial containers injected", "pod", pod.Name, "ip", podIP)
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
 
-	// Push ContainerCreating — batchwatcher will promote to Running once
+	// Push ContainerCreating - batchwatcher will promote to Running once
 	// it observes the systemd unit in "running" substate via D-Bus.
 	// Previously we pushed Running immediately here, which created a
 	// window where K8s showed Running 1/1 even if the container died
@@ -407,7 +407,7 @@ func (g *Gambit) launchContainer(
 		}
 
 		// Propagate Bidirectional mounts (required for CSI drivers).
-		// If this fails, stop the container before returning — leaving it
+		// If this fails, stop the container before returning - leaving it
 		// running without shared propagation is worse than a clean retry.
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)

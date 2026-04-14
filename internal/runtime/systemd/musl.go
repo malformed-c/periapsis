@@ -15,7 +15,7 @@ func isMuslRootFS(rootfs string) bool {
 }
 
 // getentShimScript is a POSIX shell shim for `getent initgroups` that uses
-// only shell builtins — no grep, cat, ls, or other external commands.
+// only shell builtins - no grep, cat, ls, or other external commands.
 // systemd-nspawn v260 runs `getent initgroups <user>` during --user= resolution,
 // and musl libc's getent doesn't support the initgroups database.
 const getentShimScript = `#!/bin/sh
@@ -24,7 +24,7 @@ const getentShimScript = `#!/bin/sh
 if [ "$1" = "initgroups" ]; then
     user="$2"
     [ -z "$user" ] && exit 1
-    # Resolve user — may be a username or numeric UID.
+    # Resolve user - may be a username or numeric UID.
     resolved=""
     while IFS=: read -r name x uid gid gecos home shell; do
         if [ "$name" = "$user" ] || [ "$uid" = "$user" ]; then
@@ -77,7 +77,7 @@ func ensureGetentShim(rootfs string, logger *slog.Logger) {
 	if !isMuslRootFS(rootfs) {
 		return
 	}
-	logger.Warn("Container rootfs uses musl libc — getent initgroups unsupported, installing shim",
+	logger.Warn("Container rootfs uses musl libc - getent initgroups unsupported, installing shim",
 		"rootfs", rootfs)
 	if err := installGetentShim(rootfs, logger); err != nil {
 		logger.Error("Failed to install getent shim", "error", err)

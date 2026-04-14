@@ -129,7 +129,7 @@ type PodConfig struct {
 	UID       string
 
 	// ContainerName identifies which container this machine runs.
-	// Used in unit naming — must be set for multi-container pods.
+	// Used in unit naming - must be set for multi-container pods.
 	ContainerName string
 
 	// The container spec to run
@@ -150,7 +150,7 @@ type PodConfig struct {
 
 	// Security
 	Privileged bool // when true, grant all capabilities (--capability=all)
-	HostPID    bool // when true, skip nspawn isolation — run directly on host PID/cgroup namespace
+	HostPID    bool // when true, skip nspawn isolation - run directly on host PID/cgroup namespace
 	// Effective run user/group for the container process. Container-level
 	// securityContext values override pod-level values.
 	RunAsUser  *int64
@@ -183,7 +183,7 @@ type PodConfig struct {
 }
 
 // PodMetadata is returned by ListManagedMachines.
-// All fields are recovered from embedded unit properties — no separate DB needed.
+// All fields are recovered from embedded unit properties - no separate DB needed.
 type PodMetadata struct {
 	Name          string
 	Namespace     string

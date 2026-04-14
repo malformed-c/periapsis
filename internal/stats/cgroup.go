@@ -76,7 +76,7 @@ func readMemoryInactive(cgDir string) (uint64, error) {
 			}
 		}
 	}
-	return 0, nil // not fatal — working set == usage if missing
+	return 0, nil // not fatal - working set == usage if missing
 }
 
 // ReadContainerCPU reads CPU stats for a container cgroup.

@@ -287,7 +287,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		if cmp.Equal(podFromKubernetes.Status, podFromProvider.Status) {
 			if err := pc.client.Pods(podFromKubernetes.Namespace).Delete(ctx, podFromKubernetes.Name, deleteOptions); err != nil && !errors.IsNotFound(err) {
 				span.SetStatus(err)
-				return pkgerrors.Wrap(err, "error while delete pod in kubernetes")
+				return pkgerrors.Wrap(err, "error while delete pod in Kubernetes")
 			}
 		}
 	}
@@ -300,7 +300,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		span.SetStatus(err)
 		pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
 			fmt.Sprintf("Failed to update pod status: %v", err))
-		return pkgerrors.Wrap(err, "error while updating pod status in kubernetes")
+		return pkgerrors.Wrap(err, "error while updating pod status in Kubernetes")
 	}
 
 	var caller string
@@ -317,7 +317,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		"old reason": podFromKubernetes.Status.Reason,
 		"old status": summarizeContainerStatuses(podFromKubernetes.Status.ContainerStatuses),
 		"caller":     caller,
-	}).Debug("Updated pod status in kubernetes")
+	}).Debug("Updated pod status in Kubernetes")
 
 	return nil
 }
@@ -377,8 +377,7 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 		// The only transient error that pod lister returns is not found.
 		// The only case where not found should happen,
 		// and the pod *actually* exists is the above
-		// -- where we haven't been able to finish sync
-		// before context times out.
+		// -- where we haven't been able to finish sync before context times out.
 		// The other class of errors is non-transient
 		_, err = pc.podsLister.Pods(pod.Namespace).Get(pod.Name)
 		if err != nil {

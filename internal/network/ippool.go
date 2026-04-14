@@ -9,7 +9,7 @@ import (
 
 // ipPool allocates IPs from a /16 subnet sequentially.
 // Gateway (.1) is reserved; allocation starts at .2.
-// The pool is in-process only — on restart, IPs are re-discovered from
+// The pool is in-process only - on restart, IPs are re-discovered from
 // running netns interfaces rather than persisted state.
 type ipPool struct {
 	mu    sync.Mutex

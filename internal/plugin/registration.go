@@ -48,7 +48,7 @@ const (
 //  2. PluginWatcher detects the socket via fsnotify and calls GetInfo() on it
 //  3. PluginWatcher dials the CSI endpoint returned by GetInfo, calls NodeGetInfo()
 //  4. PluginWatcher creates/updates CSINode objects for each pawn
-//  5. PluginWatcher calls NotifyRegistrationStatus(ok) — this unblocks the registrar
+//  5. PluginWatcher calls NotifyRegistrationStatus(ok) - this unblocks the registrar
 //     and prevents it from timing out and crashing
 type PluginWatcher struct {
 	kubeClient kubernetes.Interface
@@ -72,7 +72,7 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 	// Ensure both kubelet plugin directories exist. CSI DaemonSets reference
 	// them as hostPath volumes (type=Directory or DirectoryOrCreate). If they
 	// don't exist the bind mount fails and the registrar container can't create
-	// its socket — making the pod crash before registration even starts.
+	// its socket - making the pod crash before registration even starts.
 	for _, dir := range []string{pluginRegistryDir, pluginRegistryKubeletDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			pw.logger.Warn("Failed to create plugin directory", "dir", dir, "err", err)
@@ -119,7 +119,7 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 				continue
 			}
 			pw.logger.Debug("New plugin socket detected", "socket", event.Name)
-			// Handle in a goroutine — retry loop must not block the watcher.
+			// Handle in a goroutine - retry loop must not block the watcher.
 			go pw.handleSocketWithRetry(ctx, event.Name)
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -197,7 +197,7 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 	// reachable on the host at the same path (hostPath volumes) or via the
 	// emptyDir host directory. For the common seaweedfs layout where the CSI
 	// socket is at /csi/csi.sock backed by an emptyDir, the host path is
-	// pluginRegistryKubeletDir/<driverName>/csi.sock — the conventional
+	// pluginRegistryKubeletDir/<driverName>/csi.sock - the conventional
 	// staging path that perigeos creates during NodeStageVolume.
 	//
 	// Fall back: if the endpoint path exists on the host, use it directly
@@ -236,7 +236,7 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 	if _, err := regClient.NotifyRegistrationStatus(ctx, &registerapi.RegistrationStatus{
 		PluginRegistered: true,
 	}); err != nil {
-		// Log but don't fail — CSINode is already created, the side effect is done.
+		// Log but don't fail - CSINode is already created, the side effect is done.
 		pw.logger.Warn("NotifyRegistrationStatus failed", "driver", info.Name, "err", err)
 	}
 
@@ -266,7 +266,7 @@ func (pw *PluginWatcher) resolveCSIEndpoint(driverName, containerPath string) st
 		return hostPath
 	}
 
-	// Also try pluginRegistryKubeletDir/<driverName>/csi.sock — some drivers
+	// Also try pluginRegistryKubeletDir/<driverName>/csi.sock - some drivers
 	// use non-standard names but are always staged here by perigeos.
 	stagingSocket := filepath.Join(pluginRegistryKubeletDir, driverName, "csi.sock")
 	if _, err := os.Stat(stagingSocket); err == nil {

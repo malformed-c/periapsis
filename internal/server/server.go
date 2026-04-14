@@ -31,9 +31,9 @@ type PawnServer struct {
 type PawnServerConfig struct {
 	CACertPath   string
 	CAKeyPath    string
-	ConfigDir    string // e.g. /etc/apsis/perigeos — for persisting CSR certs
+	ConfigDir    string // e.g. /etc/apsis/perigeos - for persisting CSR certs
 	KubeClient   kubernetes.Interface
-	ImageManager blobProvider // optional — enables GET /blobs/{digest}
+	ImageManager blobProvider // optional - enables GET /blobs/{digest}
 }
 
 // blobProvider is the subset of image.ImageManager used for blob serving.
@@ -54,11 +54,11 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		PortForward:       g.PortForward,
 	}, mux, true)
 
-	// /blobs/{digest} — serves cached compressed OCI layer tarballs to peers.
+	// /blobs/{digest} - serves cached compressed OCI layer tarballs to peers.
 	// Content-addressed: the digest is the integrity check; TLS cert is not verified by peers.
 	if cfg.ImageManager != nil {
 		im := cfg.ImageManager
-		// GET/HEAD /blobs/{digest} — serves cached compressed OCI layer tarballs.
+		// GET/HEAD /blobs/{digest} - serves cached compressed OCI layer tarballs.
 		// HEAD is used by peers to check presence without downloading.
 		mux.HandleFunc("/blobs/", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -93,7 +93,7 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 			http.ServeContent(w, r, digest+".tar.gz", stat.ModTime(), f)
 		})
 
-		// GET /blobs/inflight — returns JSON array of layer hashes currently
+		// GET /blobs/inflight - returns JSON array of layer hashes currently
 		// being pulled by this host. Peers use this to discover in-flight pulls
 		// and wait rather than independently hitting the upstream registry.
 		mux.HandleFunc("/blobs/inflight", func(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +184,7 @@ func (s *PawnServer) Stop(ctx context.Context) error {
 func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) {
 	logger := slog.Default()
 
-	// Strategy 1: CSR flow — proper k8s way, no CA key needed on node.
+	// Strategy 1: CSR flow - proper k8s way, no CA key needed on node.
 	if cfg.KubeClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -195,7 +195,7 @@ func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) 
 		logger.Warn("CSR flow failed, trying CA signing", "pawn", pawnName, "err", err)
 	}
 
-	// Strategy 2: Sign with local CA (legacy — requires CA key on node).
+	// Strategy 2: Sign with local CA (legacy - requires CA key on node).
 	if cfg.CACertPath != "" {
 		caCert, caKey, err := pki.LoadCA(cfg.CACertPath, cfg.CAKeyPath)
 		if err == nil {

@@ -386,7 +386,7 @@ func TestIntegration_DeletePodCleansAllSources(t *testing.T) {
 	h.injectViaHydrate()
 	h.assertAllSourcesAgree([]string{uid})
 
-	// Now delete via gambit — should clean all sources.
+	// Now delete via gambit - should clean all sources.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-" + uid,
@@ -409,7 +409,7 @@ func TestIntegration_DeletePodCleansAllSources(t *testing.T) {
 func TestIntegration_OrphanMachineDetection(t *testing.T) {
 	h := newHarness(t)
 
-	// Spawn a unit but do NOT hydrate — gambit doesn't know about it.
+	// Spawn a unit but do NOT hydrate - gambit doesn't know about it.
 	h.spawnUnit("uid-orphan", "main")
 	time.Sleep(300 * time.Millisecond)
 
@@ -456,13 +456,13 @@ func TestIntegration_ReconcilerCleansOrphans(t *testing.T) {
 	h.spawnUnit(uid, "main")
 	time.Sleep(300 * time.Millisecond)
 
-	// Gambit doesn't know about it — it's an orphan.
+	// Gambit doesn't know about it - it's an orphan.
 	snap := h.snapshot()
 	if !snap.systemdUIDs[uid] {
 		t.Fatal("unit should be running")
 	}
 
-	// Run reconciler — should clean the orphan immediately (no grace period).
+	// Run reconciler - should clean the orphan immediately (no grace period).
 	tr := NewReconcilerForTest(h.rt, &stubNetwork{}, nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	tr.RunOnce(context.Background())

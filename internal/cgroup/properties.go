@@ -23,7 +23,7 @@ func MilliCPUToCPUMax(milliCPU int64) cgroup2.CPUMax {
 // equivalent set of systemd transient-unit D-Bus properties.
 //
 // Supported today: CPU.Weight, CPU.Max, Memory.Max/High/Low/Min/Swap, Pids.Max.
-// Fields outside this set are silently ignored — add them here as pod-label
+// Fields outside this set are silently ignored - add them here as pod-label
 // driven cgroup knobs grow.
 func BuildSystemdProperties(res *cgroup2.Resources) []dbus.Property {
 	if res == nil {

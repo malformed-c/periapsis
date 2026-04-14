@@ -3,7 +3,7 @@
 # Perigeos submits and approves its own kubelet-serving CSRs.
 # kube-controller-manager then signs the approved CSR and issues the cert.
 #
-# This is the self-approval path — the security boundary is the kubeconfig,
+# This is the self-approval path - the security boundary is the kubeconfig,
 # not CSR approval. When Apogeos operator exists, it will handle approval
 # and this ClusterRole can be scoped down.
 apiVersion: rbac.authorization.k8s.io/v1

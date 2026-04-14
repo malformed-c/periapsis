@@ -43,7 +43,7 @@ type constellationNetConfig struct {
 }
 
 // ConstellationConfig holds the host-level CNI consumer settings.
-// This configures perigeos as a CNI *client* — it does not configure the
+// This configures perigeos as a CNI *client* - it does not configure the
 // CNI implementation (constellation/Cilium). Agent deployment and
 // configuration are handled separately.
 type ConstellationConfig struct {
@@ -79,7 +79,7 @@ var _ NetworkManager = (*ConstellationNetworkManager)(nil)
 
 // NewConstellationNetworkManager initialises the CNI consumer:
 //  1. Writes the CNI conflist to ConfDir
-//  2. Checks for the agent socket (informational — not a hard gate)
+//  2. Checks for the agent socket (informational - not a hard gate)
 //  3. Loads the conflist via libcni
 func NewConstellationNetworkManager(ctx context.Context, logger *slog.Logger, cfg ConstellationConfig) (*ConstellationNetworkManager, error) {
 	if cfg.ConfDir == "" {
@@ -181,7 +181,7 @@ func (m *ConstellationNetworkManager) Setup(ctx context.Context, podUID, namespa
 		// CNI ADD may have partially created Cilium endpoint state (lxc interface)
 		// before returning an error. Call DEL to clean up that state before removing
 		// the netns, otherwise the lxc interface leaks until the next process restart.
-		// Use a background context — the original ctx may already be cancelled.
+		// Use a background context - the original ctx may already be cancelled.
 		cleanCtx := context.Background()
 		_ = m.cniAPI.DelNetworkList(cleanCtx, m.cniConf, rt)
 		_ = deleteNetns(cleanCtx, netnsName(podUID))
@@ -195,7 +195,7 @@ func (m *ConstellationNetworkManager) Setup(ctx context.Context, podUID, namespa
 }
 
 // Teardown calls CNI DEL and removes the network namespace.
-// CNI DEL is always attempted even if the netns is already gone — Cilium
+// CNI DEL is always attempted even if the netns is already gone - Cilium
 // maintains endpoint state (lxc interface) independently of the netns file,
 // so skipping DEL when the netns is missing causes a permanent lxc leak.
 func (m *ConstellationNetworkManager) Teardown(ctx context.Context, podUID, namespace, name string) error {

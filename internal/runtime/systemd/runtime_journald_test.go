@@ -280,7 +280,7 @@ func TestSystemd_GetLogStream_Follow_CancelContext(t *testing.T) {
 		}
 	}()
 
-	// Cancel context after a short delay — the reader goroutine must unblock.
+	// Cancel context after a short delay - the reader goroutine must unblock.
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 
@@ -317,7 +317,7 @@ func TestSystemd_ListManagedMachines_StartedAt_Populated(t *testing.T) {
 		t.Fatal("machine uid-startedat not found")
 	}
 	if found.StartedAt.IsZero() {
-		t.Error("StartedAt is zero — ActiveEnterTimestamp not being read correctly")
+		t.Error("StartedAt is zero - ActiveEnterTimestamp not being read correctly")
 	}
 	// Sanity: started within the last minute
 	if time.Since(found.StartedAt) > time.Minute {
@@ -325,7 +325,7 @@ func TestSystemd_ListManagedMachines_StartedAt_Populated(t *testing.T) {
 	}
 }
 
-// ─── MachineStatus — failed state ────────────────────────────────────────────
+// ─── MachineStatus - failed state ────────────────────────────────────────────
 
 func TestSystemd_MachineStatus_Failed(t *testing.T) {
 	requireRoot(t)
@@ -391,12 +391,12 @@ func TestSystemd_MachineStatus_Failed(t *testing.T) {
 	}
 }
 
-// ─── GetLogStream — nonexistent unit opens cleanly ───────────────────────────
+// ─── GetLogStream - nonexistent unit opens cleanly ───────────────────────────
 
 func TestSystemd_GetLogStream_NonexistentUnit_OpensCleanly(t *testing.T) {
 	rt := newTestRuntime(t)
 
-	// A unit that never ran — GetLogStream should open successfully and
+	// A unit that never ran - GetLogStream should open successfully and
 	// return EOF immediately (no entries match).
 	rc, err := rt.GetLogStream(context.Background(), "no-such-uid-xyz", "main", api.ContainerLogOpts{})
 	if err != nil {

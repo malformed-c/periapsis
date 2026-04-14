@@ -191,7 +191,7 @@ func (pn *PawnNode) collectVolumeStatus() ([]corev1.AttachedVolume, []corev1.Uni
 				continue
 			}
 
-			// Use a synthetic volume name — we don't do real attach/detach.
+			// Use a synthetic volume name - we don't do real attach/detach.
 			// Format: kubernetes.io/no-attacher/namespace-claimname
 			name := corev1.UniqueVolumeName(
 				"kubernetes.io/no-attacher/" + pod.Namespace + "-" + vol.PersistentVolumeClaim.ClaimName,
@@ -524,7 +524,7 @@ func systemdVersion() string {
 	if err != nil {
 		return "systemd://"
 	}
-	// First line: "systemd 259 (259.3-1-arch)" — extract the parenthesized version.
+	// First line: "systemd 259 (259.3-1-arch)" - extract the parenthesized version.
 	line := strings.SplitN(string(out), "\n", 2)[0]
 	if start := strings.IndexByte(line, '('); start >= 0 {
 		if end := strings.IndexByte(line[start:], ')'); end >= 0 {

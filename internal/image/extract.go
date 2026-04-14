@@ -10,7 +10,7 @@ import (
 )
 
 // extractLayer unpacks a tar stream into dst.
-// Whiteout files (.wh.*) are kept on disk — overlayfs handles them at runtime.
+// Whiteout files (.wh.*) are kept on disk - overlayfs handles them at runtime.
 func extractLayer(dst string, tr *tar.Reader) error {
 	for {
 		header, err := tr.Next()
@@ -23,7 +23,7 @@ func extractLayer(dst string, tr *tar.Reader) error {
 
 		// Security: ZipSlip protection.
 		// Clean the name first so "./" becomes "" and "../foo" becomes "../foo".
-		// Entries that resolve to exactly dst (e.g. "./" root dir) are harmless — skip them.
+		// Entries that resolve to exactly dst (e.g. "./" root dir) are harmless - skip them.
 		clean := filepath.Clean(header.Name)
 		if filepath.IsAbs(clean) {
 			return fmt.Errorf("security violation: absolute path %s", header.Name)
@@ -35,7 +35,7 @@ func extractLayer(dst string, tr *tar.Reader) error {
 			return fmt.Errorf("security violation: invalid path %s", header.Name)
 		}
 		if target == dstClean {
-			// Root dir entry — nothing to create, dst already exists.
+			// Root dir entry - nothing to create, dst already exists.
 			continue
 		}
 

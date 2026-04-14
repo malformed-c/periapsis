@@ -152,7 +152,7 @@ func TestTidal_UnknownFieldRef_Skipped(t *testing.T) {
 
 	result := envMap(tidal.ResolveEnv(pod, container, "10.88.0.2"))
 
-	// Unknown FieldRef resolves to empty string — key should still be present
+	// Unknown FieldRef resolves to empty string - key should still be present
 	// (the current implementation includes it as UNKNOWN=)
 	// Just verify it doesn't panic and the injected keys are present.
 	if _, ok := result["MY_POD_IP"]; !ok {

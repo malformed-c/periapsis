@@ -245,7 +245,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 
 	logger.Info("Wrote userns mappings", "uidbase", uidbase, "pid", pid)
 
-	// Step 4: Send target uid:gid through gate FIFO — shim will setgid/setuid and exec.
+	// Step 4: Send target uid:gid through gate FIFO - shim will setgid/setuid and exec.
 	gatePath := filepath.Join(fifoDir, "gate")
 	gf, err := os.OpenFile(gatePath, os.O_WRONLY, 0)
 	if err != nil {

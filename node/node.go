@@ -332,7 +332,7 @@ func (n *NodeController) ensureNode(ctx context.Context, providerNode *corev1.No
 	n.serverNodeLock.Unlock()
 	node, err := n.nodes.Create(ctx, serverNode, metav1.CreateOptions{})
 	if err != nil {
-		return pkgerrors.Wrap(err, "error registering node with kubernetes")
+		return pkgerrors.Wrap(err, "error registering node with Kubernetes")
 	}
 
 	n.serverNodeLock.Lock()

@@ -50,8 +50,8 @@ func main() {
 
 	client := control.NewClient(*socketPath)
 
-	// "top" runs an interactive loop — use a cancellable context without timeout.
-	// "rollout" also needs a long-lived context — no timeout.
+	// "top" runs an interactive loop - use a cancellable context without timeout.
+	// "rollout" also needs a long-lived context - no timeout.
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if cmd == "top" || cmd == "rollout" || cmd == "drain" || cmd == "stop" {
@@ -299,7 +299,7 @@ func cmdTop(ctx context.Context, c *control.Client, asJSON bool) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Handle Ctrl+C gracefully — restore terminal on exit.
+	// Handle Ctrl+C gracefully - restore terminal on exit.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
@@ -328,7 +328,7 @@ func cmdTop(ctx context.Context, c *control.Client, asJSON bool) error {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Printf("Refreshing every %s — Ctrl+C to exit\n\n", interval)
+			fmt.Printf("Refreshing every %s - Ctrl+C to exit\n\n", interval)
 			fmt.Fprintln(w, "PAWN\tPODS\tCPU\tMEM(MiB)\tWS(MiB)")
 
 			var totalPods int

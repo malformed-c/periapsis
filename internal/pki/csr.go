@@ -111,7 +111,7 @@ func RequestServingCert(ctx context.Context, client kubernetes.Interface, nodeNa
 	})
 	if err := writeCert(pkiDir, certPath, keyPath, certPEM, keyPEM); err != nil {
 		logger.Warn("Failed to persist certificate to disk", "err", err)
-		// Non-fatal — cert still works in memory for this session.
+		// Non-fatal - cert still works in memory for this session.
 	} else {
 		logger.Info("Certificate persisted", "cert", certPath, "key", keyPath)
 	}
@@ -214,7 +214,7 @@ func waitForCert(ctx context.Context, client kubernetes.Interface, csrName strin
 }
 
 // approveCSR adds an Approved condition to the CSR so kube-controller-manager
-// signs it. This is the self-approval path — perigeos approves its own CSRs.
+// signs it. This is the self-approval path - perigeos approves its own CSRs.
 func approveCSR(ctx context.Context, client kubernetes.Interface, csrName string, logger *slog.Logger) error {
 	csr, err := client.CertificatesV1().CertificateSigningRequests().Get(ctx, csrName, metav1.GetOptions{})
 	if err != nil {

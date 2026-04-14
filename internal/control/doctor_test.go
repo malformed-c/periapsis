@@ -91,7 +91,7 @@ func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
 
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
-// populated by calling HydrateFromRuntime — use this to seed in-memory state.
+// populated by calling HydrateFromRuntime - use this to seed in-memory state.
 func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodMetadata) (*node.Gambit, *doctorMockRuntime) {
 	t.Helper()
 	baseDir := t.TempDir()
@@ -167,7 +167,7 @@ func TestScanDiskPods(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Also put a file (not a dir) — should be ignored.
+	// Also put a file (not a dir) - should be ignored.
 	if err := os.WriteFile(filepath.Join(podsDir, "not-a-uid.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestScanDiskPods_OnlyDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create only regular files — result must be empty.
+	// Create only regular files - result must be empty.
 	for _, name := range []string{"file1", "file2"} {
 		if err := os.WriteFile(filepath.Join(podsDir, name), nil, 0644); err != nil {
 			t.Fatal(err)
@@ -390,7 +390,7 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	//   ghost:   uid-c  (in gambit, not in systemd)
 	//   orphan:  uid-orphan (in systemd, not in gambit)
 	//   stale:   uid-stale  (on disk, not in gambit)
-	//   missing: uid-d  (in gambit, not on disk) — wait, uid-d has a disk dir
+	//   missing: uid-d  (in gambit, not on disk) - wait, uid-d has a disk dir
 	//
 	// Revised plan:
 	//   gambit:  uid-a, uid-b, uid-c, uid-d
@@ -461,7 +461,7 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 }
 
 func TestDoctorEmptyGambit(t *testing.T) {
-	// No pods anywhere — should be healthy with all-zero counts.
+	// No pods anywhere - should be healthy with all-zero counts.
 	g, _ := newDoctorTestGambit(t, "pawn0", nil)
 
 	s := newDoctorServer(g)
@@ -481,7 +481,7 @@ func TestDoctorEmptyGambit(t *testing.T) {
 
 func TestDoctorMultipleContainersSameUID(t *testing.T) {
 	// A multi-container pod produces multiple machines with the same UID.
-	// The doctor should deduplicate — systemdUIDs counts unique UIDs.
+	// The doctor should deduplicate - systemdUIDs counts unique UIDs.
 	machines := []perigeos.PodMetadata{
 		{UID: "uid-multi", Name: "mypod", Namespace: "default", ContainerName: "app"},
 		{UID: "uid-multi", Name: "mypod", Namespace: "default", ContainerName: "sidecar"},
@@ -505,7 +505,7 @@ func TestDoctorMultipleContainersSameUID(t *testing.T) {
 }
 
 func TestDoctorNoPawns(t *testing.T) {
-	// Server with no gambits — should return healthy with empty slice.
+	// Server with no gambits - should return healthy with empty slice.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	s := &Server{logger: logger}
 

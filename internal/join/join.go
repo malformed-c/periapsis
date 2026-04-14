@@ -98,7 +98,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.logger.Info("--- Step 7/7: verify-registration")
 	if r.opts.DryRun {
 		r.logger.Info("[dry-run] would wait for control socket and pawn node registration")
-		r.logger.Info("[dry-run] join complete — review planned files above")
+		r.logger.Info("[dry-run] join complete - review planned files above")
 		return nil
 	}
 
@@ -109,7 +109,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	r.logger.Info("Join complete — perigeos is running")
+	r.logger.Info("Join complete - perigeos is running")
 	r.logger.Info("Edit config to add more pawns:", "path", r.opts.ConfigDir+"/perigeos.toml")
 	r.logger.Info("Then restart:                  systemctl restart perigeos.service")
 	return nil
@@ -124,7 +124,7 @@ func detectConstellationCNI(ctx context.Context, client kubernetes.Interface, lo
 	// Look for the constellation-agent DaemonSet in kube-system.
 	_, err := client.AppsV1().DaemonSets("kube-system").Get(ctx, "constellation-agent", metav1.GetOptions{})
 	if err == nil {
-		logger.Info("Detected Constellation CNI in cluster — enabling [global.cni]")
+		logger.Info("Detected Constellation CNI in cluster - enabling [global.cni]")
 		return true
 	}
 	logger.Debug("Constellation CNI not detected in cluster", "err", err)

@@ -125,7 +125,7 @@ func (n *LinuxNetworkManager) Teardown(ctx context.Context, podUID, _, _ string)
 
 	vethHost := vethName(podUID)
 
-	// Delete the host-side veth first — this also removes the peer inside
+	// Delete the host-side veth first - this also removes the peer inside
 	// the netns. If it fails (e.g. already gone), proceed anyway.
 	if out, err := run(ctx, "ip", "link", "delete", vethHost); err != nil {
 		n.logger.Warn("Failed to delete veth (may already be gone)", "veth", vethHost, "out", out)
@@ -225,7 +225,7 @@ func createNetns(ctx context.Context, podUID string) error {
 	if out, err := run(ctx, "ip", "netns", "add", podUID); err != nil {
 		return fmt.Errorf("ip netns add %s: %s: %w", podUID, out, err)
 	}
-	// Bring up lo — CNI plugins and systemd-nspawn don't do this.
+	// Bring up lo - CNI plugins and systemd-nspawn don't do this.
 	if out, err := run(ctx, "ip", "netns", "exec", podUID, "ip", "link", "set", "lo", "up"); err != nil {
 		return fmt.Errorf("ip netns exec %s lo up: %s: %w", podUID, out, err)
 	}
@@ -262,7 +262,7 @@ func (n *LinuxNetworkManager) cleanOrphanedVeths(ctx context.Context) {
 		}
 		// Extract the uid suffix and check if its netns still exists.
 		// vethName() uses the last 8 non-dash chars of the UID as the suffix,
-		// and netns files are named by full UID — so a suffix match is correct.
+		// and netns files are named by full UID - so a suffix match is correct.
 		suffix := strings.TrimPrefix(ifName, "veth")
 		entries, err := os.ReadDir(n.baseDir)
 		if err != nil {

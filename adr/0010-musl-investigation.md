@@ -12,7 +12,7 @@
 Failed to resolve user <user>.
 ```
 
-This affects **all** non-root users — both injected (`peri-1000`) and image-native (`nginx`, `mail`, `nobody`).
+This affects **all** non-root users - both injected (`peri-1000`) and image-native (`nginx`, `mail`, `nobody`).
 
 glibc-based images (Debian, Ubuntu) are unaffected.
 
@@ -22,8 +22,8 @@ glibc-based images (Debian, Ubuntu) are unaffected.
 
 systemd-nspawn v260 resolves `--user=` by forking into the container namespace and running:
 
-1. `getent passwd <user>` — lookup user entry
-2. `getent initgroups <user>` — lookup supplementary groups
+1. `getent passwd <user>` - lookup user entry
+2. `getent initgroups <user>` - lookup supplementary groups
 
 musl libc's `getent` does not support the `initgroups` database:
 
@@ -81,7 +81,7 @@ Key finding: nspawn uses PATH resolution (not a hardcoded path), and `/usr/local
 
 ### 4. Confirm the execution environment is restricted
 
-Early shim attempts using `grep`, `cat`, `ls` all failed — nspawn's `spawn_getent` fork has an extremely minimal execution environment where only the shell and its builtins are available:
+Early shim attempts using `grep`, `cat`, `ls` all failed - nspawn's `spawn_getent` fork has an extremely minimal execution environment where only the shell and its builtins are available:
 
 ```bash
 # Debug shim that tries external commands:
@@ -189,15 +189,15 @@ ls /tmp/nspawn-rootfs/lib/ld-linux-*
 
 Implemented in `internal/runtime/systemd/musl.go`:
 
-1. **`isMuslRootFS(rootfs)`** — globs for `/lib/ld-musl-*.so.*` in the rootfs
-2. **`ensureGetentShim(rootfs, logger)`** — if musl detected, logs a warning and writes the builtins-only getent shim to `<rootfs>/usr/local/bin/getent`
+1. **`isMuslRootFS(rootfs)`** - globs for `/lib/ld-musl-*.so.*` in the rootfs
+2. **`ensureGetentShim(rootfs, logger)`** - if musl detected, logs a warning and writes the builtins-only getent shim to `<rootfs>/usr/local/bin/getent`
 3. **Called from `RunMachine`** before `--user=` is appended, only for non-root UIDs (root skips getent resolution)
 
 The shim:
 - Handles `getent initgroups <user>` using `while IFS=: read` to parse `/etc/passwd` and `/etc/group`
 - Supports both username and numeric UID lookups
 - Delegates all other databases (`passwd`, `group`, `hosts`, etc.) to the real `/usr/bin/getent`
-- Uses zero external commands — only POSIX shell builtins
+- Uses zero external commands - only POSIX shell builtins
 
 ---
 
@@ -206,4 +206,4 @@ The shim:
 - Affects: Alpine, BusyBox, and any musl-based container image
 - Does not affect: Debian, Ubuntu, Fedora, or any glibc-based image
 - nspawn version tested: systemd v260
-- The shim is idempotent — safe to overwrite on repeated container starts
+- The shim is idempotent - safe to overwrite on repeated container starts

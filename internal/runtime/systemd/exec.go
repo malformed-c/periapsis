@@ -31,7 +31,7 @@ func (s *SystemdRuntime) runInContainerNsenter(
 	pid, err := s.getMachineLeaderPID(machineName)
 	if err != nil {
 		// Program-mode (hostPID) containers don't register with machined.
-		// Use chroot into the unit's RootDirectory instead of nsenter — simpler
+		// Use chroot into the unit's RootDirectory instead of nsenter - simpler
 		// and avoids trying to enter namespaces that are shared with the host.
 		unitName := wrapperUnitName(s.pawnName, podUID, containerName)
 		return s.runInProgramContainer(ctx, unitName, cmd, attach)
@@ -140,7 +140,7 @@ func (s *SystemdRuntime) leaderPIDFromMachined(machineName string) (int, error) 
 func (s *SystemdRuntime) leaderPIDFromSupervisor(machineName string) (int, error) {
 	nspawnPID, err := s.supervisorPIDFromMachined(machineName)
 	if err != nil {
-		// Machine not yet registered — fall back to unit MainPID.
+		// Machine not yet registered - fall back to unit MainPID.
 		nspawnPID, err = s.supervisorPIDFromUnit(machineName)
 		if err != nil {
 			return 0, err
@@ -211,7 +211,7 @@ func (s *SystemdRuntime) supervisorPIDFromUnit(machineName string) (int, error) 
 //
 // Strategy: enter ONLY the private mount namespace that systemd creates for
 // RootDirectory= services (so bind-mounted volumes like /var/run/cilium are
-// visible), then pivot root via --root. Skip all other namespace flags —
+// visible), then pivot root via --root. Skip all other namespace flags -
 // the container shares host PID/net/uts/ipc/cgroup namespaces.
 func (s *SystemdRuntime) runInProgramContainer(
 	ctx context.Context,
@@ -350,7 +350,7 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 
 // openPTY opens a master/slave PTY pair on the host.
 // Both TIOCSPTLCK (unlock) and TIOCGPTN (get number) require a pointer
-// argument — pass via unsafe.Pointer so the kernel can read/write the value.
+// argument - pass via unsafe.Pointer so the kernel can read/write the value.
 func openPTY() (master, slave *os.File, err error) {
 	master, err = os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
 	if err != nil {

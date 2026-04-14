@@ -7,7 +7,7 @@
 
 Adding a host to a Perigeos-managed cluster is fully manual: SSH in, copy a kubeconfig, write `perigeos.toml`, build the binary, run it. There is no discovery, no authentication handshake, and no mechanism for the Apogeos operator to track which hosts exist or push configuration to them.
 
-As the fleet grows beyond the current two hosts (engix99, engicarbon), this manual process becomes the bottleneck. It also has a security gap — the kubeconfig placed on the host has full cluster access and never expires.
+As the fleet grows beyond the current two hosts (engix99, engicarbon), this manual process becomes the bottleneck. It also has a security gap - the kubeconfig placed on the host has full cluster access and never expires.
 
 ## Decision
 
@@ -32,7 +32,7 @@ Implement a kubeadm-style bootstrap token flow for registering new hosts with an
 
 3. **Token expiry.** The bootstrap token is valid for its TTL (default 15 minutes). After expiry, or after a configurable number of uses (default 1), the Secret is deleted or marked expired. A leaked token has a narrow exploitation window.
 
-4. **Ongoing auth.** After bootstrap, the host uses its client certificate for all subsequent communication. Certificate rotation follows the standard Kubernetes CSR flow — perigeos requests a new cert before the current one expires, Apogeos auto-approves CSRs from known hosts.
+4. **Ongoing auth.** After bootstrap, the host uses its client certificate for all subsequent communication. Certificate rotation follows the standard Kubernetes CSR flow - perigeos requests a new cert before the current one expires, Apogeos auto-approves CSRs from known hosts.
 
 ### PerigeosHost CRD
 
@@ -42,7 +42,7 @@ kind: PerigeosHost
 metadata:
   name: engicarbon
 spec:
-  # Desired pawn configuration — pushed by Apogeos, reconciled by perigeos
+  # Desired pawn configuration - pushed by Apogeos, reconciled by perigeos
   pawns:
     - name: pawn-01-compute
       cpu: "100%"
@@ -77,7 +77,7 @@ status:
   lastHeartbeat: "2026-03-20T14:30:00Z"
 ```
 
-Perigeos watches its own `PerigeosHost` object and reconciles toward `spec.pawns` — creating, removing, or reconfiguring pawns without a restart. The operator watches `status` to track fleet health.
+Perigeos watches its own `PerigeosHost` object and reconciles toward `spec.pawns` - creating, removing, or reconfiguring pawns without a restart. The operator watches `status` to track fleet health.
 
 ### Constellation integration
 
@@ -85,7 +85,7 @@ The Apogeos operator owns the `constellation-config` ConfigMap. It watches all `
 
 ## Consequences
 
-- `perigeos join` is the single entry point for adding a host — no manual kubeconfig or TOML editing
+- `perigeos join` is the single entry point for adding a host - no manual kubeconfig or TOML editing
 - Bootstrap tokens are temporal, minimizing the blast radius of leaks
 - The `PerigeosHost` CRD is the source of truth for host configuration, enabling the operator to push pawn changes fleet-wide
 - Perigeos becomes a reconciliation loop on its own `PerigeosHost` spec rather than a static config reader

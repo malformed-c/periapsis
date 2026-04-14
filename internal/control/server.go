@@ -32,8 +32,8 @@ const ifaceName = "io.perigeos.Manager"
 
 // methodEntry is a single entry in the server's unified dispatch table.
 // handler is called on every invocation; tcpAllowed gates access on the
-// TCP+mTLS path (remote operators). Methods that mutate local state —
-// Drain, Stop — are unix-socket-only: an mTLS certificate does not grant
+// TCP+mTLS path (remote operators). Methods that mutate local state -
+// Drain, Stop - are unix-socket-only: an mTLS certificate does not grant
 // the right to shut down running pods.
 type methodEntry struct {
 	handler    func(ctx context.Context) any
@@ -112,7 +112,7 @@ func New(socketPath string, cfg *config.PerigeosConfig, logger *slog.Logger) *Se
 		"Doctor":  {func(ctx context.Context) any { return s.buildDoctor(ctx) }, true},
 		"Images":  {func(ctx context.Context) any { return s.buildImages() }, true},
 		"Version": {func(ctx context.Context) any { return s.buildVersion() }, true},
-		// Mutating/local-only — not exposed over TCP.
+		// Mutating/local-only - not exposed over TCP.
 		"Drain": {func(ctx context.Context) any { return s.buildDrain() }, false},
 		"Stop":  {func(ctx context.Context) any { return s.buildStop(ctx) }, false},
 	}
@@ -181,7 +181,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Warn("Could not create socket dir", "err", err)
 	}
 
-	// TCP + mTLS — optional remote access for Apogeos operator.
+	// TCP + mTLS - optional remote access for Apogeos operator.
 	if s.tcpAddr != "" && s.tlsCert != nil && s.tlsCACert != nil {
 		go s.listenTCP(ctx)
 	}
@@ -274,7 +274,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 }
 
 // dispatch is the TCP+mTLS path. It looks up the unified method table and
-// enforces tcpAllowed — mutating/local methods are unix-socket-only.
+// enforces tcpAllowed - mutating/local methods are unix-socket-only.
 func (s *Server) dispatch(ctx context.Context, method string) (any, string) {
 	entry, ok := s.methods[method]
 	if !ok {
@@ -698,7 +698,7 @@ func (s *Server) diagnosePawn(ctx context.Context, g *node.Gambit) PawnDiagnosis
 		if _, ok := gambitUIDs[uid]; !ok {
 			diag.OrphanMachines = append(diag.OrphanMachines, DoctorEntry{UID: uid, Name: info.name})
 		}
-		// Count dead/failed units not tracked by gambit — leftovers from crash/restart.
+		// Count dead/failed units not tracked by gambit - leftovers from crash/restart.
 		if info.state == perigeos.StateExited || info.state == perigeos.StateFailed {
 			if _, ok := gambitUIDs[uid]; !ok {
 				diag.StaleUnits++

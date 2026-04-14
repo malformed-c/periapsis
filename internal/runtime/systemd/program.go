@@ -22,7 +22,7 @@ type bindEntry struct {
 }
 
 // bindsAPIVFS returns true if the bind mounts already include /proc, /sys, or
-// /dev — meaning the pod provides its own API VFS and systemd should not mount
+// /dev - meaning the pod provides its own API VFS and systemd should not mount
 // fresh ones (MountAPIVFS=no).
 func bindsAPIVFS(mounts []runtime.BindMount) bool {
 	for _, bm := range mounts {
@@ -36,7 +36,7 @@ func bindsAPIVFS(mounts []runtime.BindMount) bool {
 
 // runProgram starts a container workload as a plain systemd transient service
 // using RootDirectory= (chroot) instead of systemd-nspawn. This gives the
-// process access to the host PID and cgroup namespaces — required for
+// process access to the host PID and cgroup namespaces - required for
 // privileged infrastructure workloads such as the Constellation CNI agent.
 //
 // Lifecycle methods (StopMachine, MachineStatus, ListManagedMachines,
@@ -92,7 +92,7 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 
 	// Separate bind mounts into rw and ro lists.
 	// Sort by destination path depth (parents before children) so that
-	// systemd processes parent mounts first — e.g. /sys before /sys/fs/bpf.
+	// systemd processes parent mounts first - e.g. /sys before /sys/fs/bpf.
 	// Without this, a child mount can be covered by a later parent mount.
 	sorted := make([]runtime.BindMount, len(cfg.BindMounts))
 	copy(sorted, cfg.BindMounts)
@@ -105,7 +105,7 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		entry := bindEntry{
 			Source: bm.HostPath,
 			Dest:   bm.ContainerPath,
-			Flags:  0x4000, // MS_REC — recursive bind so submounts (e.g. bpffs) carry over
+			Flags:  0x4000, // MS_REC - recursive bind so submounts (e.g. bpffs) carry over
 		}
 		if bm.ReadOnly {
 			bindROPaths = append(bindROPaths, entry)
@@ -128,7 +128,7 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		// RootDirectory performs a chroot into the container image rootfs.
 		// systemd creates a private mount namespace automatically when this is set.
 		{Name: "RootDirectory", Value: dbusv5.MakeVariant(cfg.RootFS)},
-		// Enable MountAPIVFS only when the pod mounts /proc, /sys, or /dev —
+		// Enable MountAPIVFS only when the pod mounts /proc, /sys, or /dev -
 		// this ensures the directories exist in the chroot before BindPaths
 		// overlays the host's filesystems. Recursive binds (Flags=1) then
 		// carry submounts like /sys/fs/bpf sharing the host's superblock.
@@ -166,7 +166,7 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 	// knobs (IO, Pids, memory.high, cpuset, ...) should be wired in.
 	properties = append(properties, cgroup.BuildSystemdProperties(buildPodResources(cfg))...)
 
-	// No CollectMode — we manage unit lifecycle explicitly via MachineStatus
+	// No CollectMode - we manage unit lifecycle explicitly via MachineStatus
 	// polling, just like the nspawn path in RunMachine. Using CollectMode=inactive-or-failed
 	// with a blocking completion channel triggers the go-systemd StartTransientUnit
 	// race condition: the unit can start, run, and exit before the completion

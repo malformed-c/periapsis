@@ -15,7 +15,7 @@ FAIL=0
 TOTAL=0
 
 pass() { ((PASS++)); ((TOTAL++)); echo "  PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 — $2"; }
+fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 - $2"; }
 
 # Read an env var from PID 1 inside the container (exec spawns a new process
 # that doesn't inherit nspawn --setenv vars, so we read /proc/1/environ).
@@ -61,7 +61,7 @@ kubectl $KC create ns "$NS"
 echo
 
 # ============================================================
-# Phase 5A: Env pipeline — fieldRef status.podIP resolves after CNI
+# Phase 5A: Env pipeline - fieldRef status.podIP resolves after CNI
 # ============================================================
 echo "--- Phase 5A: fieldRef status.podIP resolution ---"
 
@@ -353,7 +353,7 @@ else
     fail "initial keys wrong" "a='$ka' b='$kb'"
 fi
 
-# Remove key-b, update key-a (must use replace, not apply — apply merges and won't delete keys)
+# Remove key-b, update key-a (must use replace, not apply - apply merges and won't delete keys)
 kubectl $KC create configmap vol-cm-keys -n "$NS" --from-literal=key-a="alpha-v2" --dry-run=client -o yaml \
     | kubectl $KC replace -f -
 

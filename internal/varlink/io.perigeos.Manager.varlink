@@ -102,7 +102,7 @@ type DoctorSummary (
   netns_count: int
 )
 
-# Compare pod state across gambit, systemd and disk — report discrepancies.
+# Compare pod state across gambit, systemd and disk - report discrepancies.
 method Doctor() -> (
   healthy: bool,
   pawns: []PawnDiagnosis,

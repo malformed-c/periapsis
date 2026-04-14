@@ -7,7 +7,7 @@
 
 Perigeos manages pods as systemd-nspawn containers. The perigeos systemd unit
 currently uses `KillMode=control-group`, which kills all processes in the
-service's cgroup when perigeos stops — including every nspawn container it
+service's cgroup when perigeos stops - including every nspawn container it
 spawned.
 
 This causes a cascade of problems on `systemctl restart perigeos`:
@@ -19,7 +19,7 @@ This causes a cascade of problems on `systemctl restart perigeos`:
 2. **Constellation agent dies too.** The constellation-agent pod runs on the
    same host, managed by perigeos. When it's killed, the
    `/var/run/cilium/cilium.sock` socket disappears. Perigeos's CNI
-   auto-detection (`buildCNIConfig`) checks for that socket at startup —
+   auto-detection (`buildCNIConfig`) checks for that socket at startup -
    if the socket is gone, it falls back to built-in veth networking. Pods
    then get podman bridge IPs (`10.88.0.x`) instead of Constellation-managed
    CIDRs, breaking cross-host connectivity entirely.
@@ -38,7 +38,7 @@ This causes a cascade of problems on `systemctl restart perigeos`:
 
 Bugs #3 and #4 have been fixed (seeding `seenRunning` from hydrated pods,
 using `isContainerReady()` in the initial status push). But the fundamental
-issue — killing every container on a routine restart — remains costly and
+issue - killing every container on a routine restart - remains costly and
 fragile.
 
 ## Decision
@@ -57,7 +57,7 @@ scopes/slices.
 4. `StartBatchWatcher` seeds `seenRunning` from hydrated `PodRunning` pods.
 5. First poll detects containers as `StateRunning` and pushes correct status.
 
-No container recreation needed — pods continue running uninterrupted.
+No container recreation needed - pods continue running uninterrupted.
 
 ### Shutdown: explicit cleanup
 
@@ -71,7 +71,7 @@ Perigeos already handles SIGTERM gracefully via `DrainPods`, which:
 
 This runs within `TimeoutStopSec=90s`. If perigeos is killed before
 completing drain (SIGKILL after timeout), orphan containers remain but are
-harmless — they'll be cleaned up on next start by the stale-pod sweep in
+harmless - they'll be cleaned up on next start by the stale-pod sweep in
 `HydrateFromRuntime`.
 
 ### Service file changes
@@ -93,7 +93,7 @@ TimeoutStopSec=30s
 - `Type=notify`: systemd waits for `READY=1` before reporting active.
 - `WatchdogSec=120s`: perigeos sends `WATCHDOG=1` pings every 30s;
   systemd auto-restarts if pings stop.
-- `TimeoutStopSec=30s`: shorter — no drain needed, just close servers.
+- `TimeoutStopSec=30s`: shorter - no drain needed, just close servers.
 
 ### Shutdown behavior
 
@@ -102,7 +102,7 @@ SIGTERM handler:
 2. Marks all pawns as shutting down (node → NotReady).
 3. Waits up to 15s for any in-progress apiserver-initiated deletions.
 4. Closes control socket and HTTPS servers.
-5. Exits — containers survive via `KillMode=process`.
+5. Exits - containers survive via `KillMode=process`.
 
 No `DrainPods` on SIGTERM. For explicit node decommission, run
 `perigeos drain` before stopping.
@@ -113,11 +113,11 @@ No `DrainPods` on SIGTERM. For explicit node decommission, run
 - Seeding `seenRunning` ✓ (done)
 - Fixing `Ready: false` initial push ✓ (done)
 - Explicit `[global.cni]` to bypass socket auto-detect ✓ (done)
-- Still kills every container on restart — slow, wasteful.
+- Still kills every container on restart - slow, wasteful.
 - Every new edge case from container death requires another fix.
 
 **Option B: `KillMode=process`** ✓
-- Containers survive restarts — zero disruption.
+- Containers survive restarts - zero disruption.
 - Hydration path already works.
 - Eliminates the entire class of restart-related bugs.
 - Graceful shutdown still cleans up via `DrainPods`.

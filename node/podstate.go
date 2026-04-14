@@ -80,7 +80,7 @@ func readPodState(baseDir, pawnName, uid string) (*PersistedPodState, error) {
 }
 
 // deletePodState removes the pod state file. The directory itself is
-// managed by the volume resolver cleanup — we only remove the state file.
+// managed by the volume resolver cleanup - we only remove the state file.
 func deletePodState(baseDir, pawnName, uid string) error {
 	path := filepath.Join(podStateDir(baseDir, pawnName, uid), podStateFile)
 	err := os.Remove(path)

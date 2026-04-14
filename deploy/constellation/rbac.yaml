@@ -1,4 +1,4 @@
-# Constellation CNI — ServiceAccounts, ClusterRoles, bindings
+# Constellation CNI - ServiceAccounts, ClusterRoles, bindings
 # Agent and operator run in kube-system for access to system configmaps.
 ---
 apiVersion: v1

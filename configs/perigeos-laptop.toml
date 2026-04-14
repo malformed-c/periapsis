@@ -6,7 +6,7 @@ DefaultMemory = "512M"
 
 primary = true
 
-# k3s server CA — used to sign pawn serving certs so the apiserver trusts them.
+# k3s server CA - used to sign pawn serving certs so the apiserver trusts them.
 # Must match the k3s cluster's CA.
 server_ca_path = "/etc/apsis/perigeos/server-ca.crt"
 server_ca_key_path = "/etc/apsis/perigeos/server-ca.key"

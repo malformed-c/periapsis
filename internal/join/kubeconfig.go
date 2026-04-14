@@ -59,7 +59,7 @@ func generateKubeconfig(ctx context.Context, opts *Options, logger *slog.Logger)
 
 	client, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("create kubernetes client: %w", err)
+		return nil, "", fmt.Errorf("create Kubernetes client: %w", err)
 	}
 
 	version, err := client.Discovery().ServerVersion()

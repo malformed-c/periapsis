@@ -11,7 +11,7 @@ FAIL=0
 TOTAL=0
 
 pass() { ((PASS++)); ((TOTAL++)); echo "  PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 — $2"; }
+fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 - $2"; }
 
 cleanup() {
     kubectl $KC delete pod test-exec-e2e --force --grace-period=0 2>/dev/null || true

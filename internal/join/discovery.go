@@ -40,7 +40,7 @@ func discoverKubeconfig(ctx context.Context, apiServer, token string, logger *sl
 // kubeadmDiscover fetches the cluster-info ConfigMap from kube-public.
 // The ConfigMap is world-readable by design and contains the CA + API server URL.
 func kubeadmDiscover(ctx context.Context, apiServer, token string, logger *slog.Logger) (*clientcmdapi.Config, error) {
-	// Bootstrap with an insecure client to fetch cluster-info — the CA inside
+	// Bootstrap with an insecure client to fetch cluster-info - the CA inside
 	// it is what we use to verify future connections.
 	restCfg := &rest.Config{
 		Host:        apiServer,

@@ -19,7 +19,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 )
 
-// ─── GenerateCert — self-signed ───────────────────────────────────────────────
+// ─── GenerateCert - self-signed ───────────────────────────────────────────────
 
 func TestGenerateCert_SelfSigned_IsUsable(t *testing.T) {
 	cert, err := pki.GenerateCert("pawn-01", nil, nil)
@@ -115,7 +115,7 @@ func TestGenerateCert_SelfSigned_VerifiesAgainstItself(t *testing.T) {
 	}
 }
 
-// ─── GenerateCert — CA-signed ─────────────────────────────────────────────────
+// ─── GenerateCert - CA-signed ─────────────────────────────────────────────────
 
 func TestGenerateCert_CASigned_VerifiesAgainstCA(t *testing.T) {
 	caCert, caKey := makeTestCA(t)
@@ -149,7 +149,7 @@ func TestGenerateCert_CASigned_RejectsWithoutCA(t *testing.T) {
 
 	x509Cert := parseCert(t, cert)
 
-	// Verify against an empty root pool — must fail.
+	// Verify against an empty root pool - must fail.
 	_, err = x509Cert.Verify(x509.VerifyOptions{
 		DNSName: "pawn-02",
 		Roots:   x509.NewCertPool(),

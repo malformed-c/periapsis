@@ -492,7 +492,7 @@ func podFieldSelectorRuntimeValue(fs *corev1.ObjectFieldSelector, pod *corev1.Po
 	case "spec.serviceAccountName":
 		return pod.Spec.ServiceAccountName, nil
 	case "status.podIP":
-		// podIP is empty before CNI runs — return empty string rather than
+		// podIP is empty before CNI runs - return empty string rather than
 		// erroring. The value will be populated once the pod is Running.
 		return pod.Status.PodIP, nil
 	case "status.podIPs":
@@ -511,7 +511,7 @@ func podFieldSelectorRuntimeValue(fs *corev1.ObjectFieldSelector, pod *corev1.Po
 	}
 	val, err := ExtractFieldPathAsString(pod, internalFieldPath)
 	if err != nil {
-		// Unsupported fieldPath — degrade to empty string rather than
+		// Unsupported fieldPath - degrade to empty string rather than
 		// blocking pod creation. Real kubelets do the same for fields
 		// that aren't yet populated.
 		return "", nil

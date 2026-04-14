@@ -25,7 +25,7 @@ type HostPressure struct {
 
 // Read returns the current host-wide PSI readings.
 // CPU uses the "some" metric (any task stalled), memory uses "full"
-// (all tasks stalled — the signal that actually causes OOM pressure).
+// (all tasks stalled - the signal that actually causes OOM pressure).
 func Read() (HostPressure, error) {
 	var hp HostPressure
 	var err error

@@ -49,7 +49,7 @@ type ImageManager struct {
 	layerSF       singleflight.Group      // deduplicates layer downloads by content hash
 
 	// inflightLayers tracks layer hashes currently being pulled by this host.
-	// Value type is chan struct{} — closed when the pull completes.
+	// Value type is chan struct{} - closed when the pull completes.
 	// Exposed via /blobs/inflight so peers can discover and wait on our pulls
 	// instead of independently downloading the same layer from upstream.
 	inflightLayers sync.Map // hash → chan struct{}
@@ -57,7 +57,7 @@ type ImageManager struct {
 	// selfMarker is a random token registered as a permanent entry in
 	// inflightLayers. When peersWithInflight queries a peer and sees this
 	// marker in the response, it knows the "peer" is actually this same
-	// perigeos process — belt-and-braces against a misconfigured host
+	// perigeos process - belt-and-braces against a misconfigured host
 	// filter sending us into a wait-on-self deadlock.
 	selfMarker   string
 	knownSelfEps sync.Map // ep → true, cached after first detection
@@ -140,7 +140,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		// Restore the tag separator: the last "_" before a tag is actually ":"
 		// e.g. "library_nginx_latest" → "library/nginx:latest" isn't fully
 		// recoverable without the original, so we store the safe name as-is
-		// and show it. This is cosmetic — the actual data is in the paths.
+		// and show it. This is cosmetic - the actual data is in the paths.
 		if seen[imageName] {
 			continue
 		}
@@ -238,9 +238,9 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 // Returns ordered layer paths (bottom → top) ready for overlayfs lowerdir.
 //
 // pullPolicy follows Kubernetes semantics:
-//   - "Always"       — always resolve the manifest from the registry (default)
-//   - "IfNotPresent" — skip the pull if a cached manifest exists locally
-//   - "Never"        — fail if no cached manifest exists
+//   - "Always"       - always resolve the manifest from the registry (default)
+//   - "IfNotPresent" - skip the pull if a cached manifest exists locally
+//   - "Never"        - fail if no cached manifest exists
 //
 // When pullPolicy is empty it defaults to "Always".
 func (im *ImageManager) Pull(imageName string, pullPolicy string) ([]string, bool, error) {
@@ -297,7 +297,7 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 	}
 
 	// Always policy: resolve the remote manifest digest first (cheap HEAD/GET).
-	// If the remote digest matches the cached one, all layers are current —
+	// If the remote digest matches the cached one, all layers are current -
 	// return the disk cache without re-downloading anything.
 	// This gives correct "always check for updates" semantics while avoiding
 	// redundant layer downloads when the image hasn't changed.
@@ -316,9 +316,9 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 				im.logger.Info("Always: remote digest changed, re-pulling",
 					"image", imageName, "cached", cachedDigest[:16], "remote", remoteDigest[:16])
 			}
-			// digest fetch failed (offline, rate-limited) — fall through to full manifest pull
+			// digest fetch failed (offline, rate-limited) - fall through to full manifest pull
 		}
-		// No cached digest yet (first pull was before this feature) — fall through
+		// No cached digest yet (first pull was before this feature) - fall through
 	}
 
 	manifestObj, err, _ := im.imageSF.Do(cacheKey, func() (any, error) {
@@ -428,7 +428,7 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 	// Pre-register ALL layer hashes as inflight before any goroutine starts.
 	// This lets peers discover our full intent immediately: they can wait on
 	// individual layers as they complete rather than pulling from upstream.
-	// We resolve DiffIDs sequentially here (cheap — just reads manifest data).
+	// We resolve DiffIDs sequentially here (cheap - just reads manifest data).
 	type layerInfo struct {
 		hash string
 		ch   chan struct{} // closed when this layer's pull finishes
@@ -440,7 +440,7 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 			return nil, fmt.Errorf("resolve diffID[%d]: %w", i, err)
 		}
 		h := diffID.Hex
-		// Only register as inflight if not already on disk — no point announcing
+		// Only register as inflight if not already on disk - no point announcing
 		// a layer we already have.
 		if _, statErr := os.Stat(filepath.Join(im.layerCache, h)); statErr != nil {
 			infos[i] = layerInfo{hash: h, ch: im.markInflight(h)}
@@ -642,10 +642,10 @@ func (im *ImageManager) InflightHashes() []string {
 
 // ensureLayer ensures a layer is extracted to {layerCache}/{hash}/.
 // Pull order:
-//  1. Already extracted — return immediately.
-//  2. Blob file exists locally — extract from it (handles mid-extraction crashes).
-//  3. Peer node has blob — fetch compressed stream, tee to local blob file + extract.
-//  4. Upstream registry — fetch compressed stream, tee to local blob file + extract.
+//  1. Already extracted - return immediately.
+//  2. Blob file exists locally - extract from it (handles mid-extraction crashes).
+//  3. Peer node has blob - fetch compressed stream, tee to local blob file + extract.
+//  4. Upstream registry - fetch compressed stream, tee to local blob file + extract.
 func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerSelector, eventFn PullEventFn) (string, error) {
 	destPath := filepath.Join(im.layerCache, hash)
 
@@ -662,13 +662,13 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 
 	blobFile := im.blobPath(hash)
 
-	// 2. Local blob file exists — extract from it.
+	// 2. Local blob file exists - extract from it.
 	if _, err := os.Stat(blobFile); err == nil {
 		im.logger.Info("Extracting layer from local blob", "hash", hash)
 		if err := extractCompressedBlob(blobFile, tmpPath); err == nil {
 			return commitLayer(tmpPath, destPath)
 		}
-		// Corrupt blob — remove and fall through.
+		// Corrupt blob - remove and fall through.
 		os.Remove(blobFile)
 		os.RemoveAll(tmpPath)
 		if err := os.MkdirAll(tmpPath, 0755); err != nil {
@@ -684,7 +684,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 		// If so, wait for it to finish then fetch from that peer instead of
 		// independently hitting the upstream registry.
 		//
-		// peersWithInflight is called with a short-lived context — we just want
+		// peersWithInflight is called with a short-lived context - we just want
 		// a quick snapshot, not to block the pull for a slow kube API.
 		inflightCtx, inflightCancel := context.WithTimeout(ctx, 5*time.Second)
 		inflightPeers := im.peersWithInflight(inflightCtx, map[string]bool{hash: true})
@@ -695,7 +695,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 				eventFn("Normal", "PeerWait", fmt.Sprintf("Layer %s is being pulled from peer %s, waiting", hash[:12], peerEp))
 			}
 			if waitForPeerLayer(ctx, im.peerClient, peerEp, hash) {
-				// Peer finished — fetch from it.
+				// Peer finished - fetch from it.
 				body, err := fetchOnePeer(ctx, im.peerClient, hash, peerEp)
 				if err == nil {
 					err = saveAndExtract(stallReader(body, peerStallTimeout), blobFile, tmpPath)
@@ -707,14 +707,14 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 						return commitLayer(tmpPath, destPath)
 					}
 				}
-				// Peer fetch failed after wait — fall through to selector / upstream.
+				// Peer fetch failed after wait - fall through to selector / upstream.
 				os.Remove(blobFile)
 				os.RemoveAll(tmpPath)
 				if err := os.MkdirAll(tmpPath, 0755); err != nil {
 					return "", err
 				}
 			}
-			// Peer timed out or disappeared — fall through to upstream.
+			// Peer timed out or disappeared - fall through to upstream.
 		}
 
 		// 3b. Try peers that already have the layer (present, not inflight).
@@ -732,7 +732,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 				}
 				return commitLayer(tmpPath, destPath)
 			}
-			// Stall or extraction error — evict this peer and try the next.
+			// Stall or extraction error - evict this peer and try the next.
 			im.logger.Warn("Peer layer fetch failed, trying next peer", "hash", hash[:12], "peer", peerEp, "err", err)
 			if eventFn != nil {
 				eventFn("Warning", "PeerFallback", fmt.Sprintf("Peer %s stalled on layer %s, trying next peer", peerEp, hash[:12]))
@@ -746,9 +746,9 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 		}
 	}
 
-	// 4. Upstream registry — retry up to 3 times on stall/error.
+	// 4. Upstream registry - retry up to 3 times on stall/error.
 	const maxAttempts = 3
-	const registryMinRate = 512 // bytes/sec — below this after warmup = stalled
+	const registryMinRate = 512 // bytes/sec - below this after warmup = stalled
 	const registryWarmup = 30 * time.Second
 	var lastErr error
 	for attempt := range maxAttempts {
@@ -870,9 +870,9 @@ func commitLayer(tmpPath, destPath string) (string, error) {
 //
 // Layout under <baseDir>/pods/<podUID>/:
 //
-//	rootfs/  — merged (container's view)
-//	upper/   — writable layer
-//	work/    — overlayfs scratch space
+//	rootfs/  - merged (container's view)
+//	upper/   - writable layer
+//	work/    - overlayfs scratch space
 func (im *ImageManager) Mount(podUID string, layerPaths []string) (string, error) {
 	base, err := filepath.Abs(filepath.Join(im.baseDir, "pods", podUID))
 	if err != nil {

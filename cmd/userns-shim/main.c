@@ -1,5 +1,5 @@
 /*
- * userns-shim — user namespace setup shim for perigeos containers.
+ * userns-shim - user namespace setup shim for perigeos containers.
  *
  * Runs as the container entrypoint inside nspawn (as root, no --user=).
  * Calls unshare(CLONE_NEWUSER), signals the host via FIFO, waits for

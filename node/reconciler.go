@@ -30,7 +30,7 @@ type PodTracker interface {
 }
 
 // Reconciler performs periodic drift correction between systemd's actual state
-// and Kubernetes desired state. Its only job is to remove orphan machines —
+// and Kubernetes desired state. Its only job is to remove orphan machines -
 // machines running in systemd that have no corresponding pod in Kubernetes.
 //
 // The Reconciler never creates pods. The VK PodController is the sole authority

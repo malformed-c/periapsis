@@ -2,11 +2,11 @@
 
 A Kubernetes kubelet that runs pods as systemd-nspawn containers. One process, one machine, scales to thousands of pods with minimal overhead.
 
-**Why Periapsis?** Standard kubelets carry Docker or containerd with them. Periapsis skips all of that — it wires Kubernetes directly to `systemd-nspawn`, dropping daemon overhead to ~220 KB per pod. It is distribution-agnostic: works with k3s, vanilla Kubernetes, or anything that speaks the kubelet API. A single physical host can be sliced into many independent virtual nodes ("pawns"), each with its own TLS cert, pod lifecycle, and cgroup tree — useful for edge fleets and high-density testing environments. Host slicing into multiple pawns with proper network namespace isolation requires the Constellation CNI.
+**Why Periapsis?** Standard kubelets carry Docker or containerd with them. Periapsis skips all of that - it wires Kubernetes directly to `systemd-nspawn`, dropping daemon overhead to ~220 KB per pod. It is distribution-agnostic: works with k3s, vanilla Kubernetes, or anything that speaks the kubelet API. A single physical host can be sliced into many independent virtual nodes ("pawns"), each with its own TLS cert, pod lifecycle, and cgroup tree - useful for edge fleets and high-density testing environments. Host slicing into multiple pawns with proper network namespace isolation requires the Constellation CNI.
 
 **What it does:** Periapsis is a fork of virtual-kubelet v1.11.0 that registers as a virtual Kubernetes node, accepts pod assignments from the control plane, manages container lifecycle (image pull, network setup, resource limits, exec, logging), and reports status back to the API server.
 
-**The perigeos binary** runs as a systemd service and orchestrates pod execution through systemd-nspawn containers. No Docker, no containerd — just systemd, cgroups, and the Linux kernel.
+**The perigeos binary** runs as a systemd service and orchestrates pod execution through systemd-nspawn containers. No Docker, no containerd - just systemd, cgroups, and the Linux kernel.
 
 The name follows the orbital theme: *periapsis* is the generic term for the closest orbital point; *perigeos* is the Earth-specific version.
 
@@ -14,12 +14,12 @@ The name follows the orbital theme: *periapsis* is the generic term for the clos
 
 ## Naming
 
-- **Periapsis** — the monorepo (this project); the generic name for closest orbital approach
-- **Perigeos** — the kubelet binary and systemd service
-- **Pawn** — wordplay on systemd-ns**pawn**; each virtual Kubernetes node
-- **Gambit** — the PodProvider implementation (image pull, network, runtime orchestration)
-- **Constellation** — Cilium-based CNI fork for pod networking
-- **Apsis** — CLI tool for introspection and debugging (apsis status, apsis doctor, etc.)
+- **Periapsis** - the monorepo (this project); the generic name for closest orbital approach
+- **Perigeos** - the kubelet binary and systemd service
+- **Pawn** - wordplay on systemd-ns**pawn**; each virtual Kubernetes node
+- **Gambit** - the PodProvider implementation (image pull, network, runtime orchestration)
+- **Constellation** - Cilium-based CNI fork for pod networking
+- **Apsis** - CLI tool for introspection and debugging (apsis status, apsis doctor, etc.)
 
 ---
 
@@ -90,7 +90,7 @@ Memory:  365 MiB        (engix99, daemon RSS ~220 KB/pod)
 L7 ingress via Envoy Gateway (hostNetwork DaemonSet on primary + control-plane nodes):
 
 - 1 M requests through Gateway API HTTPRoute, 4,869 rps, 0% errors
-- p95 = 134 ms, p99 = 151 ms — engix99 was at load average 100–200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
+- p95 = 134 ms, p99 = 151 ms - engix99 was at load average 100–200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
 
 See [docs/show-off.md](docs/show-off.md) for full results and comparison tables.
 
@@ -167,17 +167,17 @@ For L7 ingress, deploy Envoy Gateway with the manifests in `deploy/envoy/` (Gate
 
 ## Key Files
 
-- `cmd/perigeos/main.go` — Entrypoint, wires controllers
-- `node/podcontroller.go` — Watch loop, create/update/delete dispatch
-- `node/gambit.go` — Pod lifecycle (image, network, runtime orchestration)
-- `node/api/` — Kubelet HTTP (exec, attach, logs, port-forward, metrics)
-- `internal/runtime/systemd/` — Machine management, cgroups
-- `internal/network/` — CNI/veth setup, IPAM
-- `internal/image/` — OCI pull, overlayfs extraction
-- `internal/control/` — Varlink control server
-- `internal/podutils/` — Environment, downward API
-- `adr/` — Architecture decisions
-- `deploy/` — Systemd unit, install script, Constellation CNI, Envoy Gateway
+- `cmd/perigeos/main.go` - Entrypoint, wires controllers
+- `node/podcontroller.go` - Watch loop, create/update/delete dispatch
+- `node/gambit.go` - Pod lifecycle (image, network, runtime orchestration)
+- `node/api/` - Kubelet HTTP (exec, attach, logs, port-forward, metrics)
+- `internal/runtime/systemd/` - Machine management, cgroups
+- `internal/network/` - CNI/veth setup, IPAM
+- `internal/image/` - OCI pull, overlayfs extraction
+- `internal/control/` - Varlink control server
+- `internal/podutils/` - Environment, downward API
+- `adr/` - Architecture decisions
+- `deploy/` - Systemd unit, install script, Constellation CNI, Envoy Gateway
 
 ## Requirements
 
@@ -202,13 +202,13 @@ Optional: Constellation for eBPF CNI (default: veth bridges)
 
 ## Learning More
 
-- `CLAUDE.md` — Quick-start for developers
-- `AGENTS.md` — Detailed repo guide (see `adr/` for current state)
-- `CHANGES.md` — Patches vs upstream v1.11.0
-- `adr/` — Architecture decisions with rationale
-- `docs/show-off.md` — Scale and performance results
+- `CLAUDE.md` - Quick-start for developers
+- `AGENTS.md` - Detailed repo guide (see `adr/` for current state)
+- `CHANGES.md` - Patches vs upstream v1.11.0
+- `adr/` - Architecture decisions with rationale
+- `docs/show-off.md` - Scale and performance results
 
 ## Related Projects
 
-- [Constellation](https://github.com/malformed-c/constellation) — eBPF/Cilium CNI used with Periapsis
-- [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) — Upstream fork base
+- [Constellation](https://github.com/malformed-c/constellation) - eBPF/Cilium CNI used with Periapsis
+- [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - Upstream fork base

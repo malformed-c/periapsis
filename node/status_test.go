@@ -49,7 +49,7 @@ func TestBuildPodStatusUnknownRunningPodNotReady(t *testing.T) {
 		return perigeos.StateUnknown
 	})
 
-	// Pod phase stays Running — only checkPod/SetPhase can set terminal phases.
+	// Pod phase stays Running - only checkPod/SetPhase can set terminal phases.
 	if status.Phase != corev1.PodRunning {
 		t.Fatalf("expected phase %q, got %q", corev1.PodRunning, status.Phase)
 	}
@@ -125,7 +125,7 @@ func TestBuildPodStatusUnknownPendingPodKeepsRunning(t *testing.T) {
 // TestBuildPodStatusUnknownContainerCreating verifies that when all containers
 // are Unknown with no previous state, they show ContainerCreating. The pod
 // phase stays Running because buildPodStatus no longer forces Pending for
-// Unknown — the actual Pending phase is managed upstream by GetPodStatus
+// Unknown - the actual Pending phase is managed upstream by GetPodStatus
 // checking the store's phase map.
 func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 	g := &Gambit{
@@ -150,7 +150,7 @@ func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 		return perigeos.StateUnknown
 	})
 
-	// Phase stays Running — buildPodStatus doesn't demote to Pending for Unknown.
+	// Phase stays Running - buildPodStatus doesn't demote to Pending for Unknown.
 	// Upstream GetPodStatus handles the Pending case via store phase check.
 	if status.Phase != corev1.PodRunning {
 		t.Fatalf("expected phase %q, got %q", corev1.PodRunning, status.Phase)

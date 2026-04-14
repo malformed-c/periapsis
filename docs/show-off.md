@@ -193,8 +193,8 @@ envoy-gateway-59f6cb6596-bs2zt                            1/1     engix99
 ## What's Under the Hood
 
 - **Runtime:** systemd-nspawn machines, one per container
-- **Networking:** Constellation CNI (Cilium fork) — VXLAN + BPF datapath, per-pod netns
+- **Networking:** Constellation CNI (Cilium fork) - VXLAN + BPF datapath, per-pod netns
 - **Images:** OCI pulls with pod-level dedup cache + peer blob serving over TLS
 - **TLS:** Auto-renewing certificates via k8s CSR API with SAN-aware hot reload
-- **Rollout:** `apsis rollout` — stepped scaling with per-step readiness gates
+- **Rollout:** `apsis rollout` - stepped scaling with per-step readiness gates
 - **Multi-host:** NodeIP config routes tunnel traffic over dedicated ethernet, not WiFi

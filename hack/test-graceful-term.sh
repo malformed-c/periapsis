@@ -19,7 +19,7 @@ FAIL=0
 TOTAL=0
 
 pass() { ((PASS++)); ((TOTAL++)); echo "  PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 — $2"; }
+fail() { ((FAIL++)); ((TOTAL++)); echo "  FAIL: $1 - $2"; }
 
 force_delete_ns() {
     local ns="$1"
@@ -72,7 +72,7 @@ kubectl $KC create ns "$NS"
 echo
 
 # ============================================================
-# Test 1: SIGTERM — verify signal lands in the process
+# Test 1: SIGTERM - verify signal lands in the process
 # ============================================================
 echo "--- Test 1: SIGTERM delivery (observed via journal) ---"
 
@@ -111,7 +111,7 @@ else
     pass "Pod sigterm-test is Running"
     uid=$(get_uid sigterm-test)
 
-    # Send delete, don't wait — we want to observe the journal in real time
+    # Send delete, don't wait - we want to observe the journal in real time
     kubectl $KC delete pod sigterm-test -n "$NS" --grace-period=30 --wait=false 2>/dev/null
     sleep 5
 
@@ -143,7 +143,7 @@ else
 fi
 
 # ============================================================
-# Test 2: SIGKILL — container ignores SIGTERM, systemd kills it
+# Test 2: SIGKILL - container ignores SIGTERM, systemd kills it
 # ============================================================
 echo
 echo "--- Test 2: SIGKILL after grace period (observed via journal) ---"
@@ -204,14 +204,14 @@ else
     elif [[ "$exit_status" == "9" ]]; then
         pass "ExecMainStatus=9 confirms SIGKILL"
     elif [[ $elapsed -lt 15 ]]; then
-        pass "Container terminated within grace window (${elapsed}s) — SIGKILL enforced"
+        pass "Container terminated within grace window (${elapsed}s) - SIGKILL enforced"
     else
         fail "No SIGKILL evidence" "exit=$exit_status elapsed=${elapsed}s"
     fi
 fi
 
 # ============================================================
-# Test 3: PreStop exec hook — observe the hook running
+# Test 3: PreStop exec hook - observe the hook running
 # ============================================================
 echo
 echo "--- Test 3: PreStop exec hook (observed via perigeos log + journal) ---"
@@ -278,7 +278,7 @@ else
     if echo "$journal_out" | grep -q "SIGTERM after PreStop"; then
         pass "SIGTERM arrived after PreStop hook (correct ordering)"
     else
-        echo "  (SIGTERM log may have been flushed before capture — checking events)"
+        echo "  (SIGTERM log may have been flushed before capture - checking events)"
         events=$(kubectl $KC get events -n "$NS" --field-selector involvedObject.name=prestop-test -o jsonpath='{.items[*].reason}' 2>/dev/null)
         if echo "$events" | grep -q "FailedPreStopHook"; then
             fail "PreStop hook failed" "FailedPreStopHook event"
@@ -291,7 +291,7 @@ else
 fi
 
 # ============================================================
-# Test 4: Liveness + readiness probes — observe probes running
+# Test 4: Liveness + readiness probes - observe probes running
 # ============================================================
 echo
 echo "--- Test 4: Probes (observed via perigeos log) ---"
@@ -372,7 +372,7 @@ else
 fi
 
 # ============================================================
-# Test 5: Failing liveness probe — observe the kill + restart
+# Test 5: Failing liveness probe - observe the kill + restart
 # ============================================================
 echo
 echo "--- Test 5: Failing liveness probe triggers container restart ---"

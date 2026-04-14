@@ -16,7 +16,7 @@ type StatusResponse struct {
 	CPUCores    int    `json:"cpu_cores"`
 	LoadAvg     string `json:"load_avg"`
 
-	// PSI (Pressure Stall Information) — host-wide avg10 values
+	// PSI (Pressure Stall Information) - host-wide avg10 values
 	PSICPUSome float64 `json:"psi_cpu_some"` // % time any task stalled on CPU
 	PSIMemFull float64 `json:"psi_mem_full"` // % time all tasks stalled on memory
 
@@ -97,7 +97,7 @@ type PawnDiagnosis struct {
 	SystemdUnits int `json:"systemd_units"`
 	DiskDirs     int `json:"disk_dirs"`
 
-	// Discrepancies — UIDs that exist in one source but not another.
+	// Discrepancies - UIDs that exist in one source but not another.
 	GhostPods      []DoctorEntry `json:"ghost_pods,omitempty"`      // in gambit, not in systemd
 	OrphanMachines []DoctorEntry `json:"orphan_machines,omitempty"` // in systemd, not in gambit
 	StaleDirs      []string      `json:"stale_dirs,omitempty"`      // on disk, not in gambit

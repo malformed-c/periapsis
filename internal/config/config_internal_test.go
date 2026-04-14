@@ -10,7 +10,7 @@ import (
 // ─── buildCNIConfig ───────────────────────────────────────────────────────────
 
 func TestBuildCNIConfig_NilRaw_NoSocket_ReturnsNil(t *testing.T) {
-	// Skip if a real constellation-agent socket exists on this host — the
+	// Skip if a real constellation-agent socket exists on this host - the
 	// auto-detect logic would return non-nil, which is correct behaviour but
 	// defeats the purpose of this test.
 	if _, err := os.Stat(constellationSocketPath()); err == nil {

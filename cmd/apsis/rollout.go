@@ -68,7 +68,7 @@ func cmdRollout(ctx context.Context, client *control.Client, args []string) erro
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Println("\nInterrupted — deployment left at current replica count.")
+		fmt.Println("\nInterrupted - deployment left at current replica count.")
 		cancel()
 	}()
 
@@ -103,7 +103,7 @@ func runRollout(ctx context.Context, kc *kubernetes.Clientset, pClient *control.
 
 	if ra.dryRun {
 		steps := stepsFor(current, target, ra.step)
-		fmt.Println("Dry run — steps that would be applied:")
+		fmt.Println("Dry run - steps that would be applied:")
 		for i, s := range steps {
 			fmt.Printf("  Step %d: %d → %d replica(s)\n", i+1, s.from, s.to)
 		}

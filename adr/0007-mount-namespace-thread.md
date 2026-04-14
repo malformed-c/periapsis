@@ -40,7 +40,7 @@ Implement a **dedicated mount-thread pattern**: lock a single OS thread to PID 1
 
 **Option 3: Dedicated mount thread** ✓
 - Single OS thread bound to PID 1's mount namespace at startup.
-- All mount operations routed through that thread via channel — clean, thread-safe, no forks.
+- All mount operations routed through that thread via channel - clean, thread-safe, no forks.
 - Goroutine scheduler never moves that OS thread; namespace stays pinned.
 - Mount operations become async (channel send + reply wait), but latency is negligible (< 1ms for typical overlays).
 

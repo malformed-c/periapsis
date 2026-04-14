@@ -22,7 +22,7 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	uid := string(targetPod.UID)
 
-	// Pod is queued, waiting for a createSem slot — no machine exists yet.
+	// Pod is queued, waiting for a createSem slot - no machine exists yet.
 	// Return Pending so VK doesn't interpret NotFound as a missing pod.
 	phase := g.store.PodPhase(uid)
 	if phase == corev1.PodPending {
@@ -137,7 +137,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
 			} else {
-				// Don't set podPhase to Failed here — terminal phase is
+				// Don't set podPhase to Failed here - terminal phase is
 				// handled by checkPod/SetPhase.
 				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
@@ -156,7 +156,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
 			} else {
-				// Don't set podPhase to Succeeded here — the terminal
+				// Don't set podPhase to Succeeded here - the terminal
 				// phase transition is handled by checkPod/SetPhase.
 				// Setting it per-container would override CrashLoopBackOff
 				// from other containers in multi-container pods.

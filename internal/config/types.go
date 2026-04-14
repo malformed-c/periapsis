@@ -30,7 +30,7 @@ type RawGlobalConfig struct {
 	NodeIP string `toml:"NodeIP"`
 
 	// Primary enables the primary node for this host.
-	// The primary represents the physical host in the cluster — it's where
+	// The primary represents the physical host in the cluster - it's where
 	// host-level DaemonSets (e.g. constellation-agent) schedule. For hosts
 	// without a kubelet, the primary replaces it. For hosts with a kubelet
 	// (e.g. k3s), the primary coexists and is labeled on the real node.
@@ -49,7 +49,7 @@ type RawPawnConfig struct {
 
 	// NodeIP overrides the IP advertised in Node.status.addresses and used as
 	// HostIP in pod status. Useful when the default outbound IP (determined by
-	// routing to 8.8.8.8) is not reachable from the control plane — e.g. when
+	// routing to 8.8.8.8) is not reachable from the control plane - e.g. when
 	// running the control plane inside a podman/kind container.
 	NodeIP string `toml:"node_ip"`
 

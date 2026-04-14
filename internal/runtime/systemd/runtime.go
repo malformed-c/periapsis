@@ -201,16 +201,16 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		// --slice= is NOT passed here: --keep-unit tells nspawn to stay in the
 		// calling unit's cgroup rather than creating a new scope, so nspawn
 		// ignores --slice= (and warns about it). The slice is already set on
-		// the transient unit itself via dbus.PropSlice — that's what matters.
+		// the transient unit itself via dbus.PropSlice - that's what matters.
 		"--directory=" + cfg.RootFS,
 		"--network-namespace-path=" + netNSPath,
 		// Do not let nspawn bind-mount the host /etc/resolv.conf into the
-		// container — we write our own cluster-DNS resolv.conf into the
+		// container - we write our own cluster-DNS resolv.conf into the
 		// overlayfs before starting, and nspawn's default would overwrite it.
 		"--resolv-conf=off",
 	}
 
-	// Privileged containers get all capabilities — required for workloads
+	// Privileged containers get all capabilities - required for workloads
 	// that load BPF programs, manipulate network interfaces, etc.
 	if cfg.Privileged {
 		execStart = append(execStart, "--capability=all")
@@ -223,7 +223,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// has joined the CNI netns. This avoids the --private-users +
 	// --network-namespace-path incompatibility (the userns child can't
 	// setns() into an external netns without CAP_SYS_ADMIN in the init userns).
-	// Privileged containers skip userns — they need host-level capabilities.
+	// Privileged containers skip userns - they need host-level capabilities.
 	useUserNS := cfg.RunAsUser != nil && !cfg.Privileged && usernsShimExists()
 	var usernsFIFODir string
 	if useUserNS {
@@ -307,7 +307,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		fullCmd = []string{"/bin/sleep", "infinity"}
 	}
 	if useUserNS {
-		// Prepend the userns shim — it calls unshare(CLONE_NEWUSER), waits
+		// Prepend the userns shim - it calls unshare(CLONE_NEWUSER), waits
 		// for perigeos to write uid_map/gid_map, adopts the target identity,
 		// then exec()s the real workload.
 		fullCmd = append([]string{usernsShimContainerPath}, fullCmd...)
@@ -334,7 +334,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		dbus.PropType("exec"), // exec type ensures systemd tracks the main process exit code
 		dbus.PropExecStart(execStart, false),
 		{Name: "SyslogIdentifier", Value: dbusv5.MakeVariant(cfg.Container.Name)},
-		// No CollectMode — we manage unit lifecycle explicitly.
+		// No CollectMode - we manage unit lifecycle explicitly.
 		// The BatchWatcher reads exit codes and cleans up dead/failed
 		// units after processing their terminal state.
 		{Name: "Delegate", Value: dbusv5.MakeVariant(true)},
@@ -354,7 +354,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// Interactive containers need a PTY for kubectl attach/exec stdin relay.
 	// Non-interactive containers use --console=read-only (set above), which
 	// lets nspawn allocate its own internal PTY. stdout/stderr flow to the
-	// journal natively with correct _SYSTEMD_UNIT attribution — no forwarding
+	// journal natively with correct _SYSTEMD_UNIT attribution - no forwarding
 	// goroutine needed.
 	if cfg.Container != nil && cfg.Container.Stdin {
 		master, slave, err := openPTY()
@@ -386,7 +386,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// Per-container resource limits from pod spec Resources.Limits.
 	// Assembled as a cgroup2.Resources struct so future pod-label-driven
 	// cgroup knobs (IO, Pids, memory.high, etc.) plug in without touching
-	// this call site — the translation to D-Bus lives in internal/cgroup.
+	// this call site - the translation to D-Bus lives in internal/cgroup.
 	properties = append(properties, cgroup.BuildSystemdProperties(buildPodResources(cfg))...)
 
 	// We intentionally pass a nil channel instead of waiting for the job
@@ -492,7 +492,7 @@ func (s *SystemdRuntime) makeSharedMounts(ctx context.Context, machineName strin
 		// Ensure the host-side path is on a shared peer group. On systemd
 		// hosts the root mount is already shared, but if the path happens to
 		// be its own mountpoint (e.g. a separate volume) we need to flip it.
-		// EINVAL means it's not a mountpoint — that's fine, it inherits the
+		// EINVAL means it's not a mountpoint - that's fine, it inherits the
 		// parent mount's (shared) propagation.
 		if err := unix.Mount("", bm.HostPath, "", unix.MS_SHARED|unix.MS_REC, ""); err != nil && !errors.Is(err, unix.EINVAL) {
 			return fmt.Errorf("make host mount shared for %s: %w", bm.HostPath, err)
@@ -630,7 +630,7 @@ func makeContainerMountShared(pid int, containerPath string) error {
 func cleanNspawnUnixExport(machineName string) {
 	path := "/run/systemd/nspawn/unix-export/" + machineName
 	// MNT_DETACH (lazy unmount): safe even if nothing is actually mounted.
-	// EINVAL means path is not a mountpoint — nothing to do.
+	// EINVAL means path is not a mountpoint - nothing to do.
 	if err := unix.Unmount(path, unix.MNT_DETACH); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) {
 		// Non-fatal: log via slog would require a logger here; the next
 		// nspawn start will fail and surface the error through normal paths.
@@ -665,7 +665,7 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 
 	select {
 	case <-ch:
-		// Always reset after stopping — clears the unit from systemd's table even
+		// Always reset after stopping - clears the unit from systemd's table even
 		// when the container had already failed (stop job returns "done" immediately
 		// for a unit already in failed/inactive state, but without ResetFailedUnit
 		// the unit stays in the table and StartTransientUnit fails on the next restart).
@@ -683,7 +683,7 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 
 // CheckMachined verifies systemd-machined is healthy by calling ListMachines
 // over D-Bus. If machined has exhausted its file descriptor limit or its
-// socket is down, this call will fail — letting callers back off early instead
+// socket is down, this call will fail - letting callers back off early instead
 // of starting an nspawn that will immediately fail to register.
 func (s *SystemdRuntime) CheckMachined(ctx context.Context) error {
 	obj := s.rawConn.Object("org.freedesktop.machine1", "/org/freedesktop/machine1")
@@ -700,7 +700,7 @@ func (s *SystemdRuntime) MachineStatus(ctx context.Context, podUID, containerNam
 
 	prop, err := s.conn.GetUnitPropertyContext(ctx, serviceName, "ActiveState")
 	if err != nil {
-		// D-Bus errors under load should NOT be treated as "exited" — that
+		// D-Bus errors under load should NOT be treated as "exited" - that
 		// causes WaitForMachineExit to think an init container finished when
 		// it hasn't, leading to empty volumes and crash loops. Return Unknown
 		// so callers retry.
@@ -844,7 +844,7 @@ func (s *SystemdRuntime) GetLogStream(
 	}
 
 	// Resolve the target invocation ID so we only return logs from one
-	// lifecycle of the unit — not entries from previous restarts.
+	// lifecycle of the unit - not entries from previous restarts.
 	ids := s.loadInvocationIDs(j, podUID, containerName)
 	var targetID string
 	if opts.Previous {
@@ -863,7 +863,7 @@ func (s *SystemdRuntime) GetLogStream(
 			return nil, fmt.Errorf("journal match invocation: %w", err)
 		}
 	} else {
-		// No invocation IDs found — fall back to unit name match.
+		// No invocation IDs found - fall back to unit name match.
 		if err := j.AddMatch("_SYSTEMD_UNIT" + "=" + unitName); err != nil {
 			j.Close()
 			return nil, fmt.Errorf("journal match unit: %w", err)
@@ -1082,7 +1082,7 @@ func suppressSignalExit(err error) error {
 			}
 		}
 		// Shells exit with 128+N when killed by signal N.
-		// 130 = SIGINT, 131 = SIGQUIT — treat as clean detach.
+		// 130 = SIGINT, 131 = SIGQUIT - treat as clean detach.
 		code := exitErr.ExitCode()
 		if code == 130 || code == 131 {
 			return nil
@@ -1155,9 +1155,9 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 			if started || time.Now().After(startDeadline) {
 				return runtime.StateExited, nil
 			}
-			// Likely "not yet started" — keep waiting.
+			// Likely "not yet started" - keep waiting.
 		case runtime.StateUnknown:
-			// D-Bus error — keep waiting.
+			// D-Bus error - keep waiting.
 		}
 		return "", nil
 	}
@@ -1176,7 +1176,7 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 		case <-ctx.Done():
 			return runtime.StateUnknown, ctx.Err()
 		case subState := <-waiterCh:
-			// D-Bus event received — check if terminal.
+			// D-Bus event received - check if terminal.
 			switch subState {
 			case "running", "start-pre", "start", "start-post":
 				started = true
@@ -1392,7 +1392,7 @@ func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[s
 //
 // Uses a dedicated raw godbus connection (sigConn) with a targeted match rule
 // using path_namespace to filter signals at the D-Bus level. This avoids
-// processing PropertiesChanged signals from every systemd unit on the host —
+// processing PropertiesChanged signals from every systemd unit on the host -
 // only units whose object path starts with our pawn prefix are delivered.
 //
 // Previous approach used go-systemd's Subscribe()+SetPropertiesSubscriber which

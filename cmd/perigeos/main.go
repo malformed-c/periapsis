@@ -73,7 +73,7 @@ func main() {
 	vklog.L = vklogger.New(logger.WithGroup("vk"))
 	klog.InitFlags(nil)
 
-	// Subcommand dispatch — must happen before flag.Parse().
+	// Subcommand dispatch - must happen before flag.Parse().
 	if len(os.Args) > 1 && os.Args[1] == "join" {
 		runJoin(logger)
 		return
@@ -116,7 +116,7 @@ func main() {
 	// Ensure the pawn's own IP is in NO_PROXY so outbound calls to the
 	// Kubernetes API server are not routed through any ambient HTTP proxy.
 	// The same proxy misconfiguration causes kube-apiserver to fail when it
-	// tries to reach the pawn's log/exec endpoint — that must be fixed on the
+	// tries to reach the pawn's log/exec endpoint - that must be fixed on the
 	// control-plane side (add pawn subnet to NO_PROXY for the apiserver unit).
 	addNoProxy(pki.GetOutboundIP().String())
 
@@ -154,7 +154,7 @@ func main() {
 
 	kubeClient, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
-		logger.Error("Failed to create kubernetes client", "err", err)
+		logger.Error("Failed to create Kubernetes client", "err", err)
 		os.Exit(1)
 	}
 
@@ -187,7 +187,7 @@ func main() {
 	svcInformer := globalInformerFactory.Core().V1().Services()
 	// Force registration of the underlying shared informers before Start().
 	// Without this, the informer backing store is created lazily on first
-	// Lister()/Informer() call — which happens inside pawn goroutines,
+	// Lister()/Informer() call - which happens inside pawn goroutines,
 	// after Start() has already been called. Informers registered after
 	// Start() are never started, leading to empty caches.
 	cmInformer.Informer()
@@ -216,7 +216,7 @@ func main() {
 
 	// --- Auto-detect API server address for pod env injection ---
 	// Pods need KUBERNETES_SERVICE_HOST/PORT to use in-cluster auth.
-	// Use the "kubernetes" service ClusterIP (what real kubelets inject).
+	// Use the Kubernetes service ClusterIP (what real kubelets inject).
 	// The kubeconfig Host (e.g. 127.0.0.1:6443) doesn't work from inside
 	// nspawn containers because localhost refers to the container, not the host.
 	var apiServerHost, apiServerPort string
@@ -229,7 +229,7 @@ func main() {
 		}
 		logger.Info("API server address for pod injection", "host", apiServerHost, "port", apiServerPort)
 	} else {
-		logger.Warn("Could not auto-detect kubernetes service ClusterIP; in-cluster auth may not work in containers", "err", err)
+		logger.Warn("Could not auto-detect Kubernetes service ClusterIP; in-cluster auth may not work in containers", "err", err)
 	}
 
 	// --- Clean up stale pawn slices from previous config ---
@@ -270,7 +270,7 @@ func main() {
 	if *controlTCPFlag != "" && perigeoCfg.Global.ServerCAPath != "" {
 		caCert, caKey, err := pki.LoadCA(perigeoCfg.Global.ServerCAPath, perigeoCfg.Global.ServerCAKeyPath)
 		if err != nil {
-			logger.Warn("Could not load CA for control TCP listener — remote access disabled", "err", err)
+			logger.Warn("Could not load CA for control TCP listener - remote access disabled", "err", err)
 		} else {
 			cert, err := pki.GenerateCert("perigeos-control", caCert, caKey)
 			if err != nil {
@@ -307,7 +307,7 @@ func main() {
 		sharedNM = cnm
 		logger.Info("Constellation CNI active")
 	} else {
-		logger.Warn("No [global.cni] config and constellation-agent socket not found — falling back to built-in veth networking; cross-host pod connectivity will NOT work. Add [global.cni] to perigeos.toml if Constellation is deployed (socket auto-detection fails when the agent is managed by perigeos and not yet started).")
+		logger.Warn("No [global.cni] config and constellation-agent socket not found - falling back to built-in veth networking; cross-host pod connectivity will NOT work. Add [global.cni] to perigeos.toml if Constellation is deployed (socket auto-detection fails when the agent is managed by perigeos and not yet started).")
 	}
 
 	// --- Primary node ---
@@ -320,7 +320,7 @@ func main() {
 			existingNode, err := kubeClient.CoreV1().Nodes().Get(ctx, hostName, metav1.GetOptions{})
 			isRealKubelet := err == nil && !strings.HasPrefix(existingNode.Spec.ProviderID, "perigeos://")
 			if isRealKubelet {
-				// Real kubelet node exists — label it and remove the virtual primary pawn.
+				// Real kubelet node exists - label it and remove the virtual primary pawn.
 				labelPatch := []byte(`{"metadata":{"labels":{` +
 					`"periapsis.io/host":"` + hostName + `",` +
 					`"periapsis.io/primary":"true",` +
@@ -330,7 +330,7 @@ func main() {
 				} else {
 					logger.Info("Labeled existing primary node", "node", hostName)
 				}
-				// Drop the auto-generated primary pawn — real kubelet handles it.
+				// Drop the auto-generated primary pawn - real kubelet handles it.
 				perigeoCfg.Pawns = slices.DeleteFunc(perigeoCfg.Pawns, func(p config.PawnConfig) bool {
 					return p.IsPrimary
 				})
@@ -340,11 +340,11 @@ func main() {
 		}
 	}
 
-	// Shared image manager — one manifest cache + singleflight across all pawns.
+	// Shared image manager - one manifest cache + singleflight across all pawns.
 	sharedIM := image.NewImageManager(perigeoCfg.Global.BaseDir, logger)
 	sharedIM.SweepStaleTmpDirs()
 
-	// P2P blob cache — peers pull layers from each other before hitting upstream.
+	// P2P blob cache - peers pull layers from each other before hitting upstream.
 	// Blobs are served via /blobs/{digest} on each pawn's HTTPS server.
 	// Port is read per-node from node.Status.DaemonEndpoints.KubeletEndpoint.Port.
 	selfHost, _ := os.Hostname()
@@ -370,7 +370,7 @@ func main() {
 	}
 
 	// Shared D-Bus connection for PropertiesChanged signal subscriptions.
-	// One connection serves all pawns — each pawn's SubscribeEvents filters
+	// One connection serves all pawns - each pawn's SubscribeEvents filters
 	// by path prefix. Caller owns the connection and closes it on shutdown.
 	sharedSigConn, err := dbusv5.ConnectSystemBus()
 	if err != nil {
@@ -378,7 +378,7 @@ func main() {
 	}
 	if sharedSigConn != nil {
 		defer sharedSigConn.Close()
-		// Subscribe once for the shared connection — individual pawns skip
+		// Subscribe once for the shared connection - individual pawns skip
 		// Manager.Subscribe when using a shared conn (ownsSigConn == false).
 		sysObj := sharedSigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 		if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
@@ -404,7 +404,7 @@ func main() {
 				nm = network.NewLinuxNetworkManager(pawnLogger.With("component", "network"))
 			}
 
-			// Use Background context for D-Bus connection — it must survive
+			// Use Background context for D-Bus connection - it must survive
 			// signal cancellation so DrainPods can stop containers during shutdown.
 			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, sharedIM, pawnLogger, execStrategy, sharedSigConn)
 			if err != nil {
@@ -470,7 +470,7 @@ func main() {
 			allGambits = append(allGambits, g)
 			gambitsMu.Unlock()
 
-			// Start the batch watcher — single goroutine per pawn that monitors
+			// Start the batch watcher - single goroutine per pawn that monitors
 			// all containers and handles restarts + probes.
 			g.StartBatchWatcher()
 			wg.Go(func() { <-ctx.Done(); g.StopBatchWatcher() })
@@ -555,7 +555,7 @@ func main() {
 				}
 			}
 
-			// Start NodeController — registers the node and keeps lease alive.
+			// Start NodeController - registers the node and keeps lease alive.
 			wg.Go(func() {
 				pawnLogger.Info("Starting NodeController")
 
@@ -564,7 +564,7 @@ func main() {
 				}
 			})
 
-			// Start PodController — watches and reconciles pods for this pawn.
+			// Start PodController - watches and reconciles pods for this pawn.
 			wg.Go(func() {
 				pawnLogger.Info("Starting PodController")
 
@@ -596,7 +596,7 @@ func main() {
 				ImageManager: sharedIM,
 			})
 			if err != nil {
-				pawnLogger.Error("Error creating PawnServer — port already bound or TLS failure", "port", pawnCfg.Port, "err", err)
+				pawnLogger.Error("Error creating PawnServer - port already bound or TLS failure", "port", pawnCfg.Port, "err", err)
 				return
 			}
 			pawnLogger.Info("Pawn API server listening", "port", pawnCfg.Port)
@@ -669,7 +669,7 @@ func main() {
 	logger.Info("Shutdown signal received")
 	_, _ = daemon.SdNotify(false, daemon.SdNotifyStopping)
 
-	// Never mark nodes NotReady on exit — KillMode=process means containers
+	// Never mark nodes NotReady on exit - KillMode=process means containers
 	// survive and HydrateFromRuntime rediscovers them. Marking NotReady causes
 	// Constellation and other node-watching agents to tear down per-node state
 	// (CNI endpoints, managed-nodes cache) and not re-establish it when the
@@ -700,7 +700,7 @@ func main() {
 		logger.Info("Waiting for in-progress deletions to complete...")
 		select {
 		case <-drainCtx.Done():
-			logger.Warn("Drain timeout — exiting with deletions still in progress")
+			logger.Warn("Drain timeout - exiting with deletions still in progress")
 		case <-time.After(500 * time.Millisecond):
 		}
 	}

@@ -602,7 +602,7 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	}
 
 	// Ignore the pod if it is in the "Failed" or "Succeeded" state.
-	// But first check if the provider actually knows about it — if not,
+	// But first check if the provider actually knows about it - if not,
 	// a dropped watch event left the pod in a stale terminal phase in etcd
 	// without the provider ever running it. In that case drive creation anyway.
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
@@ -610,7 +610,7 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 			log.G(ctx).Warnf("skipping sync of pod %q in %q phase", loggablePodName(pod), pod.Status.Phase)
 			return nil
 		}
-		log.G(ctx).Warnf("pod %q is in %q phase but provider has no record — driving creation (dropped event recovery)", loggablePodName(pod), pod.Status.Phase)
+		log.G(ctx).Warnf("pod %q is in %q phase but provider has no record - driving creation (dropped event recovery)", loggablePodName(pod), pod.Status.Phase)
 	}
 
 	// Create or update the pod in the provider.

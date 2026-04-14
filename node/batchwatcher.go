@@ -40,7 +40,7 @@ const maxConcurrentProbes = 50
 // It also acts as the status coalescer: each cycle it compares the current
 // container state map against the previous one and pushes status updates
 // (via notifyPodStatus) only for pods whose observable state actually changed.
-// This eliminates the need for the 5s poll-all-pods loop — status updates
+// This eliminates the need for the 5s poll-all-pods loop - status updates
 // are O(changed_pods) instead of O(all_pods).
 //
 // The watcher is hybrid event+poll: it subscribes to D-Bus unit state signals
@@ -77,7 +77,7 @@ type BatchWatcher struct {
 	// startup, and ExecMainStatus isn't updated until after the unit
 	// settles. We only make terminal decisions for containers we've
 	// confirmed were actually running.
-	// Protected by pollMu — must not be read/written outside of poll()
+	// Protected by pollMu - must not be read/written outside of poll()
 	// or handleUnitEvent() without holding this lock.
 	seenRunningMu sync.Mutex
 	seenRunning   map[string]bool // key: uid/containerName
@@ -126,7 +126,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		seenRunning:  make(map[string]bool),
 		restarting:   make(map[string]bool),
 	}
-	// Seed seenRunning from hydrated pods — these containers were running
+	// Seed seenRunning from hydrated pods - these containers were running
 	// before perigeos restarted, so the BatchWatcher must know they started
 	// even though it never observed the Running transition. Without this,
 	// containers killed by KillMode=control-group appear as Exited-never-ran
@@ -145,7 +145,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	return bw
 }
 
-// Poke triggers an immediate poll cycle. Non-blocking — if a poke is already
+// Poke triggers an immediate poll cycle. Non-blocking - if a poke is already
 // pending, the additional signal is coalesced.
 func (bw *BatchWatcher) Poke() {
 	select {
@@ -215,7 +215,7 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 
 // handleUnitEvent reacts to a D-Bus unit state change by querying the
 // individual container's MachineStatus and updating the stateCache.
-// This is more targeted than a full poll — it only touches the affected
+// This is more targeted than a full poll - it only touches the affected
 // container, giving sub-second detection for fast-exit containers.
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// QUICK FILTER: Does this unit even belong to this pawn?
@@ -240,7 +240,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 
 	// Map substate to MachineState.
 	//
-	// We intentionally ignore "dead" — it's an intermediate substate that
+	// We intentionally ignore "dead" - it's an intermediate substate that
 	// fires BEFORE systemd updates ExecMainStatus. If we react to it, we
 	// see exit code 0 and incorrectly mark the pod as Succeeded. Systemd
 	// always follows "dead" with either:
@@ -352,7 +352,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	// checkPod loop. At hundreds of pods each probe can take up to its timeout
 	// (1s by default). Running them serially would stall the entire poll for
 	// minutes, causing pods probed late to miss their 3s window and flip
-	// not-ready — producing the rollout oscillation observed at scale.
+	// not-ready - producing the rollout oscillation observed at scale.
 	//
 	// After this fan-out completes, isDue() returns false for every container
 	// that was probed here, so the runProbes calls inside checkPod are no-ops.
@@ -383,16 +383,16 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	changedPods := make(map[string]bool)
 
 	for _, e := range entries {
-		// Skip pods still being created (Pending) — no machine yet.
+		// Skip pods still being created (Pending) - no machine yet.
 		if e.phase == corev1.PodPending {
 			continue
 		}
-		// Skip pods in terminal phase — unless a container's state changed
+		// Skip pods in terminal phase - unless a container's state changed
 		// to a *different known state*, meaning systemd settled to a different
 		// result (e.g. the pod was marked Succeeded from an intermediate
 		// "dead" substate, but the unit actually failed).
 		// A unit disappearing from stateMap (after ResetUnit cleanup) is NOT
-		// a state change — it's expected cleanup.
+		// a state change - it's expected cleanup.
 		if e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
 			needsReeval := false
 			for _, c := range e.pod.Spec.Containers {
@@ -439,7 +439,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		if !changedPods[e.uid] {
 			continue
 		}
-		// Re-read podPhases under lock — checkPod may have set a terminal
+		// Re-read podPhases under lock - checkPod may have set a terminal
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
@@ -503,7 +503,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		isRestarting := bw.restarting[key]
 		bw.restartingMu.Unlock()
 		if isRestarting {
-			bw.logger.Debug("Container restart in progress — skipping terminal eval",
+			bw.logger.Debug("Container restart in progress - skipping terminal eval",
 				"pod", pod.Name, "container", c.Name)
 			allExited = false
 			allSucceeded = false
@@ -524,7 +524,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 				bw.seenRunning[key] = true
 				// Fall through to the normal switch below.
 			} else {
-				bw.logger.Debug("Deferring terminal decision — container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
+				bw.logger.Debug("Deferring terminal decision - container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
 				allExited = false
 				allSucceeded = false
 				continue
@@ -587,7 +587,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		return
 	}
 
-	// All containers exited and none will be restarted — set terminal phase.
+	// All containers exited and none will be restarted - set terminal phase.
 	var terminalPhase corev1.PodPhase
 	if allSucceeded {
 		terminalPhase = corev1.PodSucceeded
@@ -657,7 +657,7 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 			bw.logger.Debug("Startup probe result",
 				"pod", pod.Name, "container", c.Name, "result", probeResultString(result),
 				"failCount", ps.StartupFailCount, "podIP", podIP)
-			// Write results under lock — concurrent with isContainerReady readers.
+			// Write results under lock - concurrent with isContainerReady readers.
 			var restart bool
 			bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 				markProbed(ps, "startup")
@@ -683,7 +683,7 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 		return // don't run liveness/readiness until startup passes
 	}
 
-	// 2. Liveness probe — failure past threshold triggers restart.
+	// 2. Liveness probe - failure past threshold triggers restart.
 	if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
 		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.LivenessProbe, podIP)
 		bw.logger.Debug("Liveness probe result",
@@ -713,7 +713,7 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 		}
 	}
 
-	// 3. Readiness probe — controls Ready condition on the container.
+	// 3. Readiness probe - controls Ready condition on the container.
 	if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
 		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
 		bw.logger.Debug("Readiness probe result",
@@ -754,7 +754,7 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 			return perigeos.StateFailed
 		}
 		// Container was seen running but its unit is gone and it's not
-		// being restarted — it completed.
+		// being restarted - it completed.
 		bw.pollMu.Lock()
 		seen := bw.seenRunning[key]
 		bw.pollMu.Unlock()

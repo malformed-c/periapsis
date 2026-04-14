@@ -13,7 +13,7 @@ func (g *Gambit) PortForward(ctx context.Context, namespace, podName string, por
 	if err != nil {
 		return err
 	}
-	// PortForward targets the first running container — pick any; all share the pod netns.
+	// PortForward targets the first running container - pick any; all share the pod netns.
 	pod, err := g.store.GetPod(namespace, podName)
 	if err != nil {
 		return fmt.Errorf("portforward: get pod %s/%s: %w", namespace, podName, err)
@@ -35,7 +35,7 @@ func (g *Gambit) GetContainerLogs(
 	// Try to find the pod by namespace and name.
 	uid, err := g.store.FindPodUID(namespace, podName)
 	if err != nil {
-		// Fall back to completed pods — journal entries survive after DeletePod
+		// Fall back to completed pods - journal entries survive after DeletePod
 		// removes the pod from the store.
 		uid = g.store.CompletedPodUID(namespace, podName)
 		if uid == "" {

@@ -49,7 +49,7 @@ type PodStore struct {
 	pods        map[string]*podState
 	nameIndex   map[string]string         // "namespace/name" → UID
 	completed   map[string]completedEntry // "namespace/name" → entry (log fallback)
-	completedMu sync.Mutex                // separate lock — never held with registryMu
+	completedMu sync.Mutex                // separate lock - never held with registryMu
 
 	// atomic global counters for instant 0-lock queries
 	usedCPU       atomic.Int64 // in millicores
@@ -891,12 +891,12 @@ func (s *PodStore) ActiveUIDs() map[string]bool {
 // values (avg10, percentage of wall time), new pods are rejected until
 // pressure subsides. This prevents piling more work onto a stalled host.
 const (
-	psiCPUThreshold    = 70.0 // "some" — any task waiting for CPU
-	psiMemoryThreshold = 15.0 // "full" — all tasks stalled on memory
+	psiCPUThreshold    = 70.0 // "some" - any task waiting for CPU
+	psiMemoryThreshold = 15.0 // "full" - all tasks stalled on memory
 )
 
 func (s *PodStore) AdmitPod(pod *corev1.Pod, nodeCPU, nodeMem resource.Quantity) string {
-	// Host-wide PSI check — reject early if the machine is under pressure.
+	// Host-wide PSI check - reject early if the machine is under pressure.
 	if hp, err := psi.Read(); err == nil {
 		if hp.CPU.Avg10 > psiCPUThreshold {
 			return fmt.Sprintf("Host CPU pressure too high: avg10=%.1f%% (threshold %.0f%%)",
@@ -1015,7 +1015,7 @@ func (s *PodStore) MarkRestarted(uid, containerName string) {
 
 // ResetBackoff resets the CrashLoopBackOff duration for a container that has
 // been running stably for longer than restartBackoffReset. This is the
-// funnel for backoff resets — callers MUST use this method instead of
+// funnel for backoff resets - callers MUST use this method instead of
 // directly mutating the containerRestartState struct, because RestartState()
 // returns a pointer under only an RLock. Direct mutation outside the write
 // lock is a data race with BumpBackoff().

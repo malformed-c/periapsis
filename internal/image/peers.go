@@ -18,7 +18,7 @@ import (
 )
 
 // peerConnsPerHost is the maximum number of simultaneous connections to a
-// single peer host — one per in-flight layer download.
+// single peer host - one per in-flight layer download.
 const peerConnsPerHost = layerConcurrency
 
 // peerStallTimeout is how long a peer body read may make no progress before
@@ -38,7 +38,7 @@ const inflightWaitTimeout = 60 * time.Second
 // PeerConfig configures peer blob fetching.
 type PeerConfig struct {
 	Client   kubernetes.Interface
-	SelfHost string // host label value for this perigeos instance — skipped during peer lookup
+	SelfHost string // host label value for this perigeos instance - skipped during peer lookup
 }
 
 // SetPeers enables peer-to-peer blob fetching. Call once from main after the
@@ -57,7 +57,7 @@ func (im *ImageManager) SetPeers(cfg PeerConfig) {
 	}
 	im.peerClient = &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // content-addressed — digest is the integrity check
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // content-addressed - digest is the integrity check
 			ResponseHeaderTimeout: 10 * time.Second,                      // fast-fail peers that don't respond
 			MaxIdleConnsPerHost:   peerConnsPerHost,
 			MaxConnsPerHost:       peerConnsPerHost,
@@ -68,12 +68,12 @@ func (im *ImageManager) SetPeers(cfg PeerConfig) {
 // peerEndpoints returns "ip:port" for every perigeos pawn on other hosts.
 // The port is read from node.Status.DaemonEndpoints.KubeletEndpoint.Port,
 // which perigeos sets to each pawn's serving port at registration time.
-// Multiple pawns on the same host are deduplicated — one endpoint per host IP.
+// Multiple pawns on the same host are deduplicated - one endpoint per host IP.
 //
 // Self is filtered by the periapsis.io/host label (the perigeos host name),
 // not by IP. An IP-based filter is fragile because a host can have several
 // interfaces and the outbound-IP probe (dial 8.8.8.8) may pick one that
-// differs from the pawn's configured NodeIP — perigeos would then treat
+// differs from the pawn's configured NodeIP - perigeos would then treat
 // itself as a peer and wait-deadlock on inflight layers.
 func (im *ImageManager) peerEndpoints(ctx context.Context) []string {
 	if im.peers == nil || im.peers.Client == nil {

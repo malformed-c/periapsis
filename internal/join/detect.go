@@ -30,7 +30,7 @@ func detectKubelet(ctx context.Context, client kubernetes.Interface, logger *slo
 
 	// --- Node API check (skip if no client available) ---
 	if client == nil {
-		logger.Info("No API client — skipping Node API check (process scan only)")
+		logger.Info("No API client - skipping Node API check (process scan only)")
 		return KubeletPresence{}
 	}
 
@@ -45,7 +45,7 @@ func detectKubelet(ctx context.Context, client kubernetes.Interface, logger *slo
 		return KubeletPresence{Found: true, Source: "node-api"}
 	}
 
-	logger.Info("No existing kubelet detected — perigeos will own this host as primary")
+	logger.Info("No existing kubelet detected - perigeos will own this host as primary")
 	return KubeletPresence{}
 }
 

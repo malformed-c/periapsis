@@ -81,7 +81,7 @@ func (ch *CertHolder) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certifica
 func (ch *CertHolder) covers(leaf *x509.Certificate, hello *tls.ClientHelloInfo) bool {
 	name := hello.ServerName
 	if name == "" {
-		// No SNI — client connected by IP. Try to extract from conn.
+		// No SNI - client connected by IP. Try to extract from conn.
 		if addr, ok := hello.Conn.LocalAddr().(*net.TCPAddr); ok {
 			ip := addr.IP
 			for _, san := range leaf.IPAddresses {

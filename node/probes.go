@@ -265,10 +265,10 @@ func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result Probe
 // Discards all output, provides no input, and reports no TTY.
 type noopAttachIO struct{}
 
-func (n *noopAttachIO) Stdin() io.Reader          { return nil }
-func (n *noopAttachIO) Stdout() io.WriteCloser    { return discardWriteCloser{} }
-func (n *noopAttachIO) Stderr() io.WriteCloser    { return discardWriteCloser{} }
-func (n *noopAttachIO) TTY() bool                 { return false }
+func (n *noopAttachIO) Stdin() io.Reader            { return nil }
+func (n *noopAttachIO) Stdout() io.WriteCloser      { return discardWriteCloser{} }
+func (n *noopAttachIO) Stderr() io.WriteCloser      { return discardWriteCloser{} }
+func (n *noopAttachIO) TTY() bool                   { return false }
 func (n *noopAttachIO) Resize() <-chan api.TermSize { return nil }
 
 // discardWriteCloser writes to io.Discard and Close is a no-op.

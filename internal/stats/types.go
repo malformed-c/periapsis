@@ -15,11 +15,11 @@ type Summary struct {
 
 // NodeStats contains resource usage for the node itself.
 type NodeStats struct {
-	NodeName         string            `json:"nodeName"`
-	SystemContainers []ContainerStats  `json:"systemContainers,omitempty"`
-	StartTime        metav1.Time       `json:"startTime"`
-	CPU              *CPUStats         `json:"cpu,omitempty"`
-	Memory           *MemoryStats      `json:"memory,omitempty"`
+	NodeName         string           `json:"nodeName"`
+	SystemContainers []ContainerStats `json:"systemContainers,omitempty"`
+	StartTime        metav1.Time      `json:"startTime"`
+	CPU              *CPUStats        `json:"cpu,omitempty"`
+	Memory           *MemoryStats     `json:"memory,omitempty"`
 }
 
 // PodStats contains resource usage for a single pod.

@@ -19,7 +19,6 @@ import (
 // "netns-*" names, Cilium's "cni-*" names) are foreign and must not be swept.
 var uuidRE = regexp.MustCompile(`^peri-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-
 const (
 	// constellationBinName is the CNI plugin binary that Constellation ships.
 	constellationBinName = "cilium-cni"
@@ -33,7 +32,6 @@ const (
 
 	// agentSocketPath is the Cilium agent socket. One agent per host.
 	agentSocketPath = "/var/run/cilium/cilium.sock"
-
 )
 
 // constellationNetConfig is the JSON structure written to the CNI conf dir.

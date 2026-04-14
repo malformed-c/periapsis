@@ -46,7 +46,7 @@ type managerIface struct {
 	server *Server
 }
 
-func (m *managerIface) VarlinkGetName() string       { return ifaceName }
+func (m *managerIface) VarlinkGetName() string        { return ifaceName }
 func (m *managerIface) VarlinkGetDescription() string { return "" }
 
 func (m *managerIface) VarlinkDispatch(ctx context.Context, c varlink.Call, methodname string) error {
@@ -297,8 +297,6 @@ func (s *Server) Stop(_ context.Context) error {
 	return nil
 }
 
-
-
 // ── Response builders (shared by varlink handlers and TCP dispatch) ───────────
 
 func (s *Server) buildStatus() map[string]any {
@@ -498,8 +496,6 @@ func (s *Server) buildVersion() map[string]any {
 		Arch: runtime.GOARCH, OS: runtime.GOOS, GitCommit: version.GitCommit,
 	})
 }
-
-
 
 // toMap converts any struct to map[string]any via JSON round-trip.
 func toMap(v any) map[string]any {

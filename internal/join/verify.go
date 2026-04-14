@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	controlSocket   = "/run/apsis/perigeos.sock"
-	verifyTimeout   = 60 * time.Second
+	controlSocket      = "/run/apsis/perigeos.sock"
+	verifyTimeout      = 60 * time.Second
 	verifyPollInterval = 2 * time.Second
 )
 

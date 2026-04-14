@@ -131,7 +131,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // It builds the network sandbox and injects the containers into systemd.
 func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Pod, pullCache map[string]pullCacheEntry) error {
 	uid := string(pod.UID)
-	
+
 	// TODO rm
 	// g.setKind(pod)
 

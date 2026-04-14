@@ -157,4 +157,3 @@ func TestGenerateConfigCNI(t *testing.T) {
 		}
 	})
 }
-

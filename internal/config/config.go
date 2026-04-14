@@ -122,7 +122,6 @@ func (r *RawPerigeosConfig) Process(baseDir string) (*PerigeosConfig, error) {
 		perigeosConfig.Global.ServerCAKeyPath = defaultCAKeyPath
 	}
 
-
 	// --- Pawn Sets ---
 	// We expand pawn sets into the main Pawns map before processing
 	if r.Pawns == nil {
@@ -265,7 +264,7 @@ func (r *RawPerigeosConfig) Process(baseDir string) (*PerigeosConfig, error) {
 			Port:                assignedPort,
 			NodeIP:              currentPawn.NodeIP,
 			BaseDir:             baseDir,
-			IsPrimary:        isPrimary,
+			IsPrimary:           isPrimary,
 			Labels:              currentPawn.Labels,
 			Taints:              pawnTaints,
 			CPU:                 cpu,

@@ -12,11 +12,11 @@ import (
 // The pool is in-process only — on restart, IPs are re-discovered from
 // running netns interfaces rather than persisted state.
 type ipPool struct {
-	mu      sync.Mutex
-	base    uint32            // network address as uint32
-	next    uint32            // next host offset to try (starts at 2)
-	max     uint32            // last valid host offset
-	inUse   map[uint32]string // offset → podUID
+	mu    sync.Mutex
+	base  uint32            // network address as uint32
+	next  uint32            // next host offset to try (starts at 2)
+	max   uint32            // last valid host offset
+	inUse map[uint32]string // offset → podUID
 }
 
 func newIPPool(cidr string) (*ipPool, error) {

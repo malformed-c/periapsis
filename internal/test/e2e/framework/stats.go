@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 
 	api "github.com/malformed-c/periapsis/node/api"
-	stats "github.com/malformed-c/periapsis/node/api/statsv1alpha1"
 	"k8s.io/apimachinery/pkg/util/net"
+	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 )
 
 // GetStatsSummary queries the /stats/summary endpoint of the virtual-kubelet and returns the Summary object obtained as a response.

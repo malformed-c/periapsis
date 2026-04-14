@@ -46,7 +46,7 @@ type SystemdRuntime struct {
 	// attachPTYs holds PTY master fds for containers started with stdin=true.
 	// Key: machineName ("pod-<uid>-<container>"), Value: *os.File (master).
 	// The slave side is passed to nspawn via StandardInput/Output, and the
-	// master is used by AttachToContainer to relay stdin/stdout.
+	// master is used by AttachContainer to relay stdin/stdout.
 	attachPTYs sync.Map
 
 	// startSem limits concurrent StartTransientUnit calls to avoid
@@ -967,11 +967,11 @@ func (s *SystemdRuntime) RunInContainer(
 	}
 }
 
-// AttachToContainer attaches stdin/stdout/stderr to the running container's
+// AttachContainer attaches stdin/stdout/stderr to the running container's
 // PID 1. If the container was started with stdin=true, a PTY master was
 // allocated at startup; we relay the attach streams through it. Otherwise
 // we fall back to nsenter with an interactive shell.
-func (s *SystemdRuntime) AttachToContainer(
+func (s *SystemdRuntime) AttachContainer(
 	ctx context.Context,
 	podUID, containerName string,
 	attach api.AttachIO,

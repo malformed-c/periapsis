@@ -19,12 +19,13 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/malformed-c/periapsis/node/api/statsv1alpha1"
+	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
+
 	"github.com/pkg/errors"
 )
 
 // PodStatsSummaryHandlerFunc defines the handler for getting pod stats summaries
-type PodStatsSummaryHandlerFunc func(context.Context) (*statsv1alpha1.Summary, error)
+type PodStatsSummaryHandlerFunc func(context.Context) (*stats.Summary, error)
 
 // HandlePodStatsSummary makes an HTTP handler for implementing the kubelet summary stats endpoint
 func HandlePodStatsSummary(h PodStatsSummaryHandlerFunc) http.HandlerFunc {

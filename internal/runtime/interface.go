@@ -42,7 +42,7 @@ type Runtime interface {
 	PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error
 
 	// AttachToContainer attaches to the stdio of a running container's PID 1.
-	AttachToContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
+	AttachContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
 
 	// InitPawnSlice creates the cgroup slice for a pawn and applies resource limits.
 	InitPawnSlice(ctx context.Context, cfg PawnSliceConfig) error

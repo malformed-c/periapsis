@@ -23,9 +23,9 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/malformed-c/periapsis/errdefs"
-	"github.com/malformed-c/periapsis/internal/kubernetes/remotecommand"
 	"k8s.io/apimachinery/pkg/types"
 	remoteutils "k8s.io/client-go/tools/remotecommand"
+	"k8s.io/kubelet/pkg/cri/streaming/remotecommand"
 )
 
 // ContainerAttachHandlerFunc defines the handler function used for "execing" into a
@@ -69,7 +69,14 @@ func HandleContainerAttach(h ContainerAttachHandlerFunc, opts ...ContainerExecHa
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 
-		attach := &containerAttachContext{ctx: ctx, h: h, pod: pod, namespace: namespace, container: container}
+		attach := &containerAttachContext{
+			ctx:       ctx,
+			h:         h,
+			pod:       pod,
+			namespace: namespace,
+			container: container,
+		}
+
 		remotecommand.ServeAttach(
 			w,
 			req,
@@ -93,10 +100,21 @@ type containerAttachContext struct {
 	ctx                       context.Context
 }
 
-// AttachToContainer Implements remotecommand.Attacher
+// AttachContainer Implements remotecommand.Attacher
 // This is called by remotecommand.ServeAttach
-func (c *containerAttachContext) AttachToContainer(name string, uid types.UID, container string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remoteutils.TerminalSize, timeout time.Duration) error {
+func (c *containerAttachContext) AttachContainer(
+	ctx context.Context,
+	name string,
+	uid types.UID,
+	container string,
+	in io.Reader,
+	out io.WriteCloser,
+	err io.WriteCloser,
+	tty bool,
+	resize <-chan remoteutils.TerminalSize,
+) error {
 
+	// Map the provided streams to internal AttachIO implementation
 	eio := &execIO{
 		tty:    tty,
 		stdin:  in,
@@ -106,28 +124,23 @@ func (c *containerAttachContext) AttachToContainer(name string, uid types.UID, c
 
 	if tty {
 		eio.chResize = make(chan TermSize)
-	}
 
-	ctx, cancel := context.WithCancel(c.ctx)
-	defer cancel()
-
-	if tty {
+		// Handle terminal resizing in the background
 		go func() {
-			send := func(s remoteutils.TerminalSize) bool {
-				select {
-				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
-					return false
-				case <-ctx.Done():
-					return true
-				}
-			}
-
 			for {
 				select {
-				case s := <-resize:
-					if send(s) {
+				case s, ok := <-resize:
+					if !ok {
 						return
 					}
+
+					select {
+					case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
+
+					case <-ctx.Done():
+						return
+					}
+
 				case <-ctx.Done():
 					return
 				}
@@ -135,5 +148,5 @@ func (c *containerAttachContext) AttachToContainer(name string, uid types.UID, c
 		}()
 	}
 
-	return c.h(c.ctx, c.namespace, c.pod, c.container, eio)
+	return c.h(ctx, c.namespace, c.pod, c.container, eio)
 }

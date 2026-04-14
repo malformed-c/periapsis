@@ -45,7 +45,7 @@ func handleHTTPStreams(req *http.Request, w http.ResponseWriter, portForwarder P
 
 	klog.V(5).InfoS("Upgrading port forward response")
 
-	// TODO aka-somix: SPDY is deprecated and it should be replaced in order to support HTTP/2
+	// TODO SPDY is deprecated and it should be replaced in order to support HTTP/2
 	upgrader := spdy.NewResponseUpgrader()
 	conn := upgrader.UpgradeResponse(w, req, httpStreamReceived(streamChan))
 	if conn == nil {

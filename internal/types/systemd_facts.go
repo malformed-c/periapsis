@@ -7,14 +7,14 @@ import corev1 "k8s.io/api/core/v1"
 // The caller parses the container name once and sets ExitCode/FinishedAt
 // when the unit exits — Focus handles it all in one pass.
 type UnitFact struct {
-        UID      string
-        UnitName string
-        Container string // parsed from UnitName by the caller (e.g. gambit)
-        SubState string // systemd substate: "running", "failed", "dead", "stop-sigterm", etc.
+	UID       string
+	UnitName  string
+	Container string // parsed from UnitName by the caller (e.g. gambit)
+	SubState  string // systemd substate: "running", "failed", "dead", "stop-sigterm", etc.
 
-        // Exit fields — set when the unit process exited.
-        ExitCode   *int32 // nil if the unit hasn't exited
-        FinishedAt string // RFC3339, set on exit
+	// Exit fields — set when the unit process exited.
+	ExitCode   *int32 // nil if the unit hasn't exited
+	FinishedAt string // RFC3339, set on exit
 }
 
 func (UnitFact) isFact()
@@ -23,18 +23,18 @@ func (UnitFact) isFact()
 // Uses flat ContainerState so Focus can consume this without k8s imports.
 // Horizon maps ContainerState -> corev1.ContainerState.
 type ContainerFact struct {
-        UID       string
-        Container string
+	UID       string
+	Container string
 
-        // The new container state (flat, k8s-free).
-        State ContainerState
+	// The new container state (flat, k8s-free).
+	State ContainerState
 
-        // Whether the container is ready (probe-passing).
-        Ready bool
+	// Whether the container is ready (probe-passing).
+	Ready bool
 
-        // The pod phase implied by this container transition.
-        // Focus aggregates container phases to compute the pod phase.
-        ImpliedPodPhase PodPhase
+	// The pod phase implied by this container transition.
+	// Focus aggregates container phases to compute the pod phase.
+	ImpliedPodPhase PodPhase
 }
 
 func (ContainerFact) isFact()
@@ -47,8 +47,8 @@ func (ContainerFact) isFact()
 // This fact carries a corev1.PodStatus because it bypasses Focus
 // (the k8s-free state machine) and goes straight to Horizon (the k8s layer).
 type PodStatusFact struct {
-        UID    string
-        Status corev1.PodStatus
+	UID    string
+	Status corev1.PodStatus
 }
 
 func (PodStatusFact) isFact()

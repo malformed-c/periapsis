@@ -315,9 +315,12 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
                 }
         }
 
-        // For failed containers, trigger a full poll to process restart policy
-        // and push terminal phase.
-        if state == perigeos.StateFailed {
+        // Trigger a full poll on state transitions that affect pod status.
+        // For Running: pushes the Running phase immediately and starts the
+        // readiness probe initialDelay timer, instead of waiting up to
+        // containerWatchPoll (2s) for the ticker.
+        // For Failed: processes restart policy and pushes terminal phase.
+        if state == perigeos.StateRunning || state == perigeos.StateFailed {
                 bw.poll(ctx)
         }
 }

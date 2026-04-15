@@ -233,6 +233,18 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
                 return
         }
 
+        // Fetch pod once — used for event recording and init-container check.
+        pod := bw.deps.Store.GetPodCopy(uid)
+
+        // Determine if this is an init container. Init containers run sequentially
+        // before app containers; when an init container transitions to Running,
+        // app containers haven't been started yet. Triggering a poll at that
+        // point causes checkPod to see app containers as missing from
+        // ListManagedMachines (exists=false), hitting the "never seen running"
+        // deferral and pushing ContainerCreating before the lifecycle code
+        // has finished launching them.
+        isInit := pod != nil && isInitContainer(pod, containerName)
+
         // The moment we see ANY signal that the container is stopping
         // or has failed, wipe the readiness state.
         if ev.SubState != "running" && ev.SubState != "start" {
@@ -255,14 +267,14 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
         switch ev.SubState {
         case "stop-sigterm", "stop-watchdog":
                 // systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
-                if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
+                if pod != nil {
                         bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
                                 "Container %s received SIGTERM, waiting for graceful exit", containerName)
                 }
 
         case "stop-sigkill", "stop-kill":
                 // Grace period expired; systemd is sending SIGKILL.
-                if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
+                if pod != nil {
                         bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Killing",
                                 "Container %s grace period expired, sending SIGKILL", containerName)
                 }
@@ -309,20 +321,36 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
         // (below in checkPod) covers failures and exits that the D-Bus
         // path may miss (e.g. "dead" substate is intentionally ignored).
         if state == perigeos.StateRunning {
-                if pod := bw.deps.Store.GetPodCopy(uid); pod != nil {
+                if pod != nil {
                         bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started",
                                 "Container %s started", containerName)
                 }
         }
 
         // Trigger a full poll on state transitions that affect pod status.
-        // For Running: pushes the Running phase immediately and starts the
-        // readiness probe initialDelay timer, instead of waiting up to
-        // containerWatchPoll (2s) for the ticker.
+        // For app container Running: pushes the Running phase immediately and
+        // starts the readiness probe initialDelay timer, instead of waiting
+        // up to containerWatchPoll (2s) for the ticker.
         // For Failed: processes restart policy and pushes terminal phase.
-        if state == perigeos.StateRunning || state == perigeos.StateFailed {
+        // For init container Running: skip — app containers haven't been
+        // launched yet, so the poll would see them as missing and either
+        // defer terminal decisions or push premature ContainerCreating.
+        // The lifecycle code will trigger status updates when it finishes.
+        if state == perigeos.StateRunning && !isInit {
+                bw.poll(ctx)
+        } else if state == perigeos.StateFailed {
                 bw.poll(ctx)
         }
+}
+
+// isInitContainer reports whether containerName is an init container of pod.
+func isInitContainer(pod *corev1.Pod, containerName string) bool {
+        for i := range pod.Spec.InitContainers {
+                if pod.Spec.InitContainers[i].Name == containerName {
+                        return true
+                }
+        }
+        return false
 }
 
 func (bw *BatchWatcher) poll(ctx context.Context) {

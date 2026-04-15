@@ -29,10 +29,10 @@ import (
 type ContainerPhase uint8
 
 const (
-	PhaseCreating      ContainerPhase = iota // Waiting{Reason: "ContainerCreating"}
-	PhaseRunning                              // Running
-	PhaseTerminated                           // Terminated (exit 0 = Completed, non-zero = Error)
-	PhaseCrashLoopBackOff                     // Waiting{Reason: "CrashLoopBackOff"}
+	PhaseCreating         ContainerPhase = iota // Waiting{Reason: "ContainerCreating"}
+	PhaseRunning                                // Running
+	PhaseTerminated                             // Terminated (exit 0 = Completed, non-zero = Error)
+	PhaseCrashLoopBackOff                       // Waiting{Reason: "CrashLoopBackOff"}
 )
 
 // String returns a human-readable name for the phase.
@@ -66,8 +66,8 @@ type ProbeSpec struct {
 // ContainerSpec is the per-container spec extracted from corev1.Container.
 // Only the fields needed by the state machine are kept.
 type ContainerSpec struct {
-	Name             string
-	Image            string
+	Name              string
+	Image             string
 	HasReadinessProbe bool
 	HasLivenessProbe  bool
 	HasStartupProbe   bool
@@ -157,8 +157,8 @@ func (s PodState) FindSpec(name string) int {
 // ─── Constants ──────────────────────────────────────────────────────────
 
 const (
-	RestartBackoffInit = 10 * time.Second
-	MaxBackoff         = 5 * time.Minute
+	RestartBackoffInit  = 10 * time.Second
+	MaxBackoff          = 5 * time.Minute
 	RestartBackoffReset = 10 * time.Minute
 )
 
@@ -223,12 +223,12 @@ func NewPodState(uid, namespace, name, podIP string, pod *corev1.Pod) PodState {
 	containers := make([]ContainerState, 0, len(spec.Containers))
 	for _, cs := range spec.Containers {
 		containers = append(containers, ContainerState{
-			Name:         cs.Name,
-			Image:        cs.Image,
-			Phase:        PhaseCreating,
-			Ready:        !cs.HasReadinessProbe, // no probe => immediately ready
-			Backoff:      RestartBackoffInit,
-			LastStarted:  time.Now(),
+			Name:        cs.Name,
+			Image:       cs.Image,
+			Phase:       PhaseCreating,
+			Ready:       !cs.HasReadinessProbe, // no probe => immediately ready
+			Backoff:     RestartBackoffInit,
+			LastStarted: time.Now(),
 		})
 	}
 

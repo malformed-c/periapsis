@@ -77,8 +77,8 @@ type Horizon struct {
 // so Horizon remains a pure executor with no package-level dependencies
 // on the node package.
 type HorizonDeps struct {
-	Logger  *slog.Logger
-	Client  kubernetes.Interface
+	Logger *slog.Logger
+	Client kubernetes.Interface
 
 	// Optional function overrides. If nil, the operation is a no-op.
 	RecordEvent      func(uid string, eventType, reason, message string)

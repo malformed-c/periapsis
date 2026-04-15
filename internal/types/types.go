@@ -46,12 +46,12 @@ func (ContainerStateFact) isFact() {}
 
 // ExitFact is emitted when a container process exits with a known result.
 type ExitFact struct {
-	UID        string
-	Container  string
-	ExitCode   int32
-	Reason     string
-	StartedAt  string // RFC3339
-	FinishedAt string // RFC3339
+	UID         string
+	Container   string
+	ExitCode    int32
+	Reason      string
+	StartedAt   string // RFC3339
+	FinishedAt  string // RFC3339
 	WillRestart bool
 }
 
@@ -67,8 +67,8 @@ type ProbeFact struct {
 	Container        string
 	ProbeType        string // "readiness", "liveness", or "startup"
 	Success          bool
-	Ready            bool   // evaluated readiness after threshold logic
-	StartupPassed    bool   // for startup probes: has the startup probe passed?
+	Ready            bool // evaluated readiness after threshold logic
+	StartupPassed    bool // for startup probes: has the startup probe passed?
 	SuccessThreshold int32
 	FailureThreshold int32
 }
@@ -153,11 +153,11 @@ func (UpdateStatus) isEffect() {}
 
 // PodStatusPayload carries the computed pod status fields as flat value types.
 type PodStatusPayload struct {
-	Phase              corev1.PodPhase
-	Conditions         []PodCondition
-	ContainerStatuses  []ContainerStatusPayload
-	HostIP             string
-	PodIP              string
+	Phase             corev1.PodPhase
+	Conditions        []PodCondition
+	ContainerStatuses []ContainerStatusPayload
+	HostIP            string
+	PodIP             string
 }
 
 // PodCondition is a flat value-type mirror of corev1.PodCondition.

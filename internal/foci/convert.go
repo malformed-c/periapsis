@@ -5,9 +5,9 @@ package foci
 // internal representation, PodStatus is the external K8s API representation.
 
 import (
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"github.com/malformed-c/periapsis/internal/types"
 )
 
 // BuildPodStatusPayload converts a PodState into a PodStatusPayload
@@ -107,11 +107,11 @@ func PodStatusPayloadToCorev1(payload types.PodStatusPayload) corev1.PodStatus {
 	}
 
 	return corev1.PodStatus{
-		Phase:              payload.Phase,
-		Conditions:         conditions,
-		ContainerStatuses:  containerStatuses,
-		HostIP:             payload.HostIP,
-		PodIP:              payload.PodIP,
+		Phase:             payload.Phase,
+		Conditions:        conditions,
+		ContainerStatuses: containerStatuses,
+		HostIP:            payload.HostIP,
+		PodIP:             payload.PodIP,
 	}
 }
 

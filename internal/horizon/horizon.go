@@ -8,6 +8,8 @@ import (
 
 	"github.com/malformed-c/periapsis/node"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -107,7 +109,52 @@ func (h *Horizon) close() {
 }
 
 func (h *Horizon) processPod(ctx context.Context, pod *corev1.Pod) error {
+	const maxRetries = 5
 
+	for attempt := range maxRetries {
+		// GET the current pod to obtain a fresh ResourceVersion.
+		// UpdateStatus rejects writes without a matching RV.
+		current, err := h.client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		if err != nil {
+			if k8serrors.IsNotFound(err) {
+				return nil // pod deleted, nothing to update
+			}
+			h.logger.Warn("horizon: GET pod failed", "pod", pod.Name, "err", err)
+			return err
+		}
+
+		// UID guard — if the pod was replaced (same name, new UID), the status
+		// we computed is for the old pod. Drop it.
+		if current.UID != pod.UID {
+			h.logger.Debug("horizon: pod UID mismatch, dropping stale status",
+				"pod", pod.Name, "ourUID", pod.UID, "k8sUID", current.UID)
+			return nil
+		}
+
+		// Stamp our status onto the current object so ResourceVersion is correct.
+		update := current.DeepCopy()
+		pod.Status.DeepCopyInto(&update.Status)
+
+		_, err = h.client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, update, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if k8serrors.IsNotFound(err) {
+			return nil
+		}
+		if k8serrors.IsConflict(err) {
+			if attempt < maxRetries-1 {
+				h.logger.Debug("horizon: conflict on UpdateStatus, retrying",
+					"pod", pod.Name, "attempt", attempt+1)
+				continue
+			}
+			h.logger.Warn("horizon: conflict after max retries, dropping",
+				"pod", pod.Name, "attempts", maxRetries)
+			return nil
+		}
+		h.logger.Warn("horizon: UpdateStatus failed", "pod", pod.Name, "err", err)
+		return err
+	}
 	return nil
 }
 

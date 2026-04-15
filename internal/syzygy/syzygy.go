@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/horizon"
 	"github.com/malformed-c/periapsis/internal/types"
 	"github.com/malformed-c/periapsis/node"
@@ -225,12 +226,24 @@ func (s *Syzygy) runAntiEntropy(ctx context.Context) {
 	pods := s.ps.GetPods()
 	for _, pod := range pods {
 		uid := string(pod.UID)
-		if s.foci.Get(uid) == nil {
-			if s.ps.PodPhase(uid) == corev1.PodRunning {
-				s.logger.Info("anti-entropy: creating missing focus for running pod",
-					"pod", pod.Name, "uid", uid)
-				// TODO: Create Focus from current PodStore state
-			}
+		if s.foci.Get(uid) != nil {
+			continue
+		}
+		phase := s.ps.PodPhase(uid)
+		if phase != corev1.PodRunning && phase != corev1.PodPending {
+			continue
+		}
+		ip := s.ps.PodIP(uid)
+		s.logger.Info("anti-entropy: creating missing focus for pod",
+			"pod", pod.Name, "uid", uid, "phase", phase)
+		if _, err := s.foci.Create(ctx, foci.FocusConfig{
+			UID:     uid,
+			Pod:     pod,
+			PodIP:   ip,
+			Horizon: s.horizon,
+			Logger:  s.logger,
+		}); err != nil {
+			s.logger.Warn("anti-entropy: failed to create focus", "pod", pod.Name, "err", err)
 		}
 	}
 }

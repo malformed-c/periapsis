@@ -16,6 +16,7 @@ package foci
 // and probe results converge into a coherent pod status.
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -104,9 +105,10 @@ func NewFocus(cfg FocusConfig) *Focus {
 			state: corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			},
-			ready:       c.ReadinessProbe == nil, // no probe => immediately ready
-			backoff:     restartBackoffInit,
-			lastStarted: time.Now(),
+			ready:           c.ReadinessProbe == nil, // no probe => immediately ready
+			backoff:         restartBackoffInit,
+			lastStarted:     time.Now(),
+			probeLastResult: make(map[string]time.Time),
 		}
 	}
 
@@ -116,9 +118,10 @@ func NewFocus(cfg FocusConfig) *Focus {
 			state: corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			},
-			ready:       true, // init containers don't affect pod readiness
-			backoff:     restartBackoffInit,
-			lastStarted: time.Now(),
+			ready:           true, // init containers don't affect pod readiness
+			backoff:         restartBackoffInit,
+			lastStarted:     time.Now(),
+			probeLastResult: make(map[string]time.Time),
 		}
 	}
 

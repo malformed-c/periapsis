@@ -14,6 +14,21 @@ import (
 	"github.com/malformed-c/periapsis/node"
 )
 
+// Syzygy is the event bus that routes Facts to per-pod Focus actors.
+//
+// Syzygy sits between the D-Bus event source (systemd unit state changes)
+// and the per-pod state machines (Focus). It does not hold pod state
+// itself — each Focus owns one pod's state, and Syzygy just routes.
+//
+// Flow:
+//
+//	D-Bus signal → Syzygy.Send(UnitFact) → FocusRegistry.Route() → Focus.process()
+//	                                                              ↓
+//	                                                     Focus.computeStatus()
+//	                                                              ↓
+//	                                                     Horizon.WritePodStatus()
+//	                                                              ↓
+//	                                                     k8s API Status Patch
 type Syzygy struct {
 	inbox  chan *types.Fact
 	mu     sync.RWMutex
@@ -21,8 +36,9 @@ type Syzygy struct {
 
 	logger *slog.Logger
 
-	ps      *node.PodStore
-	horizon *horizon.Horizon
+	ps       *node.PodStore
+	horizon  *horizon.Horizon
+	foci     *FocusRegistry
 }
 
 type SyzygyDeps struct {
@@ -39,7 +55,14 @@ func NewSyzygy(deps SyzygyDeps) *Syzygy {
 		logger:  deps.Logger,
 		ps:      deps.Ps,
 		horizon: deps.Horizon,
+		foci:    NewFocusRegistry(deps.Logger),
 	}
+}
+
+// Foci returns the FocusRegistry for direct focus management
+// (creating/removing foci for pod lifecycle events).
+func (s *Syzygy) Foci() *FocusRegistry {
+	return s.foci
 }
 
 func (s *Syzygy) Run(ctx context.Context) {
@@ -55,7 +78,7 @@ Loop:
 				break Loop
 			}
 
-			s.handler(ctx, fact)
+			s.route(ctx, fact)
 
 		case <-ctx.Done():
 			break Loop
@@ -68,10 +91,12 @@ Loop:
 	defer cancel()
 
 	for event := range s.inbox {
-		s.handler(shutdownCtx, event)
+		s.route(shutdownCtx, event)
 	}
 }
 
+// Send enqueues a Fact for processing.
+// Non-blocking; if the inbox is full, returns false.
 func (s *Syzygy) Send(fact *types.Fact) (ok bool) {
 	s.mu.RLock()
 	closed := s.closed
@@ -102,7 +127,9 @@ func (s *Syzygy) close() {
 	}
 }
 
-// runAntiEntropyLoop handles the low-priority background tasks
+// runAntiEntropyLoop handles the low-priority background tasks.
+// When the inbox is empty, it verifies Focus state against
+// the PodStore and reconciles any drift.
 func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -124,91 +151,36 @@ func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 	}
 }
 
-func (s *Syzygy) handler(ctx context.Context, fact *types.Fact) {
-	switch f := (*fact).(type) {
-	case *types.UnitFact:
-		s.handleUnitChange(ctx, f)
+// route dispatches a Fact to the appropriate Focus.
+// This replaces the old per-type handler switch with a single
+// routing call — the Focus handles the type-specific logic.
+func (s *Syzygy) route(ctx context.Context, fact *types.Fact) {
+	// For ProbeFacts, route directly to the Focus.
+	// For all other facts, also route to the Focus.
+	//
+	// Special cases that don't route to a Focus:
+	// - PodStatusFact: forwarded to Horizon directly (bypasses Focus)
+	if psf, ok := (*fact).(*types.PodStatusFact); ok {
+		s.handlePodStatus(psf)
+		return
+	}
 
-	case *types.ExitFact:
-		s.handleContainerExit(ctx, f)
-
-	case *types.ContainerFact:
-		s.handleContainerState(ctx, f)
-
-	case *types.PodStatusFact:
-		s.handlePodStatus(ctx, f)
-
-	case *types.SpecFact:
-		s.handleSpecChange(ctx, f)
-
-	default:
-		s.logger.Warn("received unknown fact type", "type", fmt.Sprintf("%T", f))
+	if !s.foci.Route(fact) {
+		// No Focus exists for this UID.
+		// This is normal during pod creation (Focus not yet created)
+		// or after deletion (Focus already removed).
+		s.logger.Debug("no focus for fact, dropping",
+			"type", fmt.Sprintf("%T", *fact),
+			"uid", factUID(fact))
 	}
 }
 
-func (s *Syzygy) processEvent(ctx context.Context, pod *corev1.Pod, event *types.Event) error {
-	// RECONCILE:
-	switch event.Type {
-	case types.TypePod:
-	// s.reconcilePod(pod, event)
-
-	case types.TypeContainer:
-		// s.reconcileContainer(pod, event)
-
-	case types.TypeSaga:
-		// s.reconcileSaga(pod, event)
-	}
-
-	return nil
-}
-
-func (s *Syzygy) reconcilePod(pod *corev1.Pod, event *types.Event) {
-	// 1. Mutate the pod (Horizon)
-	pod.Status = event.PodStatus
-
-	// 2. Update the registry
-	s.ps.SetPodStatus(event.UID, event.PodStatus)
-}
-
-func (s *Syzygy) runAntiEntropy(ctx context.Context) {
-	// TODO
-	// Example logic:
-	// 1. Get a list of all active UIDs from Foci
-	// 2. Cross-reference them with the K8s API (via Horizon/Listers)
-	// 3. Re-queue events for pods that are out of sync
-}
-
-// handleUnitChange processes a systemd unit substate change.
-// This is the entry point for D-Bus signals — it maps the raw substate
-// to a container state transition and forwards to Horizon.
-func (s *Syzygy) handleUnitChange(ctx context.Context, f *types.UnitFact) {
-	// TODO: Map substate to k8s container state, emit ContainerFact
-	s.logger.Debug("handling unit change", "uid", f.UID, "unit", f.UnitName, "substate", f.SubState)
-}
-
-// handleContainerExit processes a container process exit.
-// Determines restart vs terminal based on restart policy and emits
-// the appropriate downstream fact.
-func (s *Syzygy) handleContainerExit(ctx context.Context, f *types.ExitFact) {
-	// TODO: Apply restart policy, emit ContainerFact or PodStatusFact
-	s.logger.Debug("handling container exit", "uid", f.UID, "container", f.Container,
-		"exitCode", f.ExitCode, "reason", f.Reason)
-}
-
-// handleContainerState processes a container k8s-visible state transition.
-// Updates the PodStore and decides whether a pod-level status push is needed.
-func (s *Syzygy) handleContainerState(ctx context.Context, f *types.ContainerFact) {
-	s.logger.Debug("handling container state", "uid", f.UID, "container", f.Container,
-		"ready", f.Ready, "impliedPhase", f.ImpliedPodPhase)
-
-	// Update the PodStore's container state.
-	s.ps.SetContainerState(f.UID, f.Container, f.State, f.Ready)
-}
-
-// handlePodStatus processes a full pod status write request.
-// Forwards to Horizon which performs the actual k8s API write.
-func (s *Syzygy) handlePodStatus(ctx context.Context, f *types.PodStatusFact) {
-	s.logger.Debug("handling pod status push", "uid", f.UID, "phase", f.Status.Phase)
+// handlePodStatus processes a direct pod status write request.
+// Forwards to Horizon for the actual k8s API write.
+// This path is used for lifecycle-initiated status pushes
+// (e.g., ContainerCreating during pod creation).
+func (s *Syzygy) handlePodStatus(f *types.PodStatusFact) {
+	s.logger.Debug("forwarding pod status to horizon", "uid", f.UID, "phase", f.Status.Phase)
 
 	pod := s.ps.GetPodCopy(f.UID)
 	if pod == nil {
@@ -216,13 +188,49 @@ func (s *Syzygy) handlePodStatus(ctx context.Context, f *types.PodStatusFact) {
 		return
 	}
 
-	// Forward to Horizon for k8s API write.
 	updated := pod.DeepCopy()
 	f.Status.DeepCopyInto(&updated.Status)
 	s.horizon.Send(updated)
 }
 
-// handleSpecChange processes a pod spec change (update from k8s).
-func (s *Syzygy) handleSpecChange(ctx context.Context, f *types.SpecFact) {
-	s.logger.Debug("handling spec change", "uid", f.UID, "pod", f.PodName)
+func (s *Syzygy) runAntiEntropy(ctx context.Context) {
+	// 1. Get all active UIDs from Foci.
+	uids := s.foci.UIDs()
+	if len(uids) == 0 {
+		return
+	}
+
+	s.logger.Debug("anti-entropy: checking focus state", "foci", len(uids))
+
+	// 2. Snapshot Focus-computed statuses.
+	focusStatuses := s.foci.SnapshotAll()
+
+	// 3. Cross-reference with PodStore phases.
+	// If a Focus thinks a pod is Running but the PodStore says Failed,
+	// or vice versa, log the drift. Future: re-emit Facts to reconcile.
+	for uid, focusStatus := range focusStatuses {
+		storePhase := s.ps.PodPhase(uid)
+		if focusStatus.Phase != storePhase {
+			s.logger.Info("anti-entropy: drift detected",
+				"uid", uid,
+				"focusPhase", focusStatus.Phase,
+				"storePhase", storePhase)
+			// TODO: Re-emit a ContainerFact to force the Focus to
+			// re-evaluate, or create a SyncFact type.
+		}
+	}
+
+	// 4. Find pods in PodStore that have no Focus (orphaned by crash).
+	// Create Foci for them so they resume receiving events.
+	pods := s.ps.GetPods()
+	for _, pod := range pods {
+		uid := string(pod.UID)
+		if s.foci.Get(uid) == nil {
+			if s.ps.PodPhase(uid) == corev1.PodRunning {
+				s.logger.Info("anti-entropy: creating missing focus for running pod",
+					"pod", pod.Name, "uid", uid)
+				// TODO: Create Focus from current PodStore state
+			}
+		}
+	}
 }

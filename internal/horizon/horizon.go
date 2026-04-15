@@ -182,20 +182,20 @@ func (h *Horizon) processLegacyPod(ctx context.Context, pod *corev1.Pod) {
 
 // writePodStatus performs the actual k8s API status update.
 // GET + UpdateStatus with UID guard and conflict retry.
-func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) {
+func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) error {
 	const maxRetries = 5
 
 	for attempt := range maxRetries {
 		current, err := h.client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {
 			if k8serrors.IsNotFound(err) {
-				return // pod deleted
+				return nil // pod deleted
 			}
 			h.logger.Warn("horizon: GET pod failed", "pod", pod.Name, "err", err)
 			return err
 		}
 
-		// UID guard — if the pod was replaced (same name, new UID), drop it.
+		// UID guard - if the pod was replaced (same name, new UID), drop it.
 		if current.UID != pod.UID {
 			h.logger.Debug("horizon: pod UID mismatch, dropping stale status",
 				"pod", pod.Name, "ourUID", pod.UID, "k8sUID", current.UID)
@@ -252,7 +252,7 @@ func snapshotToPodStatus(s foci.FocusSnapshot) corev1.PodStatus {
 	}
 
 	return corev1.PodStatus{
-		Phase: phaseToK8s(s.Phase),
+		Phase:  phaseToK8s(s.Phase),
 		HostIP: s.PodIP,
 		PodIP:  s.PodIP,
 		Conditions: []corev1.PodCondition{{

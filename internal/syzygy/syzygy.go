@@ -17,7 +17,7 @@ import (
 //
 // Syzygy sits between the D-Bus event source (systemd unit state changes)
 // and the per-pod state machines (Focus). It does not hold pod state
-// itself — each Focus owns one pod's state, and Syzygy just routes.
+// itself - each Focus owns one pod's state, and Syzygy just routes.
 //
 // Flow:
 //
@@ -168,7 +168,7 @@ func (s *Syzygy) route(ctx context.Context, fact *types.Fact) {
 
 // handlePodStatus processes a direct pod status write request.
 // Forwards to Horizon for the actual k8s API write.
-// This is the legacy bypass path — will be removed when all
+// This is the legacy bypass path - will be removed when all
 // status flows through Focus -> StatusIntent -> Horizon.
 func (s *Syzygy) handlePodStatus(f *types.PodStatusFact) {
 	s.logger.Debug("forwarding pod status to horizon (legacy path)",

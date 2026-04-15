@@ -45,7 +45,7 @@ type ContainerFact struct {
 func (ContainerFact) isFact()
 
 // PodStatusFact is emitted when a full pod status should be written to k8s.
-// This is the legacy bypass path — used for lifecycle-initiated status
+// This is the legacy bypass path - used for lifecycle-initiated status
 // pushes that go directly to Horizon without passing through a Focus.
 // Horizon handles the actual k8s API write.
 //

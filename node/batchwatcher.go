@@ -233,7 +233,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 		return
 	}
 
-	// Fetch pod once — used for event recording and init-container check.
+	// Fetch pod once - used for event recording and init-container check.
 	pod := bw.deps.Store.GetPodCopy(uid)
 
 	// Determine if this is an init container. Init containers run sequentially
@@ -316,7 +316,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	}
 
 	// Emit container lifecycle events on state transitions.
-	// The D-Bus path is the fast reactive path — events fire within
+	// The D-Bus path is the fast reactive path - events fire within
 	// milliseconds of the actual systemd state change. The poll path
 	// (below in checkPod) covers failures and exits that the D-Bus
 	// path may miss (e.g. "dead" substate is intentionally ignored).
@@ -337,7 +337,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	// starts the readiness probe initialDelay timer, instead of waiting
 	// up to containerWatchPoll (2s) for the ticker.
 	// For Failed: processes restart policy and pushes terminal phase.
-	// For init container Running: skip — app containers haven't been
+	// For init container Running: skip - app containers haven't been
 	// launched yet, so the poll would see them as missing and either
 	// defer terminal decisions or push premature ContainerCreating.
 	// The lifecycle code will trigger status updates when it finishes.
@@ -496,7 +496,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				changedPods[e.uid] = true
 			}
 			// Check readiness changes (probe transitions don't change machine state).
-			// Only track when ProbeState exists — before InitRestartState,
+			// Only track when ProbeState exists - before InitRestartState,
 			// IsContainerReady defaults to true, which would seed prevReady
 			// incorrectly and suppress the Ready=false->true transition.
 			if cur == perigeos.StateRunning {

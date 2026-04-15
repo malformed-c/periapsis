@@ -3,7 +3,7 @@ package foci
 // A Focus owns one pod's state machine.
 //
 // It receives Facts (immutable events) and computes a FocusSnapshot.
-// All mutations happen inside the Focus — the rest of the system
+// All mutations happen inside the Focus - the rest of the system
 // only observes the computed snapshot. This eliminates races because:
 //
 //   - Facts are read-only (sealed interface)
@@ -15,7 +15,6 @@ package foci
 // It is the single place where container states, readiness, restart policy,
 // and probe results converge into a coherent pod status.
 //
-// Focus has ZERO k8s imports. It works entirely with flat types.
 // Horizon owns the k8s serialization (FocusSnapshot -> corev1.PodStatus).
 
 import (
@@ -29,10 +28,10 @@ import (
 	"github.com/malformed-c/periapsis/internal/types"
 )
 
-// ─── Output Types (flat, no k8s) ────────────────────────────────────────
+// ─── Output Types (flat) ────────────────────────────────────────
 
-// ContainerSnapshot is the Focus's public view of a single container.
-// This is what Horizon uses to build corev1.ContainerStatus.
+// ContainerSnapshot is the Focus's public view of a single container
+// This is what Horizon uses to build corev1.ContainerStatus
 type ContainerSnapshot struct {
 	Name         string
 	Image        string
@@ -42,8 +41,8 @@ type ContainerSnapshot struct {
 	IsInit       bool // true for init containers (not counted in pod readiness)
 }
 
-// FocusSnapshot is the Focus's public view of a pod.
-// This is what Horizon uses to build corev1.PodStatus.
+// FocusSnapshot is the Focus's public view of a pod
+// This is what Horizon uses to build corev1.PodStatus
 type FocusSnapshot struct {
 	UID        string
 	PodName    string
@@ -55,13 +54,13 @@ type FocusSnapshot struct {
 }
 
 // StatusIntent is what Focus sends to Horizon.
-// It carries the full computed state — Horizon maps it to k8s types
-// and performs the API write.
+// It carries the full computed state - Horizon maps it to k8s types
+// and performs the API write
 type StatusIntent struct {
 	Snapshot FocusSnapshot
 }
 
-// ─── Container Spec (input, no k8s) ─────────────────────────────────────
+// ─── Container Spec (input) ─────────────────────────────────────
 
 // ContainerSpec describes a container from the pod spec, in flat form.
 // The caller extracts this from corev1.Container when creating the Focus.
@@ -127,15 +126,14 @@ type Focus struct {
 	done   chan struct{}
 }
 
-// StatusWriter is the interface for sending computed status to the k8s API layer.
-// Implemented by horizon.Horizon — kept as an interface so Focus has zero
-// k8s imports and can be unit-tested with a mock writer.
+// StatusWriter is the interface for sending computed status to the k8s API layer
+// Implemented by horizon.Horizon - kept as an interface so Focus
+// can be unit-tested with a mock writer
 type StatusWriter interface {
 	WriteStatus(intent StatusIntent)
 }
 
-// FocusConfig holds the configuration for creating a Focus.
-// All fields are flat — no k8s types.
+// FocusConfig holds the configuration for creating a Focus
 type FocusConfig struct {
 	UID           string
 	PodName       string
@@ -219,12 +217,13 @@ func NewFocus(cfg FocusConfig) *Focus {
 }
 
 // Send enqueues a Fact for this Focus to process.
-// Non-blocking — if the inbox is full, the fact is dropped (the anti-entropy
+// Non-blocking - if the inbox is full, the fact is dropped (the anti-entropy
 // loop will reconcile eventually).
 func (f *Focus) Send(fact *types.Fact) bool {
 	select {
 	case f.inbox <- fact:
 		return true
+
 	default:
 		return false
 	}
@@ -274,8 +273,8 @@ func (f *Focus) process(ctx context.Context, fact *types.Fact) {
 	}
 }
 
-// Snapshot returns the current computed FocusSnapshot.
-// This is safe to call from any goroutine.
+// Snapshot returns the current computed FocusSnapshot
+// This is safe to call from any goroutine
 func (f *Focus) Snapshot() FocusSnapshot {
 	f.view.mu.Lock()
 	defer f.view.mu.Unlock()
@@ -333,7 +332,7 @@ func (f *Focus) handleExitFact(fact *types.ExitFact) {
 
 	// If we never saw it running, defer the terminal decision.
 	if !cv.seenRunning {
-		f.logger.Debug("exit received but container never seen running — deferring",
+		f.logger.Debug("exit received but container never seen running - deferring",
 			"container", fact.Container, "exitCode", fact.ExitCode)
 		cv.state = types.WaitingState("ContainerCreating")
 		return
@@ -343,8 +342,10 @@ func (f *Focus) handleExitFact(fact *types.ExitFact) {
 	switch f.view.policy {
 	case "Always":
 		shouldRestart = true
+
 	case "OnFailure":
 		shouldRestart = fact.ExitCode != 0
+
 	case "Never":
 		shouldRestart = false
 	}
@@ -433,10 +434,10 @@ func (f *Focus) handleProbeFact(fact *types.ProbeFact) {
 		}
 	case "startup":
 		cv.probeLastResult["startup"] = now
-		// TODO: startup probe gate — block readiness/liveness probes until startup passes
+		// TODO: startup probe gate - block readiness/liveness probes until startup passes
 	case "liveness":
 		cv.probeLastResult["liveness"] = now
-		// TODO: liveness restart — kill container and trigger restart
+		// TODO: liveness restart - kill container and trigger restart
 	}
 
 	if wasReady != cv.ready {

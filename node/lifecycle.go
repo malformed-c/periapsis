@@ -158,7 +158,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 	// Initialize probe and restart state before any containers are launched.
 	// This must happen after PromoteRunning makes the pod visible to the
-	// BatchWatcher — otherwise a D-Bus "running" event triggers a poll
+	// BatchWatcher - otherwise a D-Bus "running" event triggers a poll
 	// that sees no ProbeState, and IsContainerReady defaults to true,
 	// seeding prevReady=true and suppressing the Ready=false→true transition.
 	// Placed here (between network setup and container launch) so it runs

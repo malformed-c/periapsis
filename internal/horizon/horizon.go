@@ -1,87 +1,152 @@
 package horizon
 
-// Horizon is the Kubernetes API status writer actor.
+// Horizon is the Kubernetes API command executor.
 //
-// It receives StatusIntents from Foci and performs the actual k8s API
-// UpdateStatus call. This is the ONLY component that touches k8s types
-// in the Focus -> Syzygy -> Horizon pipeline.
+// It receives Effect commands via a channel and executes them against
+// the Kubernetes API. Horizon is a pure executor — it holds no pod state
+// and has no dependency on PodStore. All the information needed to
+// execute a command is carried in the Effect value itself.
 //
-// Horizon owns the mapping from flat types (foci.FocusSnapshot) to
-// k8s types (corev1.PodStatus). Focus is pure state machine, Horizon
-// is pure k8s serialization.
-//
-// During migration, Horizon also accepts legacy *corev1.Pod writes
-// via SendLegacyPod. This path will be removed once all status flows
-// through Focus -> StatusIntent.
+// Design principles:
+//   - No PodStore dependency — Horizon is decoupled from pod state
+//   - Command channel — all work arrives as types.Effect values
+//   - Worker pool — configurable concurrency for API calls
+//   - Value-typed commands — StatusUpdate carries flat PodStatusPayload,
+//     no DeepCopy needed on the hot path
+//   - UID guard — every status write verifies the pod UID hasn't changed
+//     to avoid clobbering a replacement pod
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/types"
-	"github.com/malformed-c/periapsis/node"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 )
 
-// statusWrite is the internal type for Horizon's inbox.
-// It unifies the new StatusIntent path and the legacy pod path.
-type statusWrite struct {
-	intent foci.StatusIntent
-	legacy *corev1.Pod // set only for legacy bypass writes
-}
-
+// Horizon executes Effect commands against the Kubernetes API.
 type Horizon struct {
-	inbox  chan statusWrite
+	inbox  chan types.Effect
 	mu     sync.RWMutex
 	closed bool
 
 	logger *slog.Logger
-
-	ps     *node.PodStore
 	client kubernetes.Interface
+
+	// recordEvent records a Kubernetes event for a pod.
+	// Provided as a function so Horizon doesn't need a PodStore dependency
+	// for looking up the pod object (the EventRecorder needs *corev1.Pod).
+	recordEvent func(uid string, eventType, reason, message string)
+
+	// setPodPhase sets the pod phase in the PodStore.
+	// Provided as a function so Horizon doesn't import PodStore.
+	setPodPhase func(uid string, phase corev1.PodPhase)
+
+	// initRestartState initializes restart/probe tracking for a new pod.
+	// Provided as a function so Horizon doesn't import PodStore.
+	initRestartState func(uid string, pod *corev1.Pod)
+
+	// resetUnit cleans up a dead/failed systemd unit.
+	// Provided as a function so Horizon doesn't import the runtime.
+	resetUnit func(ctx context.Context, uid, containerName string)
+
+	// restartContainer launches a container restart.
+	// Provided as a function so Horizon doesn't import Gambit.
+	restartContainer func(ctx context.Context, uid, namespace, podName, containerName string, restartCount int32, backoff time.Duration)
+
+	// persistPodState persists pod state to disk.
+	// Provided as a function so Horizon doesn't import the disk layer.
+	persistPodState func(uid string)
+
+	// getPodCopy retrieves a copy of the pod for UID-guarded writes.
+	// This is the ONLY remaining PodStore interaction, and it's injected
+	// as a function so Horizon doesn't import the node package.
+	getPodCopy func(uid string) *corev1.Pod
 }
 
+// HorizonDeps holds all external dependencies for Horizon.
+// All PodStore/Runtime/Gambit interactions are injected as functions
+// so Horizon remains a pure executor with no package-level dependencies
+// on the node package.
 type HorizonDeps struct {
-	Logger *slog.Logger
+	Logger  *slog.Logger
+	Client  kubernetes.Interface
 
-	Ps     *node.PodStore
-	Client kubernetes.Interface
+	// Optional function overrides. If nil, the operation is a no-op.
+	RecordEvent      func(uid string, eventType, reason, message string)
+	SetPodPhase      func(uid string, phase corev1.PodPhase)
+	InitRestartState func(uid string, pod *corev1.Pod)
+	ResetUnit        func(ctx context.Context, uid, containerName string)
+	RestartContainer func(ctx context.Context, uid, namespace, podName, containerName string, restartCount int32, backoff time.Duration)
+	PersistPodState  func(uid string)
+	GetPodCopy       func(uid string) *corev1.Pod
 }
 
 func NewHorizon(deps HorizonDeps) *Horizon {
+	if deps.RecordEvent == nil {
+		deps.RecordEvent = func(string, string, string, string) {}
+	}
+	if deps.SetPodPhase == nil {
+		deps.SetPodPhase = func(string, corev1.PodPhase) {}
+	}
+	if deps.InitRestartState == nil {
+		deps.InitRestartState = func(string, *corev1.Pod) {}
+	}
+	if deps.ResetUnit == nil {
+		deps.ResetUnit = func(context.Context, string, string) {}
+	}
+	if deps.RestartContainer == nil {
+		deps.RestartContainer = func(context.Context, string, string, string, string, int32, time.Duration) {}
+	}
+	if deps.PersistPodState == nil {
+		deps.PersistPodState = func(string) {}
+	}
+	if deps.GetPodCopy == nil {
+		deps.GetPodCopy = func(string) *corev1.Pod { return nil }
+	}
+
 	return &Horizon{
-		inbox: make(chan statusWrite, 1024),
-
-		logger: deps.Logger,
-
-		ps:     deps.Ps,
-		client: deps.Client,
+		inbox:            make(chan types.Effect, 1024),
+		logger:           deps.Logger,
+		client:           deps.Client,
+		recordEvent:      deps.RecordEvent,
+		setPodPhase:      deps.SetPodPhase,
+		initRestartState: deps.InitRestartState,
+		resetUnit:        deps.ResetUnit,
+		restartContainer: deps.RestartContainer,
+		persistPodState:  deps.PersistPodState,
+		getPodCopy:       deps.GetPodCopy,
 	}
 }
 
+// Run starts the Horizon worker pool. It blocks until the context is cancelled.
 func (h *Horizon) Run(ctx context.Context, workerCount uint8) {
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 
 	for i := uint8(0); i < workerCount; i++ {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for {
 				select {
-				case sw, ok := <-h.inbox:
+				case eff, ok := <-h.inbox:
 					if !ok {
 						return
 					}
-					h.processWrite(ctx, sw)
+					h.executeEffect(ctx, eff)
 				case <-ctx.Done():
 					return
 				}
 			}
-		})
+		}()
 	}
 
 	<-ctx.Done()
@@ -89,34 +154,17 @@ func (h *Horizon) Run(ctx context.Context, workerCount uint8) {
 
 	h.close()
 
+	// Drain remaining effects during shutdown.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	for sw := range h.inbox {
-		h.processWrite(shutdownCtx, sw)
+	for eff := range h.inbox {
+		h.executeEffect(shutdownCtx, eff)
 	}
 }
 
-// WriteStatus implements foci.StatusWriter.
-// It enqueues a StatusIntent for the k8s API write.
-func (h *Horizon) WriteStatus(intent foci.StatusIntent) {
-	if !h.trySend(statusWrite{intent: intent}) {
-		h.logger.Debug("status intent dropped (inbox full)",
-			"uid", intent.Snapshot.UID)
-	}
-}
-
-// SendLegacyPod enqueues a *corev1.Pod for a direct status write.
-// This is the migration path for the legacy PodStatusFact bypass.
-// TODO: Remove once all status flows through Focus -> StatusIntent.
-func (h *Horizon) SendLegacyPod(pod *corev1.Pod) {
-	if !h.trySend(statusWrite{legacy: pod}) {
-		h.logger.Debug("legacy pod write dropped (inbox full)",
-			"uid", string(pod.UID))
-	}
-}
-
-func (h *Horizon) trySend(sw statusWrite) bool {
+// Send enqueues an Effect for execution. Non-blocking; returns false if closed or full.
+func (h *Horizon) Send(eff types.Effect) bool {
 	h.mu.RLock()
 	closed := h.closed
 	h.mu.RUnlock()
@@ -127,12 +175,18 @@ func (h *Horizon) trySend(sw statusWrite) bool {
 
 	defer func() {
 		if recover() != nil {
-			// inbox full
+			// inbox closed
 		}
 	}()
 
-	h.inbox <- sw
-	return true
+	select {
+	case h.inbox <- eff:
+		return true
+	default:
+		h.logger.Warn("horizon inbox full, dropping effect",
+			"type", fmt.Sprintf("%T", eff))
+		return false
+	}
 }
 
 func (h *Horizon) close() {
@@ -145,25 +199,41 @@ func (h *Horizon) close() {
 	}
 }
 
-// processWrite dispatches to the appropriate handler.
-func (h *Horizon) processWrite(ctx context.Context, sw statusWrite) {
-	if sw.legacy != nil {
-		h.processLegacyPod(ctx, sw.legacy)
-		return
+// executeEffect dispatches an Effect to the appropriate handler.
+func (h *Horizon) executeEffect(ctx context.Context, eff types.Effect) {
+	switch e := eff.(type) {
+	case types.UpdateStatus:
+		h.handleUpdateStatus(ctx, e)
+	case types.RestartContainer:
+		h.handleRestartContainer(ctx, e)
+	case types.SetPodPhase:
+		h.handleSetPodPhase(e)
+	case types.ResetUnit:
+		h.handleResetUnit(ctx, e)
+	case types.RecordEvent:
+		h.handleRecordEvent(e)
+	case types.PersistPodState:
+		h.handlePersistPodState(e)
+	case types.InitRestartState:
+		h.handleInitRestartState(e)
+	default:
+		h.logger.Warn("unknown effect type", "type", fmt.Sprintf("%T", eff))
 	}
-	h.processIntent(ctx, sw.intent)
 }
 
-// processIntent converts a flat StatusIntent to k8s types and writes to the API.
-func (h *Horizon) processIntent(ctx context.Context, intent foci.StatusIntent) {
-	snapshot := intent.Snapshot
+// ─── Effect Handlers ─────────────────────────────────────────────────────
 
-	podStatus := snapshotToPodStatus(snapshot)
+// handleUpdateStatus writes a computed PodStatus to the Kubernetes API.
+// The PodStatusPayload is converted to corev1.PodStatus via the foci
+// conversion layer. The UID guard prevents clobbering replacement pods.
+func (h *Horizon) handleUpdateStatus(ctx context.Context, eff types.UpdateStatus) {
+	podStatus := foci.PodStatusPayloadToCorev1(eff.Status)
 
-	// Get the current pod from PodStore for the full object.
-	pod := h.ps.GetPodCopy(snapshot.UID)
+	// Get the current pod from PodStore for UID-guarded writes.
+	pod := h.getPodCopy(eff.UID)
 	if pod == nil {
-		h.logger.Warn("pod not found for status write", "uid", snapshot.UID, "pod", snapshot.PodName)
+		h.logger.Debug("pod not found for status write, dropping",
+			"uid", eff.UID, "name", eff.Name)
 		return
 	}
 
@@ -173,12 +243,37 @@ func (h *Horizon) processIntent(ctx context.Context, intent foci.StatusIntent) {
 	h.writePodStatus(ctx, updated)
 }
 
-// processLegacyPod handles the legacy bypass path.
-// Writes a pre-built *corev1.Pod directly to the k8s API.
-// TODO: Remove once all status flows through Focus -> StatusIntent.
-func (h *Horizon) processLegacyPod(ctx context.Context, pod *corev1.Pod) {
-	h.writePodStatus(ctx, pod)
+// handleRestartContainer launches a container restart via the Gambit callback.
+func (h *Horizon) handleRestartContainer(ctx context.Context, eff types.RestartContainer) {
+	h.restartContainer(ctx, eff.UID, eff.Namespace, eff.PodName, eff.ContainerName, eff.RestartCount, eff.Backoff)
 }
+
+// handleSetPodPhase updates the PodStore's phase map.
+func (h *Horizon) handleSetPodPhase(eff types.SetPodPhase) {
+	h.setPodPhase(eff.UID, eff.Phase)
+}
+
+// handleResetUnit cleans up a dead/failed systemd unit.
+func (h *Horizon) handleResetUnit(ctx context.Context, eff types.ResetUnit) {
+	h.resetUnit(ctx, eff.UID, eff.ContainerName)
+}
+
+// handleRecordEvent emits a Kubernetes event.
+func (h *Horizon) handleRecordEvent(eff types.RecordEvent) {
+	h.recordEvent(eff.UID, eff.EventType, eff.Reason, eff.Message)
+}
+
+// handlePersistPodState persists pod state to disk.
+func (h *Horizon) handlePersistPodState(eff types.PersistPodState) {
+	h.persistPodState(eff.UID)
+}
+
+// handleInitRestartState initializes restart/probe tracking for a new pod.
+func (h *Horizon) handleInitRestartState(eff types.InitRestartState) {
+	h.initRestartState(eff.UID, eff.Pod)
+}
+
+// ─── K8s API Write ───────────────────────────────────────────────────────
 
 // writePodStatus performs the actual k8s API status update.
 // GET + UpdateStatus with UID guard and conflict retry.
@@ -195,7 +290,7 @@ func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) error {
 			return err
 		}
 
-		// UID guard - if the pod was replaced (same name, new UID), drop it.
+		// UID guard — if the pod was replaced (same name, new UID), drop it.
 		if current.UID != pod.UID {
 			h.logger.Debug("horizon: pod UID mismatch, dropping stale status",
 				"pod", pod.Name, "ourUID", pod.UID, "k8sUID", current.UID)
@@ -228,108 +323,17 @@ func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) error {
 	return nil
 }
 
-// ─── K8s Mapping Functions ─────────────────────────────────────────────
+// ─── Adapters ────────────────────────────────────────────────────────────
 
-// snapshotToPodStatus maps a flat FocusSnapshot to a corev1.PodStatus.
-// This is the ONLY place in the Focus/Syzygy/Horizon pipeline that
-// creates k8s types from flat types.
-func snapshotToPodStatus(s foci.FocusSnapshot) corev1.PodStatus {
-	containerStatuses := make([]corev1.ContainerStatus, 0, len(s.Containers))
-
-	for _, cs := range s.Containers {
-		containerStatuses = append(containerStatuses, corev1.ContainerStatus{
-			Name:         cs.Name,
-			Image:        cs.Image,
-			Ready:        cs.Ready,
-			RestartCount: cs.RestartCount,
-			State:        containerStateToK8s(cs.State),
-		})
-	}
-
-	readyCondition := corev1.ConditionFalse
-	if s.AllReady {
-		readyCondition = corev1.ConditionTrue
-	}
-
-	return corev1.PodStatus{
-		Phase:  phaseToK8s(s.Phase),
-		HostIP: s.PodIP,
-		PodIP:  s.PodIP,
-		Conditions: []corev1.PodCondition{{
-			Type:   corev1.PodReady,
-			Status: readyCondition,
-		}},
-		ContainerStatuses: containerStatuses,
-	}
-}
-
-// containerStateToK8s maps a flat types.ContainerState to corev1.ContainerState.
-func containerStateToK8s(s types.ContainerState) corev1.ContainerState {
-	switch s.Kind {
-	case types.StateWaiting:
-		return corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{
-				Reason: s.Reason,
-			},
+// EventRecorderAdapter creates a RecordEvent function from a Kubernetes
+// EventRecorder and a pod lookup function. This decouples Horizon from
+// both the node package and PodStore.
+func EventRecorderAdapter(recorder record.EventRecorder, getPod func(uid string) *corev1.Pod) func(uid string, eventType, reason, message string) {
+	return func(uid string, eventType, reason, message string) {
+		pod := getPod(uid)
+		if pod == nil {
+			return
 		}
-	case types.StateRunning:
-		startedAt := metav1.Now()
-		if !s.StartedAt.IsZero() {
-			startedAt = metav1.NewTime(s.StartedAt)
-		}
-		return corev1.ContainerState{
-			Running: &corev1.ContainerStateRunning{
-				StartedAt: startedAt,
-			},
-		}
-	case types.StateTerminated:
-		finishedAt := metav1.Now()
-		if !s.FinishedAt.IsZero() {
-			finishedAt = metav1.NewTime(s.FinishedAt)
-		}
-		return corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{
-				ExitCode:   s.ExitCode,
-				FinishedAt: finishedAt,
-			},
-		}
-	default:
-		return corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{Reason: "Unknown"},
-		}
-	}
-}
-
-// phaseToK8s maps a flat types.PodPhase to corev1.PodPhase.
-func phaseToK8s(p types.PodPhase) corev1.PodPhase {
-	switch p {
-	case types.PhasePending:
-		return corev1.PodPending
-	case types.PhaseRunning:
-		return corev1.PodRunning
-	case types.PhaseSucceeded:
-		return corev1.PodSucceeded
-	case types.PhaseFailed:
-		return corev1.PodFailed
-	default:
-		return corev1.PodUnknown
-	}
-}
-
-// PodPhaseToFlat maps a corev1.PodPhase to a flat types.PodPhase.
-// Used by Syzygy's anti-entropy loop to compare PodStore phases
-// against Focus-computed phases.
-func PodPhaseToFlat(p corev1.PodPhase) types.PodPhase {
-	switch p {
-	case corev1.PodPending:
-		return types.PhasePending
-	case corev1.PodRunning:
-		return types.PhaseRunning
-	case corev1.PodSucceeded:
-		return types.PhaseSucceeded
-	case corev1.PodFailed:
-		return types.PhaseFailed
-	default:
-		return types.PhaseUnknown
+		recorder.Eventf(pod, eventType, reason, "%s", message)
 	}
 }

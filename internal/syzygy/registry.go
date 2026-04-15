@@ -5,9 +5,6 @@ package syzygy
 // The registry is the single place where Foci are created, looked up,
 // and destroyed. Syzygy routes Facts through the registry to the
 // correct Focus based on the Fact's UID.
-//
-// This replaces the BatchWatcher's per-pod iteration with per-pod
-// isolation — each Focus owns one pod's state, no shared mutable state.
 
 import (
 	"context"
@@ -17,7 +14,6 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/types"
-	corev1 "k8s.io/api/core/v1"
 )
 
 // FocusRegistry manages the lifecycle of Focus actors.
@@ -60,7 +56,7 @@ func (r *FocusRegistry) Create(ctx context.Context, cfg foci.FocusConfig) (*foci
 
 	go focus.Run(ctx)
 
-	r.logger.Info("focus created", "pod", cfg.Pod.Name, "uid", cfg.UID)
+	r.logger.Info("focus created", "pod", cfg.PodName, "uid", cfg.UID)
 	return focus, nil
 }
 
@@ -92,17 +88,17 @@ func (r *FocusRegistry) UIDs() []string {
 	return uids
 }
 
-// SnapshotAll returns the computed PodStatus for all tracked pods.
+// SnapshotAll returns the computed FocusSnapshot for all tracked pods.
 // Used by the anti-entropy loop to detect drift.
-func (r *FocusRegistry) SnapshotAll() map[string]*corev1.PodStatus {
+func (r *FocusRegistry) SnapshotAll() map[string]foci.FocusSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	statuses := make(map[string]*corev1.PodStatus, len(r.foci))
+	snapshots := make(map[string]foci.FocusSnapshot, len(r.foci))
 	for uid, focus := range r.foci {
-		statuses[uid] = focus.Snapshot()
+		snapshots[uid] = focus.Snapshot()
 	}
-	return statuses
+	return snapshots
 }
 
 // Route sends a Fact to the appropriate Focus based on the Fact's UID.
@@ -165,16 +161,16 @@ func factUID(fact *types.Fact) string {
 	}
 }
 
-// ─── Horizon Writer Adapter ────────────────────────────────────────────
+// ─── Status Writer Adapter ─────────────────────────────────────────────
 
-// horizonAdapter adapts a send function to the HorizonWriter interface.
+// statusAdapter adapts a send function to the foci.StatusWriter interface.
 // This decouples Focus from the horizon package.
-type horizonAdapter struct {
-	send func(*corev1.Pod)
+type statusAdapter struct {
+	send func(foci.StatusIntent)
 }
 
-func (h *horizonAdapter) WritePodStatus(pod *corev1.Pod) {
-	if h.send != nil {
-		h.send(pod)
+func (a *statusAdapter) WriteStatus(intent foci.StatusIntent) {
+	if a.send != nil {
+		a.send(intent)
 	}
 }

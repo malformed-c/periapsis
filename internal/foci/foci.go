@@ -2,9 +2,9 @@ package foci
 
 // A Focus owns one pod's state machine.
 //
-// It receives Facts (immutable events) and computes a PodStatus.
+// It receives Facts (immutable events) and computes a FocusSnapshot.
 // All mutations happen inside the Focus — the rest of the system
-// only observes the computed status. This eliminates races because:
+// only observes the computed snapshot. This eliminates races because:
 //
 //   - Facts are read-only (sealed interface)
 //   - Each Focus owns one pod's state (single writer)
@@ -14,6 +14,9 @@ package foci
 // Focus is named after the orbital mechanics theme (point of convergence).
 // It is the single place where container states, readiness, restart policy,
 // and probe results converge into a coherent pod status.
+//
+// Focus has ZERO k8s imports. It works entirely with flat types.
+// Horizon owns the k8s serialization (FocusSnapshot -> corev1.PodStatus).
 
 import (
 	"context"
@@ -24,105 +27,173 @@ import (
 	"time"
 
 	"github.com/malformed-c/periapsis/internal/types"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// containerView is the Focus's local view of a single container's state.
-// This is never shared outside the Focus — it's the Focus's private state.
+// ─── Output Types (flat, no k8s) ────────────────────────────────────────
+
+// ContainerSnapshot is the Focus's public view of a single container.
+// This is what Horizon uses to build corev1.ContainerStatus.
+type ContainerSnapshot struct {
+	Name         string
+	Image        string
+	State        types.ContainerState
+	Ready        bool
+	RestartCount int32
+	IsInit       bool // true for init containers (not counted in pod readiness)
+}
+
+// FocusSnapshot is the Focus's public view of a pod.
+// This is what Horizon uses to build corev1.PodStatus.
+type FocusSnapshot struct {
+	UID        string
+	PodName    string
+	Namespace  string
+	PodIP      string
+	Phase      types.PodPhase
+	AllReady   bool
+	Containers []ContainerSnapshot
+}
+
+// StatusIntent is what Focus sends to Horizon.
+// It carries the full computed state — Horizon maps it to k8s types
+// and performs the API write.
+type StatusIntent struct {
+	Snapshot FocusSnapshot
+}
+
+// ─── Container Spec (input, no k8s) ─────────────────────────────────────
+
+// ContainerSpec describes a container from the pod spec, in flat form.
+// The caller extracts this from corev1.Container when creating the Focus.
+type ContainerSpec struct {
+	Name              string
+	Image             string
+	HasReadinessProbe bool // true => container starts unready, must earn readiness via ProbeFact
+	IsInit            bool // true => doesn't affect pod readiness
+}
+
+// ─── Internal State ─────────────────────────────────────────────────────
+
+// containerView is the Focus's private per-container state.
+// Never shared outside the Focus.
 type containerView struct {
-	// The k8s-visible container state.
-	state corev1.ContainerState
+	state types.ContainerState
 
-	// Whether the container is ready (probe-passing or no probe defined).
-	ready bool
-
-	// Whether the container has been seen running at least once.
-	// Prevents premature terminal decisions during systemd unit startup.
+	ready       bool
 	seenRunning bool
+	restarting  bool
 
-	// Whether the container is currently being restarted by the Focus.
-	restarting bool
-
-	// Restart bookkeeping.
 	restartCount int32
 	backoff      time.Duration
 	lastStarted  time.Time
 
-	// Probe state.
 	probeLastResult map[string]time.Time // "startup"/"liveness"/"readiness" -> last probed
 	readyFailCount  int32
 	readyPassCount  int32
 }
 
-// podView is the Focus's local view of a pod.
+// containerSpec is the immutable spec for a container, stored at Focus creation.
+type containerSpec struct {
+	name              string
+	image             string
+	hasReadinessProbe bool
+	isInit            bool
+}
+
+// podView is the Focus's private view of a pod.
 type podView struct {
 	mu sync.Mutex
 
-	uid   string
-	pod   *corev1.Pod // spec (read-only after creation)
-	podIP string
+	uid       string
+	podName   string
+	namespace string
+	podIP     string
+	policy    string // "Always", "OnFailure", "Never"
 
-	containers map[string]*containerView // containerName -> view
+	specs      map[string]*containerSpec // containerName -> spec (immutable)
+	containers map[string]*containerView // containerName -> mutable state
 }
 
+// ─── Focus ──────────────────────────────────────────────────────────────
+
 // Focus is a per-pod state machine actor.
-// It processes Facts and emits pod status updates to the HorizonWriter.
+// It processes Facts and emits StatusIntents to the StatusWriter.
 type Focus struct {
-	view    podView
-	inbox   chan *types.Fact
-	horizon HorizonWriter
+	view   podView
+	inbox  chan *types.Fact
+	writer StatusWriter
 
 	logger *slog.Logger
 	done   chan struct{}
 }
 
-// HorizonWriter is the interface for sending pod status to the k8s API.
-// Implemented by horizon.Horizon (Send method) — kept as an interface
-// so Focus doesn't depend on the horizon package directly.
-type HorizonWriter interface {
-	WritePodStatus(pod *corev1.Pod)
+// StatusWriter is the interface for sending computed status to the k8s API layer.
+// Implemented by horizon.Horizon — kept as an interface so Focus has zero
+// k8s imports and can be unit-tested with a mock writer.
+type StatusWriter interface {
+	WriteStatus(intent StatusIntent)
 }
 
 // FocusConfig holds the configuration for creating a Focus.
+// All fields are flat — no k8s types.
 type FocusConfig struct {
-	UID     string
-	Pod     *corev1.Pod
-	PodIP   string
-	Horizon HorizonWriter
-	Logger  *slog.Logger
+	UID           string
+	PodName       string
+	Namespace     string
+	PodIP         string
+	RestartPolicy string // "Always", "OnFailure", "Never" (default "Always")
+
+	// Container specs extracted from the pod spec by the caller.
+	Containers     []ContainerSpec
+	InitContainers []ContainerSpec
+
+	Writer StatusWriter
+	Logger *slog.Logger
 }
 
 // NewFocus creates a new Focus for a pod.
 //
-// All containers start in ContainerCreating state. Readiness defaults
-// to true only if the container has no readiness probe; containers
-// with probes start unready and must earn readiness via ProbeFacts.
+// All containers start in Waiting("ContainerCreating") state.
+// Readiness defaults to true only if the container has no readiness probe;
+// containers with probes start unready and must earn readiness via ProbeFacts.
 func NewFocus(cfg FocusConfig) *Focus {
-	containers := make(map[string]*containerView, len(cfg.Pod.Spec.Containers))
-	for _, c := range cfg.Pod.Spec.Containers {
+	specs := make(map[string]*containerSpec, len(cfg.Containers)+len(cfg.InitContainers))
+	containers := make(map[string]*containerView, len(cfg.Containers)+len(cfg.InitContainers))
+
+	for _, c := range cfg.InitContainers {
+		specs[c.Name] = &containerSpec{
+			name:              c.Name,
+			image:             c.Image,
+			hasReadinessProbe: c.HasReadinessProbe,
+			isInit:            true,
+		}
 		containers[c.Name] = &containerView{
-			state: corev1.ContainerState{
-				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-			},
-			ready:           c.ReadinessProbe == nil, // no probe => immediately ready
+			state:           types.WaitingState("ContainerCreating"),
+			ready:           true, // init containers don't affect pod readiness
 			backoff:         restartBackoffInit,
 			lastStarted:     time.Now(),
 			probeLastResult: make(map[string]time.Time),
 		}
 	}
 
-	// Init containers follow the same pattern — start in Creating.
-	for _, c := range cfg.Pod.Spec.InitContainers {
+	for _, c := range cfg.Containers {
+		specs[c.Name] = &containerSpec{
+			name:              c.Name,
+			image:             c.Image,
+			hasReadinessProbe: c.HasReadinessProbe,
+			isInit:            false,
+		}
 		containers[c.Name] = &containerView{
-			state: corev1.ContainerState{
-				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-			},
-			ready:           true, // init containers don't affect pod readiness
+			state:           types.WaitingState("ContainerCreating"),
+			ready:           !c.HasReadinessProbe, // no probe => immediately ready
 			backoff:         restartBackoffInit,
 			lastStarted:     time.Now(),
 			probeLastResult: make(map[string]time.Time),
 		}
+	}
+
+	if cfg.RestartPolicy == "" {
+		cfg.RestartPolicy = "Always"
 	}
 
 	logger := cfg.Logger
@@ -133,14 +204,17 @@ func NewFocus(cfg FocusConfig) *Focus {
 	return &Focus{
 		view: podView{
 			uid:        cfg.UID,
-			pod:        cfg.Pod,
+			podName:    cfg.PodName,
+			namespace:  cfg.Namespace,
 			podIP:      cfg.PodIP,
+			policy:     cfg.RestartPolicy,
+			specs:      specs,
 			containers: containers,
 		},
-		inbox:   make(chan *types.Fact, 64),
-		horizon: cfg.Horizon,
-		logger:  logger.With("component", "focus", "pod", cfg.Pod.Name, "uid", cfg.UID),
-		done:    make(chan struct{}),
+		inbox:  make(chan *types.Fact, 64),
+		writer: cfg.Writer,
+		logger: logger.With("component", "focus", "pod", cfg.PodName, "uid", cfg.UID),
+		done:   make(chan struct{}),
 	}
 }
 
@@ -200,25 +274,18 @@ func (f *Focus) process(ctx context.Context, fact *types.Fact) {
 	}
 }
 
-// Snapshot returns the current computed PodStatus.
+// Snapshot returns the current computed FocusSnapshot.
 // This is safe to call from any goroutine.
-func (f *Focus) Snapshot() *corev1.PodStatus {
+func (f *Focus) Snapshot() FocusSnapshot {
 	f.view.mu.Lock()
 	defer f.view.mu.Unlock()
-	return f.computeStatus()
+	return f.computeSnapshot()
 }
 
 // ─── Fact Handlers ─────────────────────────────────────────────────────
 
 // handleUnitFact processes a systemd unit substate change.
 // Maps the raw substate to a container state transition.
-//
-// The unit name format is: perigeos-<pawn>-pod-<uid>-<containerName>.service
-// We extract uid and containerName using the pawnName that was provided
-// when the Focus was created (stored in the pod's labels or passed via config).
-//
-// Since the Focus receives UnitFacts that were already routed by UID
-// (via FocusRegistry), we only need to extract the container name here.
 func (f *Focus) handleUnitFact(fact *types.UnitFact) {
 	containerName := ParseContainerFromUnit(fact.UnitName)
 	if containerName == "" {
@@ -230,29 +297,18 @@ func (f *Focus) handleUnitFact(fact *types.UnitFact) {
 
 	cv, ok := f.view.containers[containerName]
 	if !ok {
-		return // not a container we track (could be init container already completed)
+		return
 	}
 
-	// Map substate to container state.
 	switch fact.SubState {
 	case "running":
 		cv.seenRunning = true
 		cv.restarting = false
-		cv.state = corev1.ContainerState{
-			Running: &corev1.ContainerStateRunning{
-				StartedAt: metav1.Now(),
-			},
-		}
+		cv.state = types.RunningState(time.Now())
 	case "failed":
-		cv.state = corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-		}
+		cv.state = types.WaitingState("CrashLoopBackOff")
 	case "start-pre", "start", "start-post":
-		cv.state = corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-		}
-	// "dead", "stop-sigterm", "stop-sigkill" — ignored (transient states).
-	// The Focus learns about exits via ExitFact, not via transient substates.
+		cv.state = types.WaitingState("ContainerCreating")
 	default:
 		return
 	}
@@ -275,30 +331,21 @@ func (f *Focus) handleExitFact(fact *types.ExitFact) {
 		return
 	}
 
-	policy := f.view.pod.Spec.RestartPolicy
-	if policy == "" {
-		policy = corev1.RestartPolicyAlways
-	}
-
 	// If we never saw it running, defer the terminal decision.
-	// The anti-entropy loop (or a subsequent UnitFact with "running")
-	// will resolve this.
 	if !cv.seenRunning {
 		f.logger.Debug("exit received but container never seen running — deferring",
 			"container", fact.Container, "exitCode", fact.ExitCode)
-		cv.state = corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-		}
+		cv.state = types.WaitingState("ContainerCreating")
 		return
 	}
 
 	shouldRestart := false
-	switch policy {
-	case corev1.RestartPolicyAlways:
+	switch f.view.policy {
+	case "Always":
 		shouldRestart = true
-	case corev1.RestartPolicyOnFailure:
+	case "OnFailure":
 		shouldRestart = fact.ExitCode != 0
-	case corev1.RestartPolicyNever:
+	case "Never":
 		shouldRestart = false
 	}
 
@@ -306,27 +353,19 @@ func (f *Focus) handleExitFact(fact *types.ExitFact) {
 		cv.restarting = true
 		cv.restartCount++
 		cv.backoff = min(cv.backoff*2, maxBackoff)
-		cv.state = corev1.ContainerState{
-			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-		}
+		cv.state = types.WaitingState("CrashLoopBackOff")
 		f.logger.Info("container exited, restarting",
 			"container", fact.Container, "exitCode", fact.ExitCode,
 			"restartCount", cv.restartCount, "backoff", cv.backoff)
 		// TODO: launch restart goroutine, emit UnitFact when complete
 	} else {
-		finishedAt := metav1.Now()
+		finishedAt := time.Time{}
 		if fact.FinishedAt != "" {
 			if t, err := time.Parse(time.RFC3339, fact.FinishedAt); err == nil {
-				finishedAt = metav1.NewTime(t)
+				finishedAt = t
 			}
 		}
-		cv.state = corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{
-				ExitCode:   fact.ExitCode,
-				Reason:     fact.Reason,
-				FinishedAt: finishedAt,
-			},
-		}
+		cv.state = types.TerminatedState(fact.ExitCode, finishedAt)
 		f.logger.Info("container exited (terminal)",
 			"container", fact.Container, "exitCode", fact.ExitCode)
 	}
@@ -334,8 +373,7 @@ func (f *Focus) handleExitFact(fact *types.ExitFact) {
 	f.pushStatusLocked()
 }
 
-// handleContainerFact processes a container k8s-visible state transition.
-// This is used by the lifecycle to signal container creation completion.
+// handleContainerFact processes a container state transition from the lifecycle.
 func (f *Focus) handleContainerFact(fact *types.ContainerFact) {
 	f.view.mu.Lock()
 	defer f.view.mu.Unlock()
@@ -347,7 +385,7 @@ func (f *Focus) handleContainerFact(fact *types.ContainerFact) {
 
 	cv.state = fact.State
 	cv.ready = fact.Ready
-	if fact.State.Running != nil {
+	if fact.State.Kind == types.StateRunning {
 		cv.seenRunning = true
 		cv.lastStarted = time.Now()
 	}
@@ -420,80 +458,57 @@ func (f *Focus) handleSpecFact(fact *types.SpecFact) {
 
 // ─── Status Computation ────────────────────────────────────────────────
 
-// computeStatus builds a PodStatus from the Focus's local state.
+// computeSnapshot builds a FocusSnapshot from the Focus's local state.
 // MUST be called with f.view.mu held.
-func (f *Focus) computeStatus() *corev1.PodStatus {
-	phase := corev1.PodRunning
+func (f *Focus) computeSnapshot() FocusSnapshot {
+	phase := types.PhaseRunning
 	allReady := true
-	containerStatuses := make([]corev1.ContainerStatus, 0, len(f.view.containers))
+	containerSnapshots := make([]ContainerSnapshot, 0, len(f.view.specs))
 
-	// App containers drive the pod phase and readiness.
-	for _, c := range f.view.pod.Spec.Containers {
-		cv, ok := f.view.containers[c.Name]
+	for name, cv := range f.view.containers {
+		spec, ok := f.view.specs[name]
 		if !ok {
 			continue
 		}
 
-		cs := corev1.ContainerStatus{
-			Name:         c.Name,
-			Image:        c.Image,
+		cs := ContainerSnapshot{
+			Name:         spec.name,
+			Image:        spec.image,
+			State:        cv.state,
 			Ready:        cv.ready,
 			RestartCount: cv.restartCount,
-			State:        cv.state,
+			IsInit:       spec.isInit,
 		}
 
-		if cv.state.Waiting != nil {
-			phase = corev1.PodPending
+		// Waiting state implies Pending phase (only for app containers).
+		if cv.state.Kind == types.StateWaiting && !spec.isInit {
+			phase = types.PhasePending
 		}
-		if !cv.ready {
+
+		// All app containers must be ready for pod to be ready.
+		if !cv.ready && !spec.isInit {
 			allReady = false
 		}
 
-		containerStatuses = append(containerStatuses, cs)
+		containerSnapshots = append(containerSnapshots, cs)
 	}
 
-	// Init container statuses (not counted in readiness).
-	for _, c := range f.view.pod.Spec.InitContainers {
-		cv, ok := f.view.containers[c.Name]
-		if !ok {
-			continue
-		}
-
-		cs := corev1.ContainerStatus{
-			Name:         c.Name,
-			Image:        c.Image,
-			Ready:        cv.ready,
-			RestartCount: cv.restartCount,
-			State:        cv.state,
-		}
-
-		containerStatuses = append(containerStatuses, cs)
-	}
-
-	readyCondition := corev1.ConditionFalse
-	if allReady {
-		readyCondition = corev1.ConditionTrue
-	}
-
-	return &corev1.PodStatus{
-		Phase:  phase,
-		HostIP: f.view.podIP,
-		PodIP:  f.view.podIP,
-		Conditions: []corev1.PodCondition{{
-			Type:   corev1.PodReady,
-			Status: readyCondition,
-		}},
-		ContainerStatuses: containerStatuses,
+	return FocusSnapshot{
+		UID:        f.view.uid,
+		PodName:    f.view.podName,
+		Namespace:  f.view.namespace,
+		PodIP:      f.view.podIP,
+		Phase:      phase,
+		AllReady:   allReady,
+		Containers: containerSnapshots,
 	}
 }
 
-// pushStatusLocked computes the current status and sends it to Horizon.
+// pushStatusLocked computes the current snapshot and sends it as a StatusIntent.
 // MUST be called with f.view.mu held.
 func (f *Focus) pushStatusLocked() {
-	status := f.computeStatus()
-	updated := f.view.pod.DeepCopy()
-	status.DeepCopyInto(&updated.Status)
-	f.horizon.WritePodStatus(updated)
+	snapshot := f.computeSnapshot()
+	f.writer.WriteStatus(StatusIntent{Snapshot: snapshot})
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────
@@ -508,9 +523,6 @@ const (
 // ParseContainerFromUnit extracts the container name from a systemd unit name.
 // Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 //
-// Since the Focus already knows its UID (facts are pre-routed by UID),
-// we only need the container name portion.
-//
 // This is the foci-local version of gambit.ParseUnitName that doesn't
 // require importing the node package.
 func ParseContainerFromUnit(unitName string) string {
@@ -518,20 +530,7 @@ func ParseContainerFromUnit(unitName string) string {
 	if !strings.HasSuffix(unitName, suffix) {
 		return ""
 	}
-	inner := unitName[:len(unitName)-len(suffix)]
 
-	// Find the last hyphen that separates <uid> from <containerName>.
-	// UIDs are standard 36-char UUIDs (8-4-4-4-12 with hyphens = 36 chars).
-	// The separator between UID and containerName is at position 36 (0-indexed),
-	// since the prefix "perigeos-<pawn>-pod-" is already stripped by routing.
-	//
-	// Actually, we receive the full unit name here. We need to find where
-	// the UID ends. The UID is 36 chars, so the container name starts
-	// after the UID + one hyphen separator.
-	//
-	// Walk backwards from the suffix to find the container name.
-	// The container name is everything after the last UID-terminating hyphen.
-	// Since UIDs contain hyphens themselves, we need to count from the front.
 	prefix := "perigeos-"
 	idx := strings.Index(unitName, prefix)
 	if idx == -1 {
@@ -548,8 +547,7 @@ func ParseContainerFromUnit(unitName string) string {
 	afterPod = afterPod[:len(afterPod)-len(suffix)] // "<uid>-<containerName>"
 
 	// UID is 36 chars (8-4-4-4-12 format).
-	// After the UID, there's a hyphen, then the container name.
-	if len(afterPod) < 38 { // 36 (UUID) + 1 (hyphen) + at least 1 char
+	if len(afterPod) < 38 {
 		return ""
 	}
 

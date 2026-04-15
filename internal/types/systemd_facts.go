@@ -25,27 +25,32 @@ type ExitFact struct {
 func (ExitFact) isFact()
 
 // ContainerFact is emitted when a container's k8s-visible state transitions.
-// This is the fact that Syzygy uses to update container statuses and
-// decide whether to push a pod status update to k8s via Horizon.
+// Uses flat ContainerState so Focus can consume this without k8s imports.
+// Horizon maps ContainerState -> corev1.ContainerState.
 type ContainerFact struct {
 	UID       string
 	Container string
 
-	// The new container state as seen by k8s.
-	State corev1.ContainerState
+	// The new container state (flat, k8s-free).
+	State ContainerState
 
 	// Whether the container is ready (probe-passing).
 	Ready bool
 
 	// The pod phase implied by this container transition.
-	// Syzygy aggregates container phases to compute the pod phase.
-	ImpliedPodPhase corev1.PodPhase
+	// Focus aggregates container phases to compute the pod phase.
+	ImpliedPodPhase PodPhase
 }
 
 func (ContainerFact) isFact()
 
 // PodStatusFact is emitted when a full pod status should be written to k8s.
-// Horizon consumes this to perform the actual API server write.
+// This is the legacy bypass path — used for lifecycle-initiated status
+// pushes that go directly to Horizon without passing through a Focus.
+// Horizon handles the actual k8s API write.
+//
+// This fact carries a corev1.PodStatus because it bypasses Focus
+// (the k8s-free state machine) and goes straight to Horizon (the k8s layer).
 type PodStatusFact struct {
 	UID    string
 	Status corev1.PodStatus

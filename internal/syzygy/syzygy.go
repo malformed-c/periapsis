@@ -36,9 +36,9 @@ type Syzygy struct {
 
 	logger *slog.Logger
 
-	ps       *node.PodStore
-	horizon  *horizon.Horizon
-	foci     *FocusRegistry
+	ps      *node.PodStore
+	horizon *horizon.Horizon
+	foci    *FocusRegistry
 }
 
 type SyzygyDeps struct {

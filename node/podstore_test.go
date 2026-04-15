@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// ─── Test Helpers ───────────────────────────────────────────────────────────
+// --- Test Helpers -----------------------------------------------------------
 
 // makePod creates a basic pod with requested CPU and Memory for testing.
 func makePod(uid, namespace, name, cpuReq, memReq string) *corev1.Pod {
@@ -70,7 +70,7 @@ func waitForSnapshot(t *testing.T, store *PodStore, expected int) []PodSnapshot 
 	return nil
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
+// --- Tests ------------------------------------------------------------------
 
 func TestPodStore_BasicLifecycle(t *testing.T) {
 	store := setupTestStore()

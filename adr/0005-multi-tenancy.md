@@ -71,10 +71,10 @@ CIDR allocation needs care - different clusters must not overlap pod CIDRs. Eith
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌-------------------------------------------------------------┐
 │                        Physical Host                         │
 │                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
+│  ┌------------------------------------------------------┐   │
 │  │           Periapsis Host Daemon (PID 1-ish)          │   │
 │  │                                                      │   │
 │  │   systemd DBus ←→ nspawn machines                    │   │
@@ -82,11 +82,11 @@ CIDR allocation needs care - different clusters must not overlap pod CIDRs. Eith
 │  │   cgroup slice management                            │   │
 │  │   Constellation agent lifecycle                      │   │
 │  │   varlink socket: /run/periapsis/periapsis.sock      │   │
-│  └───────────────────┬──────────────────────────────────┘   │
+│  └-------------------┬----------------------------------┘   │
 │                      │ varlink                               │
-│          ┌───────────┴───────────┐                           │
+│          ┌-----------┴-----------┐                           │
 │          │                       │                           │
-│  ┌───────▼───────┐       ┌──────▼────────┐                  │
+│  ┌-------▼-------┐       ┌------▼--------┐                  │
 │  │  Perigeos     │       │  Perigeos     │                  │
 │  │  Shim (A)     │       │  Shim (B)     │                  │
 │  │               │       │               │                  │
@@ -94,14 +94,14 @@ CIDR allocation needs care - different clusters must not overlap pod CIDRs. Eith
 │  │  pawns:       │       │  pawns:       │                  │
 │  │   a-worker-00 │       │   b-worker-00 │                  │
 │  │   a-worker-01 │       │   b-worker-01 │                  │
-│  └───────┬───────┘       └──────┬────────┘                  │
+│  └-------┬-------┘       └------┬--------┘                  │
 │          │                      │                            │
-└──────────┼──────────────────────┼────────────────────────────┘
+└----------┼----------------------┼----------------------------┘
            │                      │
-    ┌──────▼──────┐        ┌──────▼──────┐
+    ┌------▼------┐        ┌------▼------┐
     │  Cluster A  │        │  Cluster B  │
     │  API Server │        │  API Server │
-    └─────────────┘        └─────────────┘
+    └-------------┘        └-------------┘
 ```
 
 ## Why not now

@@ -22,7 +22,7 @@ VXLAN tunnel between hosts runs over the wired link, not WiFi.
 
 engix99      30 pawns    1,660 pods    365 MiB daemon RSS
 engifire      2 pawns      112 pods     89 MiB daemon RSS
-                          ─────
+                          -----
                           1,772 pods
 ```
 

@@ -18,7 +18,7 @@ type Fact interface {
 	isFact()
 }
 
-// ─── Systemd Facts ──────────────────────────────────────────────────────
+// --- Systemd Facts ------------------------------------------------------
 
 // UnitFact is emitted when a systemd unit changes substate.
 // Source: D-Bus PropertiesChanged signal (reactive path).
@@ -57,7 +57,7 @@ type ExitFact struct {
 
 func (ExitFact) isFact() {}
 
-// ─── Probe Facts ────────────────────────────────────────────────────────
+// --- Probe Facts --------------------------------------------------------
 
 // ProbeFact is emitted when a probe (readiness, liveness, startup) completes.
 // Ready is the evaluated readiness after threshold logic, set by the probe
@@ -75,7 +75,7 @@ type ProbeFact struct {
 
 func (ProbeFact) isFact() {}
 
-// ─── Spec Facts ─────────────────────────────────────────────────────────
+// --- Spec Facts ---------------------------------------------------------
 
 // SpecFact is emitted when a pod spec changes from Kubernetes.
 type SpecFact struct {
@@ -87,7 +87,7 @@ type SpecFact struct {
 
 func (SpecFact) isFact() {}
 
-// ─── Lifecycle Facts ────────────────────────────────────────────────────
+// --- Lifecycle Facts ----------------------------------------------------
 
 // PodAdmitFact is emitted when a new pod is admitted and should start
 // tracking in the state machine.
@@ -118,7 +118,7 @@ type MarkRunningFact struct {
 
 func (MarkRunningFact) isFact() {}
 
-// ─── Backoff Reset ──────────────────────────────────────────────────────
+// --- Backoff Reset ------------------------------------------------------
 
 // BackoffResetFact is emitted when a container has been running stably
 // long enough that its CrashLoopBackOff duration should be reset.
@@ -129,7 +129,7 @@ type BackoffResetFact struct {
 
 func (BackoffResetFact) isFact() {}
 
-// ─── Effect ─────────────────────────────────────────────────────────────
+// --- Effect -------------------------------------------------------------
 
 // Effect is a side-effect emitted by the Reduce function.
 // Effects are the only way the state machine interacts with the outside world.

@@ -21,7 +21,7 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// ─── Mock Runtime ─────────────────────────────────────────────────────────────
+// --- Mock Runtime -------------------------------------------------------------
 
 // doctorMockRuntime implements perigeos.Runtime for doctor tests.
 // Only ListManagedMachines is exercised by doctor; all other methods are stubs.
@@ -75,7 +75,7 @@ func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
 	return true
 }
 
-// ─── Mock Network ─────────────────────────────────────────────────────────────
+// --- Mock Network -------------------------------------------------------------
 
 // doctorMockNetwork implements network.NetworkManager. All calls are no-ops.
 type doctorMockNetwork struct{}
@@ -87,7 +87,7 @@ func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ------------------------------------------------------------------
 
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
@@ -154,7 +154,7 @@ func callDoctor(t *testing.T, s *Server) DoctorResponse {
 	return resp
 }
 
-// ─── scanDiskPods tests ────────────────────────────────────────────────────────
+// --- scanDiskPods tests --------------------------------------------------------
 
 func TestScanDiskPods(t *testing.T) {
 	baseDir := t.TempDir()
@@ -215,7 +215,7 @@ func TestScanDiskPods_OnlyDirs(t *testing.T) {
 	}
 }
 
-// ─── diagnosePawn / doctor handler tests ──────────────────────────────────────
+// --- diagnosePawn / doctor handler tests --------------------------------------
 
 func TestDoctorHealthy(t *testing.T) {
 	// gambit, systemd and disk all agree: one pod, uid-1.
@@ -518,7 +518,7 @@ func TestDoctorNoPawns(t *testing.T) {
 	}
 }
 
-// ─── Fuzz / property-based test ───────────────────────────────────────────────
+// --- Fuzz / property-based test -----------------------------------------------
 
 // TestDoctorFuzz runs 100 random scenarios and verifies the cross-reference
 // logic is consistent (no UID can appear in both ghost and orphan, counts

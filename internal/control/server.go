@@ -297,7 +297,7 @@ func (s *Server) Stop(_ context.Context) error {
 	return nil
 }
 
-// ── Response builders (shared by varlink handlers and TCP dispatch) ───────────
+// -- Response builders (shared by varlink handlers and TCP dispatch) -----------
 
 func (s *Server) buildStatus() map[string]any {
 	s.mu.RLock()
@@ -505,7 +505,7 @@ func toMap(v any) map[string]any {
 	return m
 }
 
-// ── Host info helpers ─────────────────────────────────────────────────────────
+// -- Host info helpers ---------------------------------------------------------
 
 func kernelVersion() string {
 	var buf syscall.Utsname
@@ -743,7 +743,7 @@ func scanDiskPods(baseDir, pawnName string) []string {
 	return uids
 }
 
-// ── Client ────────────────────────────────────────────────────────────────────
+// -- Client --------------------------------------------------------------------
 
 const DefaultSocketPath = "/run/apsis/perigeos.sock"
 

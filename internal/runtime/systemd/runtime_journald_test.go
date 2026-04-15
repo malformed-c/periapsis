@@ -24,7 +24,7 @@ import (
 	"github.com/malformed-c/periapsis/node/api"
 )
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ------------------------------------------------------------------
 
 // spawnEchoUnit starts a transient service that writes a known message to its
 // journal and then sleeps, so GetLogStream has real content to read.
@@ -99,7 +99,7 @@ func readLines(t *testing.T, rc io.ReadCloser, n int, timeout time.Duration) []s
 	return result
 }
 
-// ─── Journal content ──────────────────────────────────────────────────────────
+// --- Journal content ----------------------------------------------------------
 
 func TestSystemd_GetLogStream_HasContent(t *testing.T) {
 	rt := newTestRuntime(t)
@@ -249,7 +249,7 @@ func TestSystemd_GetLogStream_SinceSeconds_ExcludesOld(t *testing.T) {
 	}
 }
 
-// ─── Follow mode ──────────────────────────────────────────────────────────────
+// --- Follow mode --------------------------------------------------------------
 
 func TestSystemd_GetLogStream_Follow_CancelContext(t *testing.T) {
 	rt := newTestRuntime(t)
@@ -292,7 +292,7 @@ func TestSystemd_GetLogStream_Follow_CancelContext(t *testing.T) {
 	}
 }
 
-// ─── StartedAt timestamp ──────────────────────────────────────────────────────
+// --- StartedAt timestamp ------------------------------------------------------
 
 func TestSystemd_ListManagedMachines_StartedAt_Populated(t *testing.T) {
 	rt := newTestRuntime(t)
@@ -325,7 +325,7 @@ func TestSystemd_ListManagedMachines_StartedAt_Populated(t *testing.T) {
 	}
 }
 
-// ─── MachineStatus - failed state ────────────────────────────────────────────
+// --- MachineStatus - failed state --------------------------------------------
 
 func TestSystemd_MachineStatus_Failed(t *testing.T) {
 	requireRoot(t)
@@ -391,7 +391,7 @@ func TestSystemd_MachineStatus_Failed(t *testing.T) {
 	}
 }
 
-// ─── GetLogStream - nonexistent unit opens cleanly ───────────────────────────
+// --- GetLogStream - nonexistent unit opens cleanly ---------------------------
 
 func TestSystemd_GetLogStream_NonexistentUnit_OpensCleanly(t *testing.T) {
 	rt := newTestRuntime(t)

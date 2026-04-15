@@ -420,7 +420,7 @@ func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, stri
 	return g.buildPodStatus(pod, stateLookup)
 }
 
-// ─── Pod Lifecycle ───────────────────────────────────────────────────────────
+// --- Pod Lifecycle -----------------------------------------------------------
 
 // TODO rm
 // func (g *Gambit) setKind(pod *corev1.Pod) {

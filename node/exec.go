@@ -76,7 +76,7 @@ func (g *Gambit) findPodUID(namespace, podName string) (string, error) {
 	return g.store.FindPodUID(namespace, podName)
 }
 
-// ─── Node Conditions ─────────────────────────────────────────────────────────
+// --- Node Conditions ---------------------------------------------------------
 
 // setKind restores Pod TypeMeta stripped by client-go informers.
 // Required for the EventRecorder to construct object references correctly.

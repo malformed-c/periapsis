@@ -223,7 +223,7 @@ func cmdDoctor(ctx context.Context, c *control.Client, asJSON bool) error {
 		if !p.SliceActive {
 			sliceStatus = "INACTIVE"
 		}
-		fmt.Printf("── %s ──\n", p.Name)
+		fmt.Printf("-- %s --\n", p.Name)
 		fmt.Printf("  gambit=%d  systemd=%d  disk=%d  stale_units=%d  slice=%s\n", p.GambitPods, p.SystemdUnits, p.DiskDirs, p.StaleUnits, sliceStatus)
 
 		if len(p.GhostPods) > 0 {

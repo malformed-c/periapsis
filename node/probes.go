@@ -259,7 +259,7 @@ func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result Probe
 	}
 }
 
-// ─── noopAttachIO ────────────────────────────────────────────────────────────
+// --- noopAttachIO ------------------------------------------------------------
 
 // noopAttachIO implements api.AttachIO for exec probes.
 // Discards all output, provides no input, and reports no TTY.

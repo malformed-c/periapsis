@@ -118,7 +118,7 @@ func runRollout(ctx context.Context, kc *kubernetes.Clientset, pClient *control.
 		default:
 		}
 
-		fmt.Printf("── Step %d/%d: scaling %d → %d ──\n", i+1, len(steps), s.from, s.to)
+		fmt.Printf("-- Step %d/%d: scaling %d → %d --\n", i+1, len(steps), s.from, s.to)
 
 		// Re-fetch to avoid update conflicts.
 		dep, err = deployClient.Get(ctx, ra.deployment, metav1.GetOptions{})

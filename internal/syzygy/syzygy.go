@@ -32,7 +32,6 @@ import (
 	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/horizon"
 	"github.com/malformed-c/periapsis/internal/types"
-	corev1 "k8s.io/api/core/v1"
 )
 
 // Syzygy is the event loop that owns all pod state.
@@ -146,7 +145,7 @@ func (s *Syzygy) close() {
 	}
 }
 
-// ─── Core Processing ────────────────────────────────────────────────────
+// --- Core Processing ----------------------------------------------------
 
 // processFact is the heart of the event loop. It:
 //  1. Extracts the UID from the Fact
@@ -212,7 +211,7 @@ func (s *Syzygy) executeEffect(ctx context.Context, eff types.Effect) {
 	}
 }
 
-// ─── Anti-Entropy ────────────────────────────────────────────────────────
+// --- Anti-Entropy --------------------------------------------------------
 
 // runAntiEntropyLoop periodically verifies the state machine against
 // external reality and reconciles any drift. Runs on a 60-second ticker
@@ -244,7 +243,7 @@ func (s *Syzygy) runAntiEntropy(_ context.Context) {
 		"pods", len(s.states))
 }
 
-// ─── Public Accessors ────────────────────────────────────────────────────
+// --- Public Accessors ----------------------------------------------------
 
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot — it may be stale by
@@ -274,7 +273,7 @@ func (s *Syzygy) UIDs() []string {
 	return uids
 }
 
-// ─── Fact UID Extraction ─────────────────────────────────────────────────
+// --- Fact UID Extraction -------------------------------------------------
 
 // factUID extracts the UID from any Fact type.
 // All fact types carry the UID directly.

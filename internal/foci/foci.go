@@ -119,7 +119,7 @@ type podView struct {
 // It processes Facts and emits StatusIntents to the StatusWriter.
 type Focus struct {
 	view   podView
-	inbox  chan *types.Fact
+	inbox  chan *types.Fact[types.FactKind]
 	writer StatusWriter
 
 	logger *slog.Logger
@@ -316,7 +316,7 @@ func (f *Focus) handleUnitFact(fact *types.UnitFact) {
 		return
 	}
 
-	// Exit logic — set when the caller has exit information.
+	// Exit logic - set when the caller has exit information.
 	if fact.ExitCode != nil {
 		// If we never saw it running, defer the terminal decision.
 		if !cv.seenRunning {

@@ -1,43 +1,50 @@
 package types
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 // UnitFact is emitted when a systemd unit's substate changes.
 // It covers the full lifecycle of a container service: start, run, exit.
 // The caller parses the container name once and sets ExitCode/FinishedAt
-// when the unit exits — Focus handles it all in one pass.
+// when the unit exits - Focus handles it all in one pass
 type UnitFact struct {
 	UID       string
 	UnitName  string
-	Container string // parsed from UnitName by the caller (e.g. gambit)
+	Container string // parsed from UnitName by the caller
 	SubState  string // systemd substate: "running", "failed", "dead", "stop-sigterm", etc.
 
-	// Exit fields — set when the unit process exited.
-	ExitCode   *int32 // nil if the unit hasn't exited
-	FinishedAt string // RFC3339, set on exit
+	StartedAt time.Time
+
+	// Exit fields - set when the unit process exited.
+	ExitCode   int       // nil if the unit hasn't exited
+	FinishedAt time.Time // set on exit
 }
 
-func (UnitFact) isFact()
+func (UnitFact) HKT1(FactKind)
+func (UnitFact) HKT2(UnitFact)
 
-// ContainerFact is emitted when a container's k8s-visible state transitions.
-// Uses flat ContainerState so Focus can consume this without k8s imports.
+// ContainerFact is emitted when a container's k8s state transitions.
 // Horizon maps ContainerState -> corev1.ContainerState.
 type ContainerFact struct {
 	UID       string
 	Container string
 
-	// The new container state (flat, k8s-free).
+	// The new container state (flat)
 	State ContainerState
 
-	// Whether the container is ready (probe-passing).
+	// Whether the container is ready (probe-passing)
 	Ready bool
 
 	// The pod phase implied by this container transition.
-	// Focus aggregates container phases to compute the pod phase.
+	// Focus aggregates container phases to compute the pod phase
 	ImpliedPodPhase PodPhase
 }
 
-func (ContainerFact) isFact()
+func (ContainerFact) HKT1(FactKind)
+func (ContainerFact) HKT2(ContainerFact)
 
 // PodStatusFact is emitted when a full pod status should be written to k8s.
 // This is the legacy bypass path - used for lifecycle-initiated status
@@ -51,4 +58,5 @@ type PodStatusFact struct {
 	Status corev1.PodStatus
 }
 
-func (PodStatusFact) isFact()
+func (PodStatusFact) HTK1(FactKind)
+func (PodStatusFact) HTK2(PodStatusFact)

@@ -7,6 +7,8 @@ require (
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containernetworking/cni v1.3.0
 	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/fogfish/golem/pipe/v2 v2.1.0
+	github.com/fogfish/golem/pure v0.10.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-cmp v0.7.0

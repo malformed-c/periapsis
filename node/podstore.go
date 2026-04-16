@@ -11,6 +11,7 @@ import (
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/psi"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -593,6 +594,48 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 			"pod", pod.Name, "container", c.Name,
 			"hasReadinessProbe", c.ReadinessProbe != nil,
 			"initialReady", c.ReadinessProbe == nil)
+	}
+}
+
+// InitRestartStateFrom is the flat-payload variant of InitRestartState.
+// It accepts the same data as ContainerInitPayload from the types package,
+// so Syzygy can call it without holding a *corev1.Pod pointer.
+// This is the target call site for the Syzygy-wired path.
+func (s *PodStore) InitRestartStateFrom(uid, namespace, name string, containers []types.ContainerInitPayload) {
+	ps := s.getPodState(uid)
+	if ps == nil {
+		return
+	}
+
+	rs := make(map[string]*containerRestartState, len(containers))
+	probes := make(map[string]*ContainerProbeState, len(containers))
+
+	for _, c := range containers {
+		rs[c.Name] = &containerRestartState{
+			backoff:     restartBackoffInit,
+			lastStarted: time.Now(),
+		}
+		probes[c.Name] = &ContainerProbeState{
+			StartedAt:     time.Now(),
+			Ready:         !c.HasReadinessProbe,
+			LastProbeTime: make(map[string]time.Time),
+		}
+	}
+
+	ps.mu.Lock()
+	ps.restarts = rs
+	ps.probes = probes
+	ps.mu.Unlock()
+
+	slog.Info("InitRestartStateFrom",
+		"pod", name, "uid", uid,
+		"containers", len(containers),
+		"caller", callerSite())
+	for _, c := range containers {
+		slog.Debug("InitRestartStateFrom: container",
+			"pod", name, "container", c.Name,
+			"hasReadinessProbe", c.HasReadinessProbe,
+			"initialReady", !c.HasReadinessProbe)
 	}
 }
 

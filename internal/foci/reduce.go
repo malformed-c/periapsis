@@ -408,8 +408,22 @@ func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []t
 
 	// New pod — create initial state.
 	newState := NewPodState(fact.UID, fact.Namespace, fact.Name, fact.PodIP, fact.Pod)
+
+	containers := make([]types.ContainerInitPayload, 0, len(newState.Spec.Containers))
+	for _, cs := range newState.Spec.Containers {
+		containers = append(containers, types.ContainerInitPayload{
+			Name:              cs.Name,
+			HasReadinessProbe: cs.HasReadinessProbe,
+		})
+	}
+
 	effects := []types.Effect{
-		types.InitRestartState{UID: fact.UID, Pod: fact.Pod},
+		types.InitRestartState{
+			UID:        fact.UID,
+			Namespace:  fact.Namespace,
+			Name:       fact.Name,
+			Containers: containers,
+		},
 		types.PersistPodState{UID: fact.UID},
 	}
 	return newState, effects

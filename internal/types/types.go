@@ -242,11 +242,22 @@ type PersistPodState struct {
 
 func (PersistPodState) isEffect() {}
 
+// ContainerInitPayload carries the per-container data needed to initialize
+// restart and probe tracking. It is a flat value type — no pointer to
+// *corev1.Pod, no DeepCopy required.
+type ContainerInitPayload struct {
+	Name             string
+	HasReadinessProbe bool
+}
+
 // InitRestartState instructs the executor to initialize restart/probe
-// tracking in PodStore for a newly created pod.
+// tracking in PodStore for a newly admitted pod.
+// All fields are value types — no *corev1.Pod pointer on the Effect channel.
 type InitRestartState struct {
-	UID string
-	Pod *corev1.Pod
+	UID        string
+	Namespace  string
+	Name       string
+	Containers []ContainerInitPayload
 }
 
 func (InitRestartState) isEffect() {}

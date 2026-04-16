@@ -3,18 +3,20 @@ package syzygy
 // Syzygy is the imperative shell — the single goroutine that owns all pod state.
 //
 // It receives Facts (immutable events), feeds them through the pure Reduce
-// function, stores the resulting PodState, and dispatches Effects to Horizon
-// for execution. This is the "Functional Core, Imperative Shell" pattern:
+// function, stores the resulting PodState, and dispatches Effects. Effects
+// split into two categories:
 //
-//	Syzygy.Run():
-//	  for each Fact:
-//	    1. Look up current PodState (zero-value if new)
-//	    2. Call foci.Reduce(state, fact) → (newState, []Effect)
-//	    3. Store newState in map
-//	    4. Execute each Effect (dispatch to Horizon, callbacks, etc.)
+//   Local state effects (handled synchronously in this goroutine):
+//     - SetPodPhase      → callback into PodStore
+//     - PersistPodState  → callback into disk layer
+//     - InitRestartState → callback into PodStore
 //
-// No locks are needed for the state map because Syzygy is single-threaded.
-// The only concurrency is the inbox channel (bounded, non-blocking send).
+//   k8s API effects (forwarded to Horizon's worker pool):
+//     - UpdateStatus, RestartContainer, ResetUnit, RecordEvent
+//
+// This split keeps Horizon as a pure k8s API executor with no PodStore
+// dependency. Local state ops run inline here — no concurrency concern
+// because Syzygy is single-threaded for state mutations.
 //
 // Memory at 3000 pods:
 //   - map[string]foci.PodState: ~1.5MB (PodState is ~300-500 bytes)
@@ -32,6 +34,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/horizon"
 	"github.com/malformed-c/periapsis/internal/types"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // Syzygy is the event loop that owns all pod state.
@@ -46,23 +49,54 @@ type Syzygy struct {
 	// Only accessed from the Run goroutine — no locks needed.
 	states map[string]foci.PodState
 
-	// horizon executes effects against the k8s API.
+	// horizon executes k8s API effects.
 	horizon *horizon.Horizon
+
+	// Local state callbacks — executed synchronously in the Run goroutine.
+	// These ops are not k8s API calls; they're fast local mutations.
+
+	// setPodPhase updates the PodStore's phase map.
+	setPodPhase func(uid string, phase corev1.PodPhase)
+
+	// persistPodState persists pod state to disk.
+	persistPodState func(uid string)
+
+	// initRestartState initializes restart/probe tracking for a new pod.
+	// Receives flat ContainerInitPayload — no *corev1.Pod pointer.
+	initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 }
 
 // SyzygyDeps holds the dependencies for creating a Syzygy.
 type SyzygyDeps struct {
 	Logger  *slog.Logger
 	Horizon *horizon.Horizon
+
+	// Optional local state callbacks. If nil, the operation is a no-op.
+	SetPodPhase      func(uid string, phase corev1.PodPhase)
+	PersistPodState  func(uid string)
+	InitRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 }
 
 // NewSyzygy creates a new Syzygy event loop.
 func NewSyzygy(deps SyzygyDeps) *Syzygy {
+	if deps.SetPodPhase == nil {
+		deps.SetPodPhase = func(string, corev1.PodPhase) {}
+	}
+	if deps.PersistPodState == nil {
+		deps.PersistPodState = func(string) {}
+	}
+	if deps.InitRestartState == nil {
+		deps.InitRestartState = func(string, string, string, []types.ContainerInitPayload) {}
+	}
+
 	return &Syzygy{
-		inbox:   make(chan types.Fact, 2048),
-		logger:  deps.Logger.With("component", "syzygy"),
-		states:  make(map[string]foci.PodState),
-		horizon: deps.Horizon,
+		inbox:            make(chan types.Fact, 2048),
+		logger:           deps.Logger.With("component", "syzygy"),
+		states:           make(map[string]foci.PodState),
+		horizon:          deps.Horizon,
+		setPodPhase:      deps.SetPodPhase,
+		persistPodState:  deps.PersistPodState,
+		initRestartState: deps.InitRestartState,
 	}
 }
 
@@ -182,28 +216,36 @@ func (s *Syzygy) processFact(ctx context.Context, fact types.Fact) {
 }
 
 // executeEffect dispatches an Effect to the appropriate handler.
-// Most effects are forwarded to Horizon; some are handled directly.
+//
+// Local state effects are handled synchronously in this goroutine — they
+// are fast, non-blocking, and must not race with the state map.
+//
+// k8s API effects are forwarded to Horizon's worker pool.
 func (s *Syzygy) executeEffect(ctx context.Context, eff types.Effect) {
 	switch e := eff.(type) {
+	// --- Local state effects (handled here, synchronous) ----------------
+
+	case types.SetPodPhase:
+		s.setPodPhase(e.UID, e.Phase)
+
+	case types.PersistPodState:
+		s.persistPodState(e.UID)
+
+	case types.InitRestartState:
+		s.initRestartState(e.UID, e.Namespace, e.Name, e.Containers)
+
+	// --- k8s API effects (forwarded to Horizon) -------------------------
+
 	case types.UpdateStatus:
 		s.horizon.Send(e)
 
 	case types.RestartContainer:
 		s.horizon.Send(e)
 
-	case types.SetPodPhase:
-		s.horizon.Send(e)
-
 	case types.ResetUnit:
 		s.horizon.Send(e)
 
 	case types.RecordEvent:
-		s.horizon.Send(e)
-
-	case types.PersistPodState:
-		s.horizon.Send(e)
-
-	case types.InitRestartState:
 		s.horizon.Send(e)
 
 	default:
@@ -213,9 +255,6 @@ func (s *Syzygy) executeEffect(ctx context.Context, eff types.Effect) {
 
 // --- Anti-Entropy --------------------------------------------------------
 
-// runAntiEntropyLoop periodically verifies the state machine against
-// external reality and reconciles any drift. Runs on a 60-second ticker
-// when the inbox is idle.
 func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -247,13 +286,12 @@ func (s *Syzygy) runAntiEntropy(_ context.Context) {
 
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot — it may be stale by
-// the time the caller reads it. This is fine for read-only queries like
-// GetPodStatus.
+// the time the caller reads it.
 //
 // NOTE: This reads from the states map which is owned by the Run goroutine.
-// In the current single-goroutine design, this is safe because map reads
-// don't conflict with other reads. If we ever add concurrent writers,
-// we'll need synchronization here.
+// In the current single-goroutine design this is safe because map reads
+// don't conflict with other reads. Add synchronization if concurrent
+// writers are ever introduced.
 func (s *Syzygy) PodState(uid string) (foci.PodState, bool) {
 	state, ok := s.states[uid]
 	return state, ok
@@ -276,7 +314,6 @@ func (s *Syzygy) UIDs() []string {
 // --- Fact UID Extraction -------------------------------------------------
 
 // factUID extracts the UID from any Fact type.
-// All fact types carry the UID directly.
 func factUID(fact types.Fact) string {
 	switch f := fact.(type) {
 	case *types.UnitFact:

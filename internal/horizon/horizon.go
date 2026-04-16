@@ -3,18 +3,28 @@ package horizon
 // Horizon is the Kubernetes API command executor.
 //
 // It receives Effect commands via a channel and executes them against
-// the Kubernetes API. Horizon is a pure executor — it holds no pod state
-// and has no dependency on PodStore. All the information needed to
-// execute a command is carried in the Effect value itself.
+// the Kubernetes API. Horizon is a pure k8s API executor — it holds no
+// pod state and has no dependency on PodStore, PodStore callbacks, or
+// any local state. All information needed to execute a command is carried
+// in the Effect value itself.
 //
 // Design principles:
-//   - No PodStore dependency — Horizon is decoupled from pod state
+//   - No PodStore dependency — zero callbacks for local state ops
 //   - Command channel — all work arrives as types.Effect values
 //   - Worker pool — configurable concurrency for API calls
-//   - Value-typed commands — StatusUpdate carries flat PodStatusPayload,
-//     no DeepCopy needed on the hot path
+//   - Value-typed commands — UpdateStatus carries flat PodStatusPayload,
+//     no *corev1.Pod pointer, no DeepCopy needed on the hot path
 //   - UID guard — every status write verifies the pod UID hasn't changed
 //     to avoid clobbering a replacement pod
+//
+// Effects handled here (k8s API only):
+//   - UpdateStatus    → GET + UpdateStatus (with UID guard and retry)
+//   - RestartContainer → callback into Gambit
+//   - ResetUnit        → callback into runtime
+//   - RecordEvent      → Kubernetes EventRecorder
+//
+// Effects NOT handled here (local state, routed via Syzygy):
+//   - SetPodPhase, PersistPodState, InitRestartState
 
 import (
 	"context"
@@ -32,7 +42,7 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// Horizon executes Effect commands against the Kubernetes API.
+// Horizon executes k8s API Effect commands.
 type Horizon struct {
 	inbox  chan types.Effect
 	mu     sync.RWMutex
@@ -42,63 +52,33 @@ type Horizon struct {
 	client kubernetes.Interface
 
 	// recordEvent records a Kubernetes event for a pod.
-	// Provided as a function so Horizon doesn't need a PodStore dependency
-	// for looking up the pod object (the EventRecorder needs *corev1.Pod).
+	// Injected so Horizon doesn't need a PodStore dependency for object lookup.
 	recordEvent func(uid string, eventType, reason, message string)
 
-	// setPodPhase sets the pod phase in the PodStore.
-	// Provided as a function so Horizon doesn't import PodStore.
-	setPodPhase func(uid string, phase corev1.PodPhase)
-
-	// initRestartState initializes restart/probe tracking for a new pod.
-	// Provided as a function so Horizon doesn't import PodStore.
-	initRestartState func(uid string, pod *corev1.Pod)
-
 	// resetUnit cleans up a dead/failed systemd unit.
-	// Provided as a function so Horizon doesn't import the runtime.
 	resetUnit func(ctx context.Context, uid, containerName string)
 
-	// restartContainer launches a container restart.
-	// Provided as a function so Horizon doesn't import Gambit.
+	// restartContainer launches a container restart via Gambit.
 	restartContainer func(ctx context.Context, uid, namespace, podName, containerName string, restartCount int32, backoff time.Duration)
-
-	// persistPodState persists pod state to disk.
-	// Provided as a function so Horizon doesn't import the disk layer.
-	persistPodState func(uid string)
-
-	// getPodCopy retrieves a copy of the pod for UID-guarded writes.
-	// This is the ONLY remaining PodStore interaction, and it's injected
-	// as a function so Horizon doesn't import the node package.
-	getPodCopy func(uid string) *corev1.Pod
 }
 
 // HorizonDeps holds all external dependencies for Horizon.
-// All PodStore/Runtime/Gambit interactions are injected as functions
-// so Horizon remains a pure executor with no package-level dependencies
-// on the node package.
+// Only k8s-API-adjacent callbacks are included here. Local state ops
+// (SetPodPhase, PersistPodState, InitRestartState) are handled by Syzygy
+// directly and never reach Horizon.
 type HorizonDeps struct {
 	Logger *slog.Logger
 	Client kubernetes.Interface
 
-	// Optional function overrides. If nil, the operation is a no-op.
+	// Optional. If nil, the operation is a no-op.
 	RecordEvent      func(uid string, eventType, reason, message string)
-	SetPodPhase      func(uid string, phase corev1.PodPhase)
-	InitRestartState func(uid string, pod *corev1.Pod)
 	ResetUnit        func(ctx context.Context, uid, containerName string)
 	RestartContainer func(ctx context.Context, uid, namespace, podName, containerName string, restartCount int32, backoff time.Duration)
-	PersistPodState  func(uid string)
-	GetPodCopy       func(uid string) *corev1.Pod
 }
 
 func NewHorizon(deps HorizonDeps) *Horizon {
 	if deps.RecordEvent == nil {
 		deps.RecordEvent = func(string, string, string, string) {}
-	}
-	if deps.SetPodPhase == nil {
-		deps.SetPodPhase = func(string, corev1.PodPhase) {}
-	}
-	if deps.InitRestartState == nil {
-		deps.InitRestartState = func(string, *corev1.Pod) {}
 	}
 	if deps.ResetUnit == nil {
 		deps.ResetUnit = func(context.Context, string, string) {}
@@ -106,24 +86,14 @@ func NewHorizon(deps HorizonDeps) *Horizon {
 	if deps.RestartContainer == nil {
 		deps.RestartContainer = func(context.Context, string, string, string, string, int32, time.Duration) {}
 	}
-	if deps.PersistPodState == nil {
-		deps.PersistPodState = func(string) {}
-	}
-	if deps.GetPodCopy == nil {
-		deps.GetPodCopy = func(string) *corev1.Pod { return nil }
-	}
 
 	return &Horizon{
 		inbox:            make(chan types.Effect, 1024),
 		logger:           deps.Logger,
 		client:           deps.Client,
 		recordEvent:      deps.RecordEvent,
-		setPodPhase:      deps.SetPodPhase,
-		initRestartState: deps.InitRestartState,
 		resetUnit:        deps.ResetUnit,
 		restartContainer: deps.RestartContainer,
-		persistPodState:  deps.PersistPodState,
-		getPodCopy:       deps.GetPodCopy,
 	}
 }
 
@@ -175,7 +145,7 @@ func (h *Horizon) Send(eff types.Effect) bool {
 
 	defer func() {
 		if recover() != nil {
-			// inbox closed
+			// inbox closed between the check and the send
 		}
 	}()
 
@@ -199,58 +169,38 @@ func (h *Horizon) close() {
 	}
 }
 
-// executeEffect dispatches an Effect to the appropriate handler.
+// executeEffect dispatches a k8s-API Effect to the appropriate handler.
+// Local state effects (SetPodPhase, PersistPodState, InitRestartState)
+// are handled by Syzygy and must never reach Horizon — warn and drop.
 func (h *Horizon) executeEffect(ctx context.Context, eff types.Effect) {
 	switch e := eff.(type) {
 	case types.UpdateStatus:
 		h.handleUpdateStatus(ctx, e)
 	case types.RestartContainer:
 		h.handleRestartContainer(ctx, e)
-	case types.SetPodPhase:
-		h.handleSetPodPhase(e)
 	case types.ResetUnit:
 		h.handleResetUnit(ctx, e)
 	case types.RecordEvent:
 		h.handleRecordEvent(e)
-	case types.PersistPodState:
-		h.handlePersistPodState(e)
-	case types.InitRestartState:
-		h.handleInitRestartState(e)
 	default:
-		h.logger.Warn("unknown effect type", "type", fmt.Sprintf("%T", eff))
+		h.logger.Warn("horizon: received non-k8s effect — should be handled by Syzygy",
+			"type", fmt.Sprintf("%T", eff))
 	}
 }
 
 // --- Effect Handlers -----------------------------------------------------
 
 // handleUpdateStatus writes a computed PodStatus to the Kubernetes API.
-// The PodStatusPayload is converted to corev1.PodStatus via the foci
-// conversion layer. The UID guard prevents clobbering replacement pods.
+// All fields needed for the write come from the UpdateStatus value itself —
+// no PodStore lookup required.
 func (h *Horizon) handleUpdateStatus(ctx context.Context, eff types.UpdateStatus) {
 	podStatus := foci.PodStatusPayloadToCorev1(eff.Status)
-
-	// Get the current pod from PodStore for UID-guarded writes.
-	pod := h.getPodCopy(eff.UID)
-	if pod == nil {
-		h.logger.Debug("pod not found for status write, dropping",
-			"uid", eff.UID, "name", eff.Name)
-		return
-	}
-
-	updated := pod.DeepCopy()
-	podStatus.DeepCopyInto(&updated.Status)
-
-	h.writePodStatus(ctx, updated)
+	h.writePodStatus(ctx, eff.UID, eff.Namespace, eff.Name, podStatus)
 }
 
 // handleRestartContainer launches a container restart via the Gambit callback.
 func (h *Horizon) handleRestartContainer(ctx context.Context, eff types.RestartContainer) {
 	h.restartContainer(ctx, eff.UID, eff.Namespace, eff.PodName, eff.ContainerName, eff.RestartCount, eff.Backoff)
-}
-
-// handleSetPodPhase updates the PodStore's phase map.
-func (h *Horizon) handleSetPodPhase(eff types.SetPodPhase) {
-	h.setPodPhase(eff.UID, eff.Phase)
 }
 
 // handleResetUnit cleans up a dead/failed systemd unit.
@@ -263,44 +213,35 @@ func (h *Horizon) handleRecordEvent(eff types.RecordEvent) {
 	h.recordEvent(eff.UID, eff.EventType, eff.Reason, eff.Message)
 }
 
-// handlePersistPodState persists pod state to disk.
-func (h *Horizon) handlePersistPodState(eff types.PersistPodState) {
-	h.persistPodState(eff.UID)
-}
-
-// handleInitRestartState initializes restart/probe tracking for a new pod.
-func (h *Horizon) handleInitRestartState(eff types.InitRestartState) {
-	h.initRestartState(eff.UID, eff.Pod)
-}
-
 // --- K8s API Write -------------------------------------------------------
 
 // writePodStatus performs the actual k8s API status update.
 // GET + UpdateStatus with UID guard and conflict retry.
-func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) error {
+// Takes primitives only — no *corev1.Pod, no PodStore interaction.
+func (h *Horizon) writePodStatus(ctx context.Context, uid, namespace, name string, status corev1.PodStatus) error {
 	const maxRetries = 5
 
 	for attempt := range maxRetries {
-		current, err := h.client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		current, err := h.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if k8serrors.IsNotFound(err) {
 				return nil // pod deleted
 			}
-			h.logger.Warn("horizon: GET pod failed", "pod", pod.Name, "err", err)
+			h.logger.Warn("horizon: GET pod failed", "pod", name, "err", err)
 			return err
 		}
 
 		// UID guard — if the pod was replaced (same name, new UID), drop it.
-		if current.UID != pod.UID {
+		if string(current.UID) != uid {
 			h.logger.Debug("horizon: pod UID mismatch, dropping stale status",
-				"pod", pod.Name, "ourUID", pod.UID, "k8sUID", current.UID)
+				"pod", name, "ourUID", uid, "k8sUID", current.UID)
 			return nil
 		}
 
 		update := current.DeepCopy()
-		pod.Status.DeepCopyInto(&update.Status)
+		status.DeepCopyInto(&update.Status)
 
-		_, err = h.client.CoreV1().Pods(pod.Namespace).UpdateStatus(ctx, update, metav1.UpdateOptions{})
+		_, err = h.client.CoreV1().Pods(namespace).UpdateStatus(ctx, update, metav1.UpdateOptions{})
 		if err == nil {
 			return nil
 		}
@@ -310,14 +251,14 @@ func (h *Horizon) writePodStatus(ctx context.Context, pod *corev1.Pod) error {
 		if k8serrors.IsConflict(err) {
 			if attempt < maxRetries-1 {
 				h.logger.Debug("horizon: conflict on UpdateStatus, retrying",
-					"pod", pod.Name, "attempt", attempt+1)
+					"pod", name, "attempt", attempt+1)
 				continue
 			}
 			h.logger.Warn("horizon: conflict after max retries, dropping",
-				"pod", pod.Name, "attempts", maxRetries)
+				"pod", name, "attempts", maxRetries)
 			return nil
 		}
-		h.logger.Warn("horizon: UpdateStatus failed", "pod", pod.Name, "err", err)
+		h.logger.Warn("horizon: UpdateStatus failed", "pod", name, "err", err)
 		return err
 	}
 	return nil

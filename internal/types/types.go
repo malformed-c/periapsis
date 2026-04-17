@@ -9,7 +9,7 @@ import (
 )
 
 // Fact is a happened event. It is a read-only snapshot of a state change.
-// Facts are immutable after creation — no one mutates a Fact after it's
+// Facts are immutable after creation - no one mutates a Fact after it's
 // emitted. This allows safe sharing across goroutines without copying.
 //
 // Fact is a sealed interface: only types defined in this package can
@@ -133,7 +133,7 @@ func (BackoffResetFact) isFact() {}
 
 // Effect is a side-effect emitted by the Reduce function.
 // Effects are the only way the state machine interacts with the outside world.
-// The Reduce function is pure — it never performs I/O, never mutates shared
+// The Reduce function is pure - it never performs I/O, never mutates shared
 // state, and never calls external APIs. All side effects are captured as
 // Effect values and executed by the Syzygy event loop.
 type Effect interface {
@@ -243,16 +243,16 @@ type PersistPodState struct {
 func (PersistPodState) isEffect() {}
 
 // ContainerInitPayload carries the per-container data needed to initialize
-// restart and probe tracking. It is a flat value type — no pointer to
+// restart and probe tracking. It is a flat value type - no pointer to
 // *corev1.Pod, no DeepCopy required.
 type ContainerInitPayload struct {
-	Name             string
+	Name              string
 	HasReadinessProbe bool
 }
 
 // InitRestartState instructs the executor to initialize restart/probe
 // tracking in PodStore for a newly admitted pod.
-// All fields are value types — no *corev1.Pod pointer on the Effect channel.
+// All fields are value types - no *corev1.Pod pointer on the Effect channel.
 type InitRestartState struct {
 	UID        string
 	Namespace  string

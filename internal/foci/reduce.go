@@ -5,9 +5,9 @@ package foci
 //   Reduce(state, fact) → (newState, effects)
 //
 // Invariants:
-//   - No side effects — no I/O, no API calls, no shared mutation
-//   - Deterministic — same (state, fact) always produces same (newState, effects)
-//   - State is passed by value — the caller's copy is never mutated
+//   - No side effects - no I/O, no API calls, no shared mutation
+//   - Deterministic - same (state, fact) always produces same (newState, effects)
+//   - State is passed by value - the caller's copy is never mutated
 //   - Effects are the only way to interact with the outside world
 //
 // The caller (Syzygy) is responsible for:
@@ -121,7 +121,7 @@ func reduceUnitFact(state PodState, fact *types.UnitFact) (PodState, []types.Eff
 
 	case "stop-sigterm", "stop-watchdog":
 		// systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
-		// Emit event but don't change phase — container is still alive.
+		// Emit event but don't change phase - container is still alive.
 		return state, []types.Effect{types.RecordEvent{
 			UID:       state.UID,
 			EventType: corev1.EventTypeNormal,
@@ -252,12 +252,12 @@ func reduceContainerStateFact(state PodState, fact *types.ContainerStateFact) (P
 		}
 
 	default:
-		// StateUnknown — container not in ListManagedMachines.
+		// StateUnknown - container not in ListManagedMachines.
 		// If restarting, keep CrashLoopBackOff.
 		// If seen running, set Terminated (unit was collected).
 		// Otherwise, keep Creating (never started).
 		if cv.Restarting {
-			// No state change — restart in progress.
+			// No state change - restart in progress.
 			return state, nil
 		}
 		if cv.SeenRunning {
@@ -265,7 +265,7 @@ func reduceContainerStateFact(state PodState, fact *types.ContainerStateFact) (P
 			cv.ExitCode = 0
 			cv.ExitReason = "Completed"
 		} else {
-			// Never seen running — defer, keep Creating.
+			// Never seen running - defer, keep Creating.
 			return state, nil
 		}
 	}
@@ -348,9 +348,9 @@ func reduceProbeFact(state PodState, fact *types.ProbeFact) (PodState, []types.E
 	case "startup":
 		cv.StartupPassed = fact.StartupPassed
 		// If startup passed, the container may now become ready.
-		// Don't update readiness here — the next readiness ProbeFact will do that.
+		// Don't update readiness here - the next readiness ProbeFact will do that.
 	case "liveness":
-		// Liveness failure triggers restart — handled by ProbeScheduler.
+		// Liveness failure triggers restart - handled by ProbeScheduler.
 		// We just track the state.
 	}
 
@@ -382,19 +382,19 @@ func reduceSpecFact(state PodState, fact *types.SpecFact) (PodState, []types.Eff
 	newSpec := NewPodSpec(fact.Pod)
 	state.Spec = newSpec
 
-	// Sync container states — add new containers, keep existing state.
+	// Sync container states - add new containers, keep existing state.
 	// Removed containers are dropped (their state is lost, which is fine
 	// for image updates).
 	newContainers := make([]ContainerState, 0, len(newSpec.Containers))
 	for _, cs := range newSpec.Containers {
 		idx := state.FindContainer(cs.Name)
 		if idx != -1 {
-			// Existing container — keep state, update image.
+			// Existing container - keep state, update image.
 			existing := state.Containers[idx]
 			existing.Image = cs.Image
 			newContainers = append(newContainers, existing)
 		} else {
-			// New container — start in Creating.
+			// New container - start in Creating.
 			newContainers = append(newContainers, ContainerState{
 				Name:        cs.Name,
 				Image:       cs.Image,
@@ -416,7 +416,7 @@ func reduceSpecFact(state PodState, fact *types.SpecFact) (PodState, []types.Eff
 
 func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []types.Effect) {
 	if state.UID != "" {
-		// Already tracking this pod — update spec.
+		// Already tracking this pod - update spec.
 		return reduceSpecFact(state, &types.SpecFact{
 			UID:       fact.UID,
 			Namespace: fact.Namespace,
@@ -425,7 +425,7 @@ func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []t
 		})
 	}
 
-	// New pod — create initial state.
+	// New pod - create initial state.
 	newState := NewPodState(fact.UID, fact.Namespace, fact.Name, fact.PodIP, fact.Pod)
 
 	containers := make([]types.ContainerInitPayload, 0, len(newState.Spec.Containers))
@@ -516,7 +516,7 @@ func recomputePhase(state PodState) (PodState, []types.Effect) {
 			allTerminated = false
 			allSucceeded = false
 		case PhaseTerminated:
-			// Terminal — check exit code.
+			// Terminal - check exit code.
 			if cv.ExitCode != 0 {
 				allSucceeded = false
 			}
@@ -541,7 +541,7 @@ func recomputePhase(state PodState) (PodState, []types.Effect) {
 			state.Phase = corev1.PodFailed
 		}
 	default:
-		// No containers or all unknown — keep current phase.
+		// No containers or all unknown - keep current phase.
 	}
 
 	// Build status payload.
@@ -555,7 +555,7 @@ func recomputePhase(state PodState) (PodState, []types.Effect) {
 		Status:    status,
 	})
 
-	// Terminal phase — set in PodStore and clean up systemd units.
+	// Terminal phase - set in PodStore and clean up systemd units.
 	if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
 		if prevPhase != state.Phase {
 			effects = append(effects, types.SetPodPhase{

@@ -17,7 +17,7 @@ const (
 )
 
 // SyzygySender is the interface for emitting Facts through the event bus.
-// Uses the sealed types.Fact interface — any Fact type satisfies this.
+// Uses the sealed types.Fact interface - any Fact type satisfies this.
 type SyzygySender interface {
 	Send(fact types.Fact) bool
 }

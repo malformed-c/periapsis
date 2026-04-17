@@ -221,33 +221,49 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 	}
 }
 
-// handleUnitEvent reacts to a D-Bus unit state change. It:
+// handleUnitEvent reacts to a D-Bus unit state change by querying the
+// individual container's MachineStatus and updating the stateCache.
+// This is more targeted than a full poll - it only touches the affected
+// container, giving sub-second detection for fast-exit containers.
+// It:
 //   - Updates the local stateCache (used by the query path / BuildPodStatus)
 //   - Emits a UnitFact to Syzygy for state-machine transitions and k8s event recording
 //   - Triggers a full poll on Running/Failed transitions
 //
 // Event recording (Started, Killing/SIGTERM, Killing/SIGKILL) has moved to
-// foci.Reduce via RecordEvent effects — BW no longer calls EventRecorder.Eventf
+// foci.Reduce via RecordEvent effects - BW no longer calls EventRecorder.Eventf
 // directly for container lifecycle events.
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// QUICK FILTER: Does this unit even belong to this pawn?
+	// The unit name starts with "perigeos-<pawn>-..."
 	if !strings.HasPrefix(ev.UnitName, "perigeos-"+bw.deps.PawnName+"-") {
 		return
 	}
 
+	// Parse uid and containerName from the unit name
+	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 	uid, containerName := bw.deps.ParseUnitName(ev.UnitName)
 	if uid == "" {
 		return
 	}
 
-	// Fetch pod — still needed for the isInit check (init container Running
+	// Fetch pod once - still needed for the isInit check (init container Running
 	// must not trigger a poll, since app containers haven't been launched yet).
 	pod := bw.deps.Store.GetPodCopy(uid)
+
+	// Determine if this is an init container. Init containers run sequentially
+	// before app containers; when an init container transitions to Running,
+	// app containers haven't been started yet. Triggering a poll at that
+	// point causes checkPod to see app containers as missing from
+	// ListManagedMachines (exists=false), hitting the "never seen running"
+	// deferral and pushing ContainerCreating before the lifecycle code
+	// has finished launching them.
 	isInit := pod != nil && isInitContainer(pod, containerName)
 
 	// Clear container state for any non-running/non-starting substate.
 	if ev.SubState != "running" && ev.SubState != "start" &&
 		ev.SubState != "start-pre" && ev.SubState != "start-post" {
+		// TODO: Fill Reason and Message
 		bw.deps.Store.SetContainerState(uid, containerName,
 			corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
 	}
@@ -270,16 +286,19 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	}
 
 	// Map substate → MachineState for the local stateCache.
-	// "dead" and stop-* substates are intentionally not cached —
+	// "dead" and stop-* substates are intentionally not cached -
 	// the ticker poll reconciles them within containerWatchPoll.
 	var state perigeos.MachineState
 	switch ev.SubState {
 	case "running":
 		state = perigeos.StateRunning
+
 	case "failed":
 		state = perigeos.StateFailed
+
 	case "start-pre", "start", "start-post":
 		state = perigeos.StateCreating
+
 	default:
 		return
 	}
@@ -305,15 +324,18 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	}
 
 	// Trigger a full poll on transitions that affect pod phase.
-	// Init container Running: skip — app containers haven't been launched yet.
+	// Init container Running: skip - app containers haven't been launched yet.
+
 	if state == perigeos.StateRunning && !isInit {
 		bw.logger.Info("handleUnitEvent: triggering poll (app container Running)",
 			"pod", podName(pod), "container", containerName)
 		bw.poll(ctx)
+
 	} else if state == perigeos.StateFailed {
 		bw.logger.Info("handleUnitEvent: triggering poll (container Failed)",
 			"pod", podName(pod), "container", containerName)
 		bw.poll(ctx)
+
 	} else if state == perigeos.StateRunning && isInit {
 		bw.logger.Debug("handleUnitEvent: skipping poll (init container Running)",
 			"pod", podName(pod), "container", containerName)
@@ -325,6 +347,7 @@ func podName(pod *corev1.Pod) string {
 	if pod == nil {
 		return "<unknown>"
 	}
+
 	return pod.Name
 }
 
@@ -335,6 +358,7 @@ func isInitContainer(pod *corev1.Pod, containerName string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -347,6 +371,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+
 		bw.logger.Error("Batch poll: ListManagedMachines failed", "err", err)
 		return
 	}

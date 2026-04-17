@@ -1,7 +1,7 @@
 package foci
 
 // Conversion between PodState (flat value types) and corev1.PodStatus.
-// This is the output boundary of the state machine — PodState is the
+// This is the output boundary of the state machine - PodState is the
 // internal representation, PodStatus is the external K8s API representation.
 
 import (

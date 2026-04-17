@@ -1,6 +1,6 @@
 package syzygy
 
-// Syzygy is the imperative shell — the single goroutine that owns all pod state.
+// Syzygy is the imperative shell - the single goroutine that owns all pod state.
 //
 // Architecture: Functional Core, Imperative Shell with worker pool.
 //
@@ -18,7 +18,7 @@ package syzygy
 //     - k8s API effects are forwarded to Horizon's own worker pool
 //
 // This decoupling means the main loop never blocks on I/O or slow callbacks.
-// The state map is exclusively owned by the main goroutine — no locks needed.
+// The state map is exclusively owned by the main goroutine - no locks needed.
 // Effect workers only call pure callbacks or non-blocking horizon.Send().
 //
 // Memory at 3000 pods:
@@ -61,13 +61,13 @@ type Syzygy struct {
 	logger *slog.Logger
 
 	// states is the single source of truth for all pod state machines.
-	// Only accessed from the Run goroutine — no locks needed.
+	// Only accessed from the Run goroutine - no locks needed.
 	states map[string]foci.PodState
 
 	// horizon executes k8s API effects.
 	horizon *horizon.Horizon
 
-	// Local state callbacks — called by effect workers.
+	// Local state callbacks - called by effect workers.
 	// These are fast, non-blocking in-memory operations.
 	// The callbacks themselves must be goroutine-safe (called concurrently).
 
@@ -81,8 +81,8 @@ type Syzygy struct {
 	initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 }
 
-// SyzygyDeps holds the dependencies for creating a Syzygy.
-type SyzygyDeps struct {
+// SyzygyConfig holds the dependencies for creating a Syzygy.
+type SyzygyConfig struct {
 	Logger  *slog.Logger
 	Horizon *horizon.Horizon
 
@@ -94,13 +94,15 @@ type SyzygyDeps struct {
 }
 
 // NewSyzygy creates a new Syzygy event loop.
-func NewSyzygy(deps SyzygyDeps) *Syzygy {
+func NewSyzygy(deps SyzygyConfig) *Syzygy {
 	if deps.SetPodPhase == nil {
 		deps.SetPodPhase = func(string, corev1.PodPhase) {}
 	}
+
 	if deps.PersistPodState == nil {
 		deps.PersistPodState = func(string) {}
 	}
+
 	if deps.InitRestartState == nil {
 		deps.InitRestartState = func(string, string, string, []types.ContainerInitPayload) {}
 	}
@@ -127,18 +129,16 @@ func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
 	// --- Effect worker pool ---------------------------------------------
 	// Workers drain the effects channel. Started before the fact loop so
 	// there are consumers ready before any effects are produced.
-	var effectWg sync.WaitGroup
+	wg := sync.WaitGroup{}
 	for i := uint8(0); i < workerCount; i++ {
-		effectWg.Add(1)
-		go func() {
-			defer effectWg.Done()
+		wg.Go(func() {
 			// Use a background-derived ctx for the worker so it can
 			// finish draining effects after the main context is cancelled.
 			// The channel close is what signals final exit.
 			for eff := range s.effects {
 				s.dispatchEffect(ctx, eff)
 			}
-		}()
+		})
 	}
 
 	// --- Anti-entropy loop ----------------------------------------------
@@ -149,11 +149,10 @@ func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
 		aeWg.Wait()
 	}()
 
-	aeWg.Add(1)
-	go func() {
+	aeWg.Go(func() {
 		defer aeWg.Done()
 		s.runAntiEntropyLoop(aeCtx)
-	}()
+	})
 
 	// --- Main fact loop (single goroutine) ------------------------------
 Loop:
@@ -163,7 +162,9 @@ Loop:
 			if !ok {
 				break Loop
 			}
+
 			s.processFact(fact)
+
 		case <-ctx.Done():
 			break Loop
 		}
@@ -182,7 +183,7 @@ Loop:
 	// All facts processed, no more effects will be produced.
 	// Close effects channel and wait for workers to drain it.
 	close(s.effects)
-	effectWg.Wait()
+	wg.Wait()
 }
 
 // Send enqueues a Fact for processing. Non-blocking; returns false if
@@ -205,6 +206,7 @@ func (s *Syzygy) Send(fact types.Fact) (ok bool) {
 	select {
 	case s.inbox <- fact:
 		return true
+
 	default:
 		s.logger.Warn("syzygy inbox full, dropping fact",
 			"type", fmt.Sprintf("%T", fact))
@@ -232,24 +234,26 @@ func (s *Syzygy) close() {
 //  5. Pushes all returned Effects into the effects channel
 //
 // processFact is only ever called from a single goroutine. The effects
-// channel send is non-blocking — effects are dropped with a warning if
+// channel send is non-blocking - effects are dropped with a warning if
 // the pool is full (effectsBuf is sized to make this rare).
 func (s *Syzygy) processFact(fact types.Fact) {
 	uid := factUID(fact)
 	if uid == "" {
 		s.logger.Debug("fact has no UID, dropping", "type", fmt.Sprintf("%T", fact))
+
 		return
 	}
 
 	currentState := s.states[uid]
 
-	// Pure computation — no side effects.
+	// Pure computation - no side effects.
 	newState, effects := foci.Reduce(currentState, fact)
 
-	// PodEvictFact returns zero-value PodState — remove from map.
+	// PodEvictFact returns zero-value PodState - remove from map.
 	if newState.UID == "" {
 		delete(s.states, uid)
 		s.logger.Info("pod evicted from state machine", "uid", uid)
+
 	} else {
 		s.states[uid] = newState
 	}
@@ -267,7 +271,7 @@ func (s *Syzygy) processFact(fact types.Fact) {
 }
 
 // dispatchEffect is called by effect workers. It routes each Effect to
-// the appropriate handler — either a local state callback or Horizon.
+// the appropriate handler - either a local state callback or Horizon.
 //
 // dispatchEffect is called concurrently from multiple goroutines.
 // All callbacks must be goroutine-safe.
@@ -325,7 +329,7 @@ func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 }
 
 // runAntiEntropy checks for state drift and reconciles.
-// TODO: Implement full anti-entropy — compare PodState phases against
+// TODO: Implement full anti-entropy - compare PodState phases against
 // PodStore phases, re-emit ContainerStateFacts for drifted pods.
 func (s *Syzygy) runAntiEntropy(_ context.Context) {
 	s.logger.Debug("anti-entropy: checking state",
@@ -335,7 +339,7 @@ func (s *Syzygy) runAntiEntropy(_ context.Context) {
 // --- Public Accessors ----------------------------------------------------
 
 // PodState returns the PodState for a given UID. Safe to call from any
-// goroutine, but the returned value is a snapshot — may be stale by read time.
+// goroutine, but the returned value is a snapshot - may be stale by read time.
 //
 // NOTE: The states map is owned by the Run goroutine. This is safe for
 // concurrent reads because Go map reads don't conflict with other reads.

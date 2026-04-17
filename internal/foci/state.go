@@ -3,8 +3,8 @@ package foci
 // Flat value types for the per-pod state machine.
 //
 // Design principles:
-//   - No pointers to shared mutable state — every field is a value type
-//   - No DeepCopy anywhere in the hot path — PodState copies are cheap
+//   - No pointers to shared mutable state - every field is a value type
+//   - No DeepCopy anywhere in the hot path - PodState copies are cheap
 //   - PodSpec is converted once at admission from *corev1.Pod, then the
 //     entire state machine operates on value types
 //   - The conversion cost at pod admission is worth it: you pay once,
@@ -25,7 +25,7 @@ import (
 // --- Container Phase ----------------------------------------------------
 
 // ContainerPhase represents the lifecycle phase of a container.
-// This is a flat enum — no pointer fields, no heap allocation.
+// This is a flat enum - no pointer fields, no heap allocation.
 type ContainerPhase uint8
 
 const (
@@ -72,7 +72,7 @@ type ContainerSpec struct {
 	HasLivenessProbe  bool
 	HasStartupProbe   bool
 
-	// Probe thresholds — needed by Reduce for startup gating logic.
+	// Probe thresholds - needed by Reduce for startup gating logic.
 	ReadinessProbe ProbeSpec
 	LivenessProbe  ProbeSpec
 	StartupProbe   ProbeSpec
@@ -88,7 +88,7 @@ type PodSpec struct {
 // --- Container State ----------------------------------------------------
 
 // ContainerState is the per-container state in the pod state machine.
-// All value types — no pointers, no DeepCopy needed.
+// All value types - no pointers, no DeepCopy needed.
 type ContainerState struct {
 	Name         string
 	Image        string
@@ -106,7 +106,7 @@ type ContainerState struct {
 	ExitCode   int32
 	ExitReason string
 
-	// Probe tracking (evaluated results only — timing lives in PodStore)
+	// Probe tracking (evaluated results only - timing lives in PodStore)
 	StartupPassed bool
 }
 
@@ -115,7 +115,7 @@ type ContainerState struct {
 // PodState is the per-pod state in the Syzygy's state map.
 // This is the single source of truth for one pod's state machine.
 //
-// PodState is a value type — copying it is cheap (~300-500 bytes).
+// PodState is a value type - copying it is cheap (~300-500 bytes).
 // The Reduce function takes PodState by value and returns a new PodState.
 type PodState struct {
 	UID       string

@@ -119,8 +119,27 @@ func reduceUnitFact(state PodState, fact *types.UnitFact) (PodState, []types.Eff
 	case "start-pre", "start", "start-post":
 		cv.Phase = PhaseCreating
 
+	case "stop-sigterm", "stop-watchdog":
+		// systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
+		// Emit event but don't change phase — container is still alive.
+		return state, []types.Effect{types.RecordEvent{
+			UID:       state.UID,
+			EventType: corev1.EventTypeNormal,
+			Reason:    "Killing",
+			Message:   fmt.Sprintf("Container %s received SIGTERM, waiting for graceful exit", containerName),
+		}}
+
+	case "stop-sigkill", "stop-kill":
+		// Grace period expired; systemd is sending SIGKILL.
+		return state, []types.Effect{types.RecordEvent{
+			UID:       state.UID,
+			EventType: corev1.EventTypeWarning,
+			Reason:    "Killing",
+			Message:   fmt.Sprintf("Container %s grace period expired, sending SIGKILL", containerName),
+		}}
+
 	default:
-		// Ignore "dead", "stop-sigterm", "stop-sigkill", etc.
+		// Ignore "dead" and other transient substates.
 		return state, nil
 	}
 
@@ -432,8 +451,17 @@ func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []t
 // --- PodEvictFact -------------------------------------------------------
 
 func reducePodEvictFact(state PodState) (PodState, []types.Effect) {
-	// Return zero-value PodState to signal removal.
-	return PodState{}, nil
+	// Emit ResetUnit for every tracked container so Horizon cleans up
+	// the systemd units before we drop the state.
+	effects := make([]types.Effect, 0, len(state.Containers))
+	for _, cv := range state.Containers {
+		effects = append(effects, types.ResetUnit{
+			UID:           state.UID,
+			ContainerName: cv.Name,
+		})
+	}
+	// Return zero-value PodState to signal removal from the state map.
+	return PodState{}, effects
 }
 
 // --- MarkRunningFact ----------------------------------------------------

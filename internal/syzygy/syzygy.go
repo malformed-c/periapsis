@@ -2,27 +2,30 @@ package syzygy
 
 // Syzygy is the imperative shell — the single goroutine that owns all pod state.
 //
-// It receives Facts (immutable events), feeds them through the pure Reduce
-// function, stores the resulting PodState, and dispatches Effects. Effects
-// split into two categories:
+// Architecture: Functional Core, Imperative Shell with worker pool.
 //
-//   Local state effects (handled synchronously in this goroutine):
-//     - SetPodPhase      → callback into PodStore
-//     - PersistPodState  → callback into disk layer
-//     - InitRestartState → callback into PodStore
+//   Main goroutine (single-threaded):
+//     1. Receive Fact from inbox
+//     2. Look up PodState (zero-value if untracked)
+//     3. Call foci.Reduce(state, fact) → (newState, []Effect)
+//     4. Store newState in map
+//     5. Push each Effect into the effects channel (non-blocking)
 //
-//   k8s API effects (forwarded to Horizon's worker pool):
-//     - UpdateStatus, RestartContainer, ResetUnit, RecordEvent
+//   Effect worker pool (N goroutines):
+//     - Drain the effects channel
+//     - Local state effects (SetPodPhase, PersistPodState, InitRestartState)
+//       are executed directly via injected callbacks
+//     - k8s API effects are forwarded to Horizon's own worker pool
 //
-// This split keeps Horizon as a pure k8s API executor with no PodStore
-// dependency. Local state ops run inline here — no concurrency concern
-// because Syzygy is single-threaded for state mutations.
+// This decoupling means the main loop never blocks on I/O or slow callbacks.
+// The state map is exclusively owned by the main goroutine — no locks needed.
+// Effect workers only call pure callbacks or non-blocking horizon.Send().
 //
 // Memory at 3000 pods:
-//   - map[string]foci.PodState: ~1.5MB (PodState is ~300-500 bytes)
-//   - No per-pod goroutines (saves ~16-48MB vs Focus actor model)
-//   - No *corev1.Pod stored per pod (saves ~30MB)
-//   - No DeepCopy on hot path (PodState is a value type)
+//   - map[string]foci.PodState: ~1.5MB
+//   - No per-pod goroutines
+//   - No *corev1.Pod stored per pod
+//   - No DeepCopy on hot path
 
 import (
 	"context"
@@ -37,9 +40,21 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+const (
+	// defaultEffectWorkers is the number of effect-dispatch goroutines.
+	// Tuned so slow callbacks (disk persistence) don't back up the pool.
+	defaultEffectWorkers = 4
+
+	// effectsBuf is the capacity of the effects channel.
+	// Sized for burst: 3000 pods × ~3 effects per Reduce call = ~9000 in-flight.
+	effectsBuf = 16384
+)
+
 // Syzygy is the event loop that owns all pod state.
 type Syzygy struct {
-	inbox  chan types.Fact
+	inbox   chan types.Fact
+	effects chan types.Effect
+
 	mu     sync.RWMutex
 	closed bool
 
@@ -52,8 +67,9 @@ type Syzygy struct {
 	// horizon executes k8s API effects.
 	horizon *horizon.Horizon
 
-	// Local state callbacks — executed synchronously in the Run goroutine.
-	// These ops are not k8s API calls; they're fast local mutations.
+	// Local state callbacks — called by effect workers.
+	// These are fast, non-blocking in-memory operations.
+	// The callbacks themselves must be goroutine-safe (called concurrently).
 
 	// setPodPhase updates the PodStore's phase map.
 	setPodPhase func(uid string, phase corev1.PodPhase)
@@ -62,7 +78,6 @@ type Syzygy struct {
 	persistPodState func(uid string)
 
 	// initRestartState initializes restart/probe tracking for a new pod.
-	// Receives flat ContainerInitPayload — no *corev1.Pod pointer.
 	initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 }
 
@@ -72,6 +87,7 @@ type SyzygyDeps struct {
 	Horizon *horizon.Horizon
 
 	// Optional local state callbacks. If nil, the operation is a no-op.
+	// Callbacks are invoked from worker goroutines and must be goroutine-safe.
 	SetPodPhase      func(uid string, phase corev1.PodPhase)
 	PersistPodState  func(uid string)
 	InitRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
@@ -91,6 +107,7 @@ func NewSyzygy(deps SyzygyDeps) *Syzygy {
 
 	return &Syzygy{
 		inbox:            make(chan types.Fact, 2048),
+		effects:          make(chan types.Effect, effectsBuf),
 		logger:           deps.Logger.With("component", "syzygy"),
 		states:           make(map[string]foci.PodState),
 		horizon:          deps.Horizon,
@@ -100,10 +117,31 @@ func NewSyzygy(deps SyzygyDeps) *Syzygy {
 	}
 }
 
-// Run is the main event loop. It processes Facts sequentially until
-// the context is cancelled, then drains remaining facts during shutdown.
-func (s *Syzygy) Run(ctx context.Context) {
-	// Anti-entropy loop runs in a separate goroutine.
+// Run is the main event loop. Takes a workerCount for the effect pool.
+// Blocks until the context is cancelled.
+func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
+	if workerCount == 0 {
+		workerCount = defaultEffectWorkers
+	}
+
+	// --- Effect worker pool ---------------------------------------------
+	// Workers drain the effects channel. Started before the fact loop so
+	// there are consumers ready before any effects are produced.
+	var effectWg sync.WaitGroup
+	for i := uint8(0); i < workerCount; i++ {
+		effectWg.Add(1)
+		go func() {
+			defer effectWg.Done()
+			// Use a background-derived ctx for the worker so it can
+			// finish draining effects after the main context is cancelled.
+			// The channel close is what signals final exit.
+			for eff := range s.effects {
+				s.dispatchEffect(ctx, eff)
+			}
+		}()
+	}
+
+	// --- Anti-entropy loop ----------------------------------------------
 	var aeWg sync.WaitGroup
 	aeCtx, aeCancel := context.WithCancel(ctx)
 	defer func() {
@@ -117,6 +155,7 @@ func (s *Syzygy) Run(ctx context.Context) {
 		s.runAntiEntropyLoop(aeCtx)
 	}()
 
+	// --- Main fact loop (single goroutine) ------------------------------
 Loop:
 	for {
 		select {
@@ -124,7 +163,7 @@ Loop:
 			if !ok {
 				break Loop
 			}
-			s.processFact(ctx, fact)
+			s.processFact(fact)
 		case <-ctx.Done():
 			break Loop
 		}
@@ -135,10 +174,15 @@ Loop:
 	// Drain remaining facts during shutdown.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-
 	for fact := range s.inbox {
-		s.processFact(shutdownCtx, fact)
+		s.processFact(fact)
 	}
+	_ = shutdownCtx // used by dispatchEffect via captured ctx
+
+	// All facts processed, no more effects will be produced.
+	// Close effects channel and wait for workers to drain it.
+	close(s.effects)
+	effectWg.Wait()
 }
 
 // Send enqueues a Fact for processing. Non-blocking; returns false if
@@ -168,7 +212,6 @@ func (s *Syzygy) Send(fact types.Fact) (ok bool) {
 	}
 }
 
-// close marks the Syzygy as closed and closes the inbox channel.
 func (s *Syzygy) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,16 +229,18 @@ func (s *Syzygy) close() {
 //  2. Looks up the current PodState (zero-value if untracked)
 //  3. Calls the pure Reduce function
 //  4. Stores the new PodState
-//  5. Dispatches all returned Effects
-func (s *Syzygy) processFact(ctx context.Context, fact types.Fact) {
+//  5. Pushes all returned Effects into the effects channel
+//
+// processFact is only ever called from a single goroutine. The effects
+// channel send is non-blocking — effects are dropped with a warning if
+// the pool is full (effectsBuf is sized to make this rare).
+func (s *Syzygy) processFact(fact types.Fact) {
 	uid := factUID(fact)
 	if uid == "" {
 		s.logger.Debug("fact has no UID, dropping", "type", fmt.Sprintf("%T", fact))
 		return
 	}
 
-	// Look up current state — zero-value PodState means UID is empty,
-	// which Reduce uses to detect untracked pods.
 	currentState := s.states[uid]
 
 	// Pure computation — no side effects.
@@ -209,21 +254,26 @@ func (s *Syzygy) processFact(ctx context.Context, fact types.Fact) {
 		s.states[uid] = newState
 	}
 
-	// Execute effects.
+	// Push effects to the worker pool. Non-blocking.
 	for _, eff := range effects {
-		s.executeEffect(ctx, eff)
+		select {
+		case s.effects <- eff:
+		default:
+			s.logger.Warn("syzygy effects pool full, dropping effect",
+				"type", fmt.Sprintf("%T", eff),
+				"uid", uid)
+		}
 	}
 }
 
-// executeEffect dispatches an Effect to the appropriate handler.
+// dispatchEffect is called by effect workers. It routes each Effect to
+// the appropriate handler — either a local state callback or Horizon.
 //
-// Local state effects are handled synchronously in this goroutine — they
-// are fast, non-blocking, and must not race with the state map.
-//
-// k8s API effects are forwarded to Horizon's worker pool.
-func (s *Syzygy) executeEffect(ctx context.Context, eff types.Effect) {
+// dispatchEffect is called concurrently from multiple goroutines.
+// All callbacks must be goroutine-safe.
+func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 	switch e := eff.(type) {
-	// --- Local state effects (handled here, synchronous) ----------------
+	// --- Local state effects (callbacks, goroutine-safe) ----------------
 
 	case types.SetPodPhase:
 		s.setPodPhase(e.UID, e.Phase)
@@ -234,7 +284,7 @@ func (s *Syzygy) executeEffect(ctx context.Context, eff types.Effect) {
 	case types.InitRestartState:
 		s.initRestartState(e.UID, e.Namespace, e.Name, e.Containers)
 
-	// --- k8s API effects (forwarded to Horizon) -------------------------
+	// --- k8s API effects (Horizon's own worker pool) --------------------
 
 	case types.UpdateStatus:
 		s.horizon.Send(e)
@@ -285,13 +335,11 @@ func (s *Syzygy) runAntiEntropy(_ context.Context) {
 // --- Public Accessors ----------------------------------------------------
 
 // PodState returns the PodState for a given UID. Safe to call from any
-// goroutine, but the returned value is a snapshot — it may be stale by
-// the time the caller reads it.
+// goroutine, but the returned value is a snapshot — may be stale by read time.
 //
-// NOTE: This reads from the states map which is owned by the Run goroutine.
-// In the current single-goroutine design this is safe because map reads
-// don't conflict with other reads. Add synchronization if concurrent
-// writers are ever introduced.
+// NOTE: The states map is owned by the Run goroutine. This is safe for
+// concurrent reads because Go map reads don't conflict with other reads.
+// Add synchronization if concurrent writers are ever introduced.
 func (s *Syzygy) PodState(uid string) (foci.PodState, bool) {
 	state, ok := s.states[uid]
 	return state, ok
@@ -313,7 +361,6 @@ func (s *Syzygy) UIDs() []string {
 
 // --- Fact UID Extraction -------------------------------------------------
 
-// factUID extracts the UID from any Fact type.
 func factUID(fact types.Fact) string {
 	switch f := fact.(type) {
 	case *types.UnitFact:

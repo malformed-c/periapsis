@@ -10,6 +10,7 @@ import (
 	"time"
 
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
 )
@@ -28,6 +29,11 @@ type BatchWatcherDeps struct {
 	RestartContainer func(ctx context.Context, uid string, pod *corev1.Pod, containerName string, count int32, backoff time.Duration)
 	BuildPodStatus   func(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus
 	ParseUnitName    func(unitName string) (uid, containerName string)
+
+	// SendFact forwards a Fact to the Syzygy event loop.
+	// If nil, fact emission is skipped (e.g. in tests that don't wire Syzygy).
+	// Used by handleUnitEvent to hand off event-recording logic to Reduce.
+	SendFact func(fact types.Fact) bool
 }
 
 // maxConcurrentProbes is the maximum number of probe HTTP/TCP/exec calls
@@ -215,90 +221,73 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 	}
 }
 
-// handleUnitEvent reacts to a D-Bus unit state change by querying the
-// individual container's MachineStatus and updating the stateCache.
-// This is more targeted than a full poll - it only touches the affected
-// container, giving sub-second detection for fast-exit containers.
+// handleUnitEvent reacts to a D-Bus unit state change. It:
+//   - Updates the local stateCache (used by the query path / BuildPodStatus)
+//   - Emits a UnitFact to Syzygy for state-machine transitions and k8s event recording
+//   - Triggers a full poll on Running/Failed transitions
+//
+// Event recording (Started, Killing/SIGTERM, Killing/SIGKILL) has moved to
+// foci.Reduce via RecordEvent effects — BW no longer calls EventRecorder.Eventf
+// directly for container lifecycle events.
 func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEvent) {
 	// QUICK FILTER: Does this unit even belong to this pawn?
-	// The unit name starts with "perigeos-<pawn>-..."
 	if !strings.HasPrefix(ev.UnitName, "perigeos-"+bw.deps.PawnName+"-") {
 		return
 	}
 
-	// Parse uid and containerName from the unit name.
-	// Format: perigeos-<pawn>-pod-<uid>-<containerName>.service
 	uid, containerName := bw.deps.ParseUnitName(ev.UnitName)
 	if uid == "" {
 		return
 	}
 
-	// Fetch pod once - used for event recording and init-container check.
+	// Fetch pod — still needed for the isInit check (init container Running
+	// must not trigger a poll, since app containers haven't been launched yet).
 	pod := bw.deps.Store.GetPodCopy(uid)
-
-	// Determine if this is an init container. Init containers run sequentially
-	// before app containers; when an init container transitions to Running,
-	// app containers haven't been started yet. Triggering a poll at that
-	// point causes checkPod to see app containers as missing from
-	// ListManagedMachines (exists=false), hitting the "never seen running"
-	// deferral and pushing ContainerCreating before the lifecycle code
-	// has finished launching them.
 	isInit := pod != nil && isInitContainer(pod, containerName)
 
-	// The moment we see ANY signal that the container is stopping
-	// or has failed, wipe the readiness state.
-	if ev.SubState != "running" && ev.SubState != "start" {
-		// TODO: Fill Reason and Message
-		bw.deps.Store.SetContainerState(uid, containerName, corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
+	// Clear container state for any non-running/non-starting substate.
+	if ev.SubState != "running" && ev.SubState != "start" &&
+		ev.SubState != "start-pre" && ev.SubState != "start-post" {
+		bw.deps.Store.SetContainerState(uid, containerName,
+			corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
 	}
 
-	// Map substate to MachineState.
+	// Emit UnitFact to Syzygy for all substates that affect pod state or
+	// produce k8s events (Started, Killing). Reduce handles the logic;
+	// RecordEvent effects flow back through Horizon.
 	//
-	// We intentionally ignore "dead" - it's an intermediate substate that
-	// fires BEFORE systemd updates ExecMainStatus. If we react to it, we
-	// see exit code 0 and incorrectly mark the pod as Succeeded. Systemd
-	// always follows "dead" with either:
-	//   - "failed" (non-zero exit) → we react to this immediately
-	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
-	//     poll detects the unit is gone within 2s
-	// Emit informational events for container stop substates.
-	// These fire while the container is shutting down and let operators
-	// see exactly where time is spent during pod deletion.
-	switch ev.SubState {
-	case "stop-sigterm", "stop-watchdog":
-		// systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
-		if pod != nil {
-			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
-				"Container %s received SIGTERM, waiting for graceful exit", containerName)
-		}
-
-	case "stop-sigkill", "stop-kill":
-		// Grace period expired; systemd is sending SIGKILL.
-		if pod != nil {
-			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Killing",
-				"Container %s grace period expired, sending SIGKILL", containerName)
-		}
+	// Substates that Reduce handles:
+	//   running, failed, start-pre, start, start-post  → phase transitions + Started event
+	//   stop-sigterm, stop-watchdog                    → Killing/SIGTERM event
+	//   stop-sigkill, stop-kill                        → Killing/SIGKILL event
+	//   dead, others                                   → ignored by Reduce (default case)
+	if bw.deps.SendFact != nil {
+		bw.deps.SendFact(&types.UnitFact{
+			UID:      uid,
+			UnitName: ev.UnitName,
+			SubState: ev.SubState,
+		})
 	}
 
+	// Map substate → MachineState for the local stateCache.
+	// "dead" and stop-* substates are intentionally not cached —
+	// the ticker poll reconciles them within containerWatchPoll.
 	var state perigeos.MachineState
 	switch ev.SubState {
 	case "running":
 		state = perigeos.StateRunning
-
 	case "failed":
 		state = perigeos.StateFailed
-
 	case "start-pre", "start", "start-post":
 		state = perigeos.StateCreating
-
 	default:
-		return // ignore "dead" and other transient states
+		return
 	}
 
 	key := uid + "/" + containerName
 
-	// Track that we've seen this container running (used by checkPod
-	// to avoid premature terminal decisions during unit startup).
+	// Track seenRunning for BW's internal checkPod / makeStateLookup logic.
+	// (Syzygy tracks this independently via ContainerState.SeenRunning.)
 	if state == perigeos.StateRunning {
 		bw.pollMu.Lock()
 		bw.seenRunning[key] = true
@@ -312,35 +301,11 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	bw.stateCacheMu.Unlock()
 
 	if prev == state {
-		return // no change
+		return // no change, skip poll trigger
 	}
 
-	// Emit container lifecycle events on state transitions.
-	// The D-Bus path is the fast reactive path - events fire within
-	// milliseconds of the actual systemd state change. The poll path
-	// (below in checkPod) covers failures and exits that the D-Bus
-	// path may miss (e.g. "dead" substate is intentionally ignored).
-	if state == perigeos.StateRunning {
-		if pod != nil {
-			reason := "Started"
-			if isInit {
-				reason = "InitStarted"
-			}
-
-			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, reason,
-				"Container %s started", containerName)
-		}
-	}
-
-	// Trigger a full poll on state transitions that affect pod status.
-	// For app container Running: pushes the Running phase immediately and
-	// starts the readiness probe initialDelay timer, instead of waiting
-	// up to containerWatchPoll (2s) for the ticker.
-	// For Failed: processes restart policy and pushes terminal phase.
-	// For init container Running: skip - app containers haven't been
-	// launched yet, so the poll would see them as missing and either
-	// defer terminal decisions or push premature ContainerCreating.
-	// The lifecycle code will trigger status updates when it finishes.
+	// Trigger a full poll on transitions that affect pod phase.
+	// Init container Running: skip — app containers haven't been launched yet.
 	if state == perigeos.StateRunning && !isInit {
 		bw.logger.Info("handleUnitEvent: triggering poll (app container Running)",
 			"pod", podName(pod), "container", containerName)

@@ -119,18 +119,16 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 			})
 
 			updated := s.store.ProbeState(uid, c.Name)
-			if updated != nil {
-				s.syzygy.Send(types.ProbeFact{
-					UID:              uid,
-					Container:        c.Name,
-					ProbeType:        "startup",
-					Success:          result == node.ProbeSuccess,
-					Ready:            updated.StartupPassed,
-					StartupPassed:    updated.StartupPassed,
-					SuccessThreshold: safeThreshold(c.StartupProbe.SuccessThreshold, 1),
-					FailureThreshold: safeThreshold(c.StartupProbe.FailureThreshold, 3),
-				})
-			}
+		if updated != nil {
+			s.syzygy.Send(types.NewProbeFact(
+				uid, c.Name, "startup",
+				result == node.ProbeSuccess,
+				updated.StartupPassed,
+				updated.StartupPassed,
+				safeThreshold(c.StartupProbe.SuccessThreshold, 1),
+				safeThreshold(c.StartupProbe.FailureThreshold, 3),
+			))
+		}
 
 			if restart {
 				s.logger.Warn("startup probe failed past threshold, needs restart",
@@ -156,16 +154,14 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 
 		updated := s.store.ProbeState(uid, c.Name)
 		if updated != nil {
-			s.syzygy.Send(types.ProbeFact{
-				UID:              uid,
-				Container:        c.Name,
-				ProbeType:        "liveness",
-				Success:          result == node.ProbeSuccess,
-				Ready:            !restart,
-				StartupPassed:    updated.StartupPassed,
-				SuccessThreshold: safeThreshold(c.LivenessProbe.SuccessThreshold, 1),
-				FailureThreshold: safeThreshold(c.LivenessProbe.FailureThreshold, 3),
-			})
+			s.syzygy.Send(types.NewProbeFact(
+				uid, c.Name, "liveness",
+				result == node.ProbeSuccess,
+				!restart,
+				updated.StartupPassed,
+				safeThreshold(c.LivenessProbe.SuccessThreshold, 1),
+				safeThreshold(c.LivenessProbe.FailureThreshold, 3),
+			))
 		}
 
 		if restart {
@@ -186,16 +182,14 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 
 		updated := s.store.ProbeState(uid, c.Name)
 		if updated != nil {
-			s.syzygy.Send(types.ProbeFact{
-				UID:              uid,
-				Container:        c.Name,
-				ProbeType:        "readiness",
-				Success:          result == node.ProbeSuccess,
-				Ready:            updated.Ready,
-				StartupPassed:    updated.StartupPassed,
-				SuccessThreshold: safeThreshold(c.ReadinessProbe.SuccessThreshold, 1),
-				FailureThreshold: safeThreshold(c.ReadinessProbe.FailureThreshold, 3),
-			})
+			s.syzygy.Send(types.NewProbeFact(
+				uid, c.Name, "readiness",
+				result == node.ProbeSuccess,
+				updated.Ready,
+				updated.StartupPassed,
+				safeThreshold(c.ReadinessProbe.SuccessThreshold, 1),
+				safeThreshold(c.ReadinessProbe.FailureThreshold, 3),
+			))
 		}
 	}
 }

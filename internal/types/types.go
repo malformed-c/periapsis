@@ -16,14 +16,25 @@ import (
 // implement it, preventing external packages from creating arbitrary facts.
 type Fact interface {
 	isFact()
+	// UID returns the pod UID this fact belongs to.
+	UID() string
 }
+
+// baseFact is embedded in every concrete Fact type to provide the UID()
+// method. The uid field is unexported so it must be set via the embed —
+// callers construct facts with baseFact{uid} as the first field.
+type baseFact struct {
+	uid string
+}
+
+func (b baseFact) UID() string { return b.uid }
 
 // --- Systemd Facts ------------------------------------------------------
 
 // UnitFact is emitted when a systemd unit changes substate.
 // Source: D-Bus PropertiesChanged signal (reactive path).
 type UnitFact struct {
-	UID       string
+	baseFact
 	UnitName  string
 	SubState  string // systemd substate: "running", "failed", "start-pre", etc.
 	ExitCode  int32  // only set for "failed" substate
@@ -36,7 +47,7 @@ func (UnitFact) isFact() {}
 // a container's MachineState from ListManagedMachines.
 // Source: ticker poll (consistency path).
 type ContainerStateFact struct {
-	UID       string
+	baseFact
 	Container string
 	State     perigeos.MachineState // Running, Creating, Failed, Exited
 	ExitCode  int32
@@ -46,7 +57,7 @@ func (ContainerStateFact) isFact() {}
 
 // ExitFact is emitted when a container process exits with a known result.
 type ExitFact struct {
-	UID         string
+	baseFact
 	Container   string
 	ExitCode    int32
 	Reason      string
@@ -63,7 +74,7 @@ func (ExitFact) isFact() {}
 // Ready is the evaluated readiness after threshold logic, set by the probe
 // runner so the state machine doesn't need to duplicate threshold evaluation.
 type ProbeFact struct {
-	UID              string
+	baseFact
 	Container        string
 	ProbeType        string // "readiness", "liveness", or "startup"
 	Success          bool
@@ -79,7 +90,7 @@ func (ProbeFact) isFact() {}
 
 // SpecFact is emitted when a pod spec changes from Kubernetes.
 type SpecFact struct {
-	UID       string
+	baseFact
 	Namespace string
 	PodName   string
 	Pod       *corev1.Pod // the new pod spec
@@ -92,7 +103,7 @@ func (SpecFact) isFact() {}
 // PodAdmitFact is emitted when a new pod is admitted and should start
 // tracking in the state machine.
 type PodAdmitFact struct {
-	UID       string
+	baseFact
 	Namespace string
 	Name      string
 	PodIP     string
@@ -103,7 +114,7 @@ func (PodAdmitFact) isFact() {}
 
 // PodEvictFact is emitted when a pod should be removed from the state machine.
 type PodEvictFact struct {
-	UID string
+	baseFact
 }
 
 func (PodEvictFact) isFact() {}
@@ -112,7 +123,7 @@ func (PodEvictFact) isFact() {}
 // wants the state machine to know it was running, even if the D-Bus
 // "running" event arrives after the unit exits (fast-exit containers).
 type MarkRunningFact struct {
-	UID           string
+	baseFact
 	ContainerName string
 }
 
@@ -123,11 +134,62 @@ func (MarkRunningFact) isFact() {}
 // BackoffResetFact is emitted when a container has been running stably
 // long enough that its CrashLoopBackOff duration should be reset.
 type BackoffResetFact struct {
-	UID           string
+	baseFact
 	ContainerName string
 }
 
 func (BackoffResetFact) isFact() {}
+
+// --- Fact constructors --------------------------------------------------
+//
+// These constructors are the canonical way to create Fact values.
+// They set the baseFact.uid field, which is unexported and cannot be
+// set by external packages directly via struct literal.
+
+func NewUnitFact(uid, unitName, subState string, exitCode int32) *UnitFact {
+	return &UnitFact{baseFact: baseFact{uid: uid}, UnitName: unitName, SubState: subState, ExitCode: exitCode}
+}
+
+func NewContainerStateFact(uid, container string, state perigeos.MachineState, exitCode int32) *ContainerStateFact {
+	return &ContainerStateFact{baseFact: baseFact{uid: uid}, Container: container, State: state, ExitCode: exitCode}
+}
+
+func NewExitFact(uid, container string, exitCode int32, reason string, willRestart bool) *ExitFact {
+	return &ExitFact{baseFact: baseFact{uid: uid}, Container: container, ExitCode: exitCode, Reason: reason, WillRestart: willRestart}
+}
+
+func NewProbeFact(uid, container, probeType string, success, ready, startupPassed bool, successThreshold, failureThreshold int32) *ProbeFact {
+	return &ProbeFact{
+		baseFact:         baseFact{uid: uid},
+		Container:        container,
+		ProbeType:        probeType,
+		Success:          success,
+		Ready:            ready,
+		StartupPassed:    startupPassed,
+		SuccessThreshold: successThreshold,
+		FailureThreshold: failureThreshold,
+	}
+}
+
+func NewSpecFact(uid, namespace, podName string, pod *corev1.Pod) *SpecFact {
+	return &SpecFact{baseFact: baseFact{uid: uid}, Namespace: namespace, PodName: podName, Pod: pod}
+}
+
+func NewPodAdmitFact(uid, namespace, name, podIP string, pod *corev1.Pod) *PodAdmitFact {
+	return &PodAdmitFact{baseFact: baseFact{uid: uid}, Namespace: namespace, Name: name, PodIP: podIP, Pod: pod}
+}
+
+func NewPodEvictFact(uid string) *PodEvictFact {
+	return &PodEvictFact{baseFact: baseFact{uid: uid}}
+}
+
+func NewMarkRunningFact(uid, containerName string) *MarkRunningFact {
+	return &MarkRunningFact{baseFact: baseFact{uid: uid}, ContainerName: containerName}
+}
+
+func NewBackoffResetFact(uid, containerName string) *BackoffResetFact {
+	return &BackoffResetFact{baseFact: baseFact{uid: uid}, ContainerName: containerName}
+}
 
 // --- Effect -------------------------------------------------------------
 

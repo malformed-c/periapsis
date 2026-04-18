@@ -366,44 +366,5 @@ func (s *Syzygy) UIDs() []string {
 // --- Fact UID Extraction -------------------------------------------------
 
 func factUID(fact types.Fact) string {
-	switch f := fact.(type) {
-	case *types.UnitFact:
-		return f.UID
-	case types.UnitFact:
-		return f.UID
-	case *types.ContainerStateFact:
-		return f.UID
-	case types.ContainerStateFact:
-		return f.UID
-	case *types.ExitFact:
-		return f.UID
-	case types.ExitFact:
-		return f.UID
-	case *types.ProbeFact:
-		return f.UID
-	case types.ProbeFact:
-		return f.UID
-	case *types.SpecFact:
-		return f.UID
-	case types.SpecFact:
-		return f.UID
-	case *types.PodAdmitFact:
-		return f.UID
-	case types.PodAdmitFact:
-		return f.UID
-	case *types.PodEvictFact:
-		return f.UID
-	case types.PodEvictFact:
-		return f.UID
-	case *types.MarkRunningFact:
-		return f.UID
-	case types.MarkRunningFact:
-		return f.UID
-	case *types.BackoffResetFact:
-		return f.UID
-	case types.BackoffResetFact:
-		return f.UID
-	default:
-		return ""
-	}
+	return fact.UID()
 }

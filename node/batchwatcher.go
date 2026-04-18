@@ -278,11 +278,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	//   stop-sigkill, stop-kill                        → Killing/SIGKILL event
 	//   dead, others                                   → ignored by Reduce (default case)
 	if bw.deps.SendFact != nil {
-		bw.deps.SendFact(&types.UnitFact{
-			UID:      uid,
-			UnitName: ev.UnitName,
-			SubState: ev.SubState,
-		})
+		bw.deps.SendFact(types.NewUnitFact(uid, ev.UnitName, ev.SubState, 0))
 	}
 
 	// Map substate → MachineState for the local stateCache.

@@ -19,6 +19,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawnstats "github.com/malformed-c/periapsis/internal/stats"
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -214,7 +215,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 	return g
 }
 
-func (g *Gambit) StartBatchWatcher() {
+func (g *Gambit) StartBatchWatcher(sendFact func(types.Fact) bool) {
 	g.batchWatcher = StartBatchWatcher(BatchWatcherDeps{
 		Store:            g.store,
 		Runtime:          g.Runtime,
@@ -227,6 +228,7 @@ func (g *Gambit) StartBatchWatcher() {
 		ParseUnitName: func(unitName string) (string, string) {
 			return ParseUnitName(g.Config.Name, unitName)
 		},
+		SendFact: sendFact,
 	})
 	g.Logger.Info("BatchWatcher started and assigned to Gambit")
 }
@@ -408,6 +410,17 @@ func (g *Gambit) PersistPodState(pod *corev1.Pod) {
 	}); err != nil {
 		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
 	}
+}
+
+// PersistPodStateByUID persists pod state to disk using only the pod UID.
+// This is the callback wired into SyzygyDeps.PersistPodState — Syzygy
+// holds no *corev1.Pod, only the UID from the PersistPodState effect.
+func (g *Gambit) PersistPodStateByUID(uid string) {
+	pod := g.store.GetPodCopy(uid)
+	if pod == nil {
+		return
+	}
+	g.PersistPodState(pod)
 }
 
 // RestartContainerCB is the exported wrapper for restartContainer callback.

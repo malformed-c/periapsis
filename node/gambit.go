@@ -413,7 +413,7 @@ func (g *Gambit) PersistPodState(pod *corev1.Pod) {
 }
 
 // PersistPodStateByUID persists pod state to disk using only the pod UID.
-// This is the callback wired into SyzygyDeps.PersistPodState — Syzygy
+// This is the callback wired into SyzygyDeps.PersistPodState - Syzygy
 // holds no *corev1.Pod, only the UID from the PersistPodState effect.
 func (g *Gambit) PersistPodStateByUID(uid string) {
 	pod := g.store.GetPodCopy(uid)

@@ -240,7 +240,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// before batchwatcher's first poll.
 	//
 	// Poke the BatchWatcher for an immediate poll now that containers are
-	// launched. This is the only status push needed here — the BatchWatcher
+	// launched. This is the only status push needed here - the BatchWatcher
 	// is the sole authority for container status.
 	//
 	// The old pushContainerCreatingStatus call was a source of a subtle race:
@@ -249,7 +249,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// lastPodStatusReceivedFromProvider with a stale Pending/Waiting/false
 	// object. Because the VK work queue deduplicates by key and processes
 	// the last-written value, k8s would receive the stale status. prevReady
-	// was already true so no corrective push would follow — pod stuck.
+	// was already true so no corrective push would follow - pod stuck.
 	g.batchWatcher.Poke()
 
 	return nil

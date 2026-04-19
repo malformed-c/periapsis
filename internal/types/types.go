@@ -21,7 +21,7 @@ type Fact interface {
 }
 
 // baseFact is embedded in every concrete Fact type to provide the UID()
-// method. The uid field is unexported so it must be set via the embed —
+// method. The uid field is unexported so it must be set via the embed -
 // callers construct facts with baseFact{uid} as the first field.
 type baseFact struct {
 	uid string

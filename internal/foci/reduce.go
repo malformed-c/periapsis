@@ -416,11 +416,11 @@ func reduceSpecFact(state PodState, fact *types.SpecFact) (PodState, []types.Eff
 
 func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []types.Effect) {
 	if state.UID != "" {
-		// Already tracking this pod — update spec.
+		// Already tracking this pod - update spec.
 		return reduceSpecFact(state, types.NewSpecFact(fact.UID(), fact.Namespace, fact.Name, fact.Pod))
 	}
 
-	// New pod — create initial state.
+	// New pod - create initial state.
 	newState := NewPodState(fact.UID(), fact.Namespace, fact.Name, fact.PodIP, fact.Pod)
 
 	containers := make([]types.ContainerInitPayload, 0, len(newState.Spec.Containers))

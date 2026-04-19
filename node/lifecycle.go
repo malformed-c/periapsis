@@ -239,27 +239,18 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// window where K8s showed Running 1/1 even if the container died
 	// before batchwatcher's first poll.
 	//
-	// Only push ContainerCreating if ALL of these hold:
-	//  1. The BatchWatcher hasn't already observed any container running
-	//  2. The store phase hasn't already been promoted past Pending
-	//     (PromoteRunning was called above, so if anything set it to
-	//      Running, a stale ContainerCreating push would race with the
-	//      BatchWatcher's Running push and overwrite it in k8s).
-	alreadyRunning := g.store.PodPhase(uid) == corev1.PodRunning
-	if !alreadyRunning {
-		for _, c := range pod.Spec.Containers {
-			if g.batchWatcher.ContainerState(uid, c.Name) == perigeos.StateRunning {
-				alreadyRunning = true
-				break
-			}
-		}
-	}
-
-	if !alreadyRunning {
-		g.pushContainerCreatingStatus(pod, podIP)
-	} else {
-		g.Logger.Debug("Skipping ContainerCreating status push; container already running", "pod", pod.Name)
-	}
+	// Poke the BatchWatcher for an immediate poll now that containers are
+	// launched. This is the only status push needed here — the BatchWatcher
+	// is the sole authority for container status.
+	//
+	// The old pushContainerCreatingStatus call was a source of a subtle race:
+	// if the BatchWatcher had already polled, run probes, and pushed a
+	// Running/ready=true status, pushContainerCreatingStatus would overwrite
+	// lastPodStatusReceivedFromProvider with a stale Pending/Waiting/false
+	// object. Because the VK work queue deduplicates by key and processes
+	// the last-written value, k8s would receive the stale status. prevReady
+	// was already true so no corrective push would follow — pod stuck.
+	g.batchWatcher.Poke()
 
 	return nil
 }

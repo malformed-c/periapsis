@@ -85,10 +85,8 @@ type BatchWatcher struct {
 	// startup, and ExecMainStatus isn't updated until after the unit
 	// settles. We only make terminal decisions for containers we've
 	// confirmed were actually running.
-	// Protected by pollMu - must not be read/written outside of poll()
-	// or handleUnitEvent() without holding this lock.
-	seenRunningMu sync.Mutex
-	seenRunning   map[string]bool // key: uid/containerName
+	// Protected exclusively by pollMu.
+	seenRunning map[string]bool // key: uid/containerName
 
 	// pollMu serializes poll() and handleUnitEvent() to prevent concurrent
 	// access to prevStateMap, prevReady, and seenRunning.
@@ -168,9 +166,9 @@ func (bw *BatchWatcher) Poke() {
 // after the unit exits (fast-exit containers).
 func (bw *BatchWatcher) MarkRunning(uid, containerName string) {
 	key := uid + "/" + containerName
-	bw.seenRunningMu.Lock()
+	bw.pollMu.Lock()
 	bw.seenRunning[key] = true
-	bw.seenRunningMu.Unlock()
+	bw.pollMu.Unlock()
 }
 
 // ContainerState returns the cached state for a container from the most recent

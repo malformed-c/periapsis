@@ -487,7 +487,7 @@ func main() {
 			gambitsMu.Unlock()
 
 			// --- Horizon: pure k8s API executor (worker pool) ---
-			h := horizon.NewHorizon(horizon.HorizonDeps{
+			h := horizon.NewHorizon(horizon.HorizonConfig{
 				Logger:      pawnLogger,
 				Client:      kubeClient,
 				RecordEvent: horizon.EventRecorderAdapter(eventRecorder, store.GetPodCopy),
@@ -503,7 +503,7 @@ func main() {
 			})
 
 			// --- Syzygy: single-goroutine state machine + effect worker pool ---
-			sz := syzygy.NewSyzygy(syzygy.SyzygyDeps{
+			sz := syzygy.NewSyzygy(syzygy.SyzygyConfig{
 				Logger:           pawnLogger,
 				Horizon:          h,
 				SetPodPhase:      store.SetPhase,

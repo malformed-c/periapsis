@@ -144,8 +144,9 @@ func reduceUnitFact(state PodState, fact *types.UnitFact) (PodState, []types.Eff
 	}
 
 	if prevPhase != cv.Phase || cv.Phase == PhaseRunning {
-		state, statusEff := recomputePhase(state)
+		newState, statusEff := recomputePhase(state)
 		effects = append(effects, statusEff...)
+		state = newState
 	}
 
 	return state, effects
@@ -271,8 +272,9 @@ func reduceContainerStateFact(state PodState, fact *types.ContainerStateFact) (P
 	}
 
 	if prevPhase != cv.Phase {
-		state, statusEff := recomputePhase(state)
+		newState, statusEff := recomputePhase(state)
 		effects = append(effects, statusEff...)
+		state = newState
 	}
 
 	return state, effects
@@ -324,8 +326,9 @@ func reduceExitFact(state PodState, fact *types.ExitFact) (PodState, []types.Eff
 	}
 
 	if prevPhase != cv.Phase {
-		state, statusEff := recomputePhase(state)
+		newState, statusEff := recomputePhase(state)
 		effects = append(effects, statusEff...)
+		state = newState
 	}
 
 	return state, effects
@@ -364,8 +367,9 @@ func reduceProbeFact(state PodState, fact *types.ProbeFact) (PodState, []types.E
 				Message:   fmt.Sprintf("Container %s passed readiness probe", fact.Container),
 			})
 		}
-		state, statusEff := recomputePhase(state)
+		newState, statusEff := recomputePhase(state)
 		effects = append(effects, statusEff...)
+		state = newState
 	}
 
 	return state, effects
@@ -490,7 +494,6 @@ func reduceBackoffResetFact(state PodState, fact *types.BackoffResetFact) (PodSt
 // has materially changed.
 func recomputePhase(state PodState) (PodState, []types.Effect) {
 	prevPhase := state.Phase
-	allReady := true
 	anyRunning := false
 	anyCreating := false
 	anyRestarting := false
@@ -515,9 +518,6 @@ func recomputePhase(state PodState) (PodState, []types.Effect) {
 			if cv.ExitCode != 0 {
 				allSucceeded = false
 			}
-		}
-		if !cv.Ready {
-			allReady = false
 		}
 	}
 

@@ -50,7 +50,7 @@ func (r *doctorMockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.C
 func (r *doctorMockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
 	return nil
 }
-func (r *doctorMockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+func (r *doctorMockRuntime) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
 func (r *doctorMockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {

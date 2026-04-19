@@ -41,7 +41,7 @@ type Runtime interface {
 	// network namespace. stream is bidirectionally copied to/from the connection.
 	PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error
 
-	// AttachToContainer attaches to the stdio of a running container's PID 1.
+	// AttachContainer attaches to the stdio of a running container's PID 1.
 	AttachContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
 
 	// InitPawnSlice creates the cgroup slice for a pawn and applies resource limits.

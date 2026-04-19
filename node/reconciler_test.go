@@ -42,7 +42,7 @@ func (m *mockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.Contain
 func (m *mockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
 	return nil
 }
-func (m *mockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+func (m *mockRuntime) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
 func (m *mockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {

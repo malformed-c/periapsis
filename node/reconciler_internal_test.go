@@ -44,7 +44,7 @@ func (m *mockRuntimeForGhosts) GetLogStream(_ context.Context, _, _ string, _ ap
 func (m *mockRuntimeForGhosts) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
 	return nil
 }
-func (m *mockRuntimeForGhosts) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+func (m *mockRuntimeForGhosts) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
 func (m *mockRuntimeForGhosts) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {

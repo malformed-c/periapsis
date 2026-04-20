@@ -68,6 +68,9 @@ func (m *mockRuntimeForGhosts) CleanupStaleUnits(_ context.Context, _ map[string
 func (m *mockRuntimeForGhosts) SliceActive(ctx context.Context) bool {
 	return true
 }
+func (r *mockRuntimeForGhosts) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
 
 // --- Mock Network -------------------------------------------------------------
 

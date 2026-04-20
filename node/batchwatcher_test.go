@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/malformed-c/periapsis/node/api"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -78,8 +78,8 @@ func (r *stubRuntime) send(ev perigeos.UnitEvent) { r.eventsCh <- ev }
 func (r *stubRuntime) RunMachine(_ context.Context, _ string, _ perigeos.PodConfig) error {
 	return nil
 }
-func (r *stubRuntime) StopMachine(_ context.Context, _, _ string) error        { return nil }
-func (r *stubRuntime) ResetUnit(_ context.Context, _, _ string) error           { return nil }
+func (r *stubRuntime) StopMachine(_ context.Context, _, _ string) error { return nil }
+func (r *stubRuntime) ResetUnit(_ context.Context, _, _ string) error   { return nil }
 func (r *stubRuntime) MachineStatus(_ context.Context, _, _ string) (perigeos.MachineState, error) {
 	return perigeos.StateUnknown, nil
 }
@@ -98,7 +98,7 @@ func (r *stubRuntime) AttachContainer(_ context.Context, _, _ string, _ api.Atta
 func (r *stubRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
 	return nil
 }
-func (r *stubRuntime) CheckMachined(_ context.Context) error              { return nil }
+func (r *stubRuntime) CheckMachined(_ context.Context) error { return nil }
 func (r *stubRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perigeos.BindMount) error {
 	return nil
 }
@@ -106,6 +106,10 @@ func (r *stubRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (i
 	return 0, nil
 }
 func (r *stubRuntime) SliceActive(_ context.Context) bool { return true }
+
+func (r *stubRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
 
 // startBW creates a BatchWatcher with the given store and runtime. Returned
 // notified channel receives the latest pushed pod on every NotifyStatus call.

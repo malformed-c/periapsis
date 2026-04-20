@@ -67,6 +67,10 @@ func (m *mockRuntime) SliceActive(ctx context.Context) bool {
 	return true
 }
 
+func (r *mockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
+
 // --- Mock Network -------------------------------------------------------------
 
 type mockNetwork struct {

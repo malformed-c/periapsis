@@ -559,6 +559,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 
 	allExited := true
 	allSucceeded := true
+	anyRestarting := false // true only when maybeRestart is called this cycle
 
 	for _, c := range pod.Spec.Containers {
 		key := uid + "/" + c.Name
@@ -643,6 +644,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 				allExited = false
+				anyRestarting = true
 			}
 
 		case perigeos.StateExited:
@@ -666,17 +668,21 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			if policy == corev1.RestartPolicyAlways {
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 				allExited = false
+				anyRestarting = true
 			}
 			// OnFailure + exit 0 → don't restart.
 			// Never → don't restart.
 		}
 	}
 
-	if !allExited {
-		// At least one container is being restarted.  Eagerly push a
+	if anyRestarting {
+		// At least one container is being restarted. Eagerly push a
 		// CrashLoopBackOff status so kubectl sees it immediately rather
 		// than waiting for the coalescer (which may miss the window if
 		// the state transition and the next poll overlap).
+		// Only fires when maybeRestart was actually called this cycle —
+		// not for plain Running containers, which would cause a spurious
+		// push on every poll cycle and bypass the coalescer entirely.
 		stateLookup := bw.makeStateLookup(stateMap)
 		status := bw.deps.BuildPodStatus(pod, stateLookup)
 		if status.Phase == corev1.PodRunning {
@@ -686,6 +692,9 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			status.DeepCopyInto(&updated.Status)
 			bw.deps.NotifyStatus(updated)
 		}
+	}
+
+	if !allExited {
 		return
 	}
 

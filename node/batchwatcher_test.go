@@ -283,6 +283,10 @@ func TestBatchWatcher_MarkRunningUnblocksTerminalDecision(t *testing.T) {
 	bw, notified := startBW(t, store, rt)
 	defer bw.Stop()
 
+	// Tell the watcher that the container has officially started.
+	// This mimics the behavior of the pod creation logic.
+	bw.MarkRunning(uid, "job")
+
 	// Without MarkRunning: poll would defer terminal decision forever because
 	// seenRunning["uid-fast/job"] is false. The fast-exit path only fires
 	// when exists=true AND exitCode=0, which it is here, so it should work.

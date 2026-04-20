@@ -642,7 +642,13 @@ func isPrivileged(c *corev1.Container) bool {
 func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
+		// Use a short per-call timeout so a hung D-Bus connection doesn't
+		// block the whole loop. Without this, a single stalled
+		// GetUnitPropertyContext call with no deadline (sagaCtx has none)
+		// can hold waitForContainer past the outer deadline indefinitely.
+		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		state, err := g.Runtime.MachineStatus(pollCtx, uid, containerName)
+		cancel()
 		if err == nil {
 			switch state {
 			case perigeos.StateRunning, perigeos.StateExited:

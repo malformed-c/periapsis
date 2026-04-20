@@ -353,8 +353,13 @@ func TestBatchWatcher_ReadinessTransitionPushed(t *testing.T) {
 	store.RegisterPending(uid, pod, &creationHandle{cancel: func() {}, done: make(chan struct{})})
 	store.PromoteRunning(uid, pod, "10.0.0.5")
 	store.InitRestartState(pod)
+	// InitRestartState defaults Ready=true when there's no readiness probe.
+	// Force it to false so the first poll seeds prevReady[key]=false and
+	// the subsequent false→true transition is detectable.
+	store.UpdateProbeState(uid, "nginx", func(ps *ContainerProbeState) {
+		ps.Ready = false
+	})
 
-	// Container is Running but not yet ready.
 	rt := newStubRuntime()
 	rt.setMachines([]perigeos.PodMetadata{
 		{UID: uid, ContainerName: "nginx", State: perigeos.StateRunning},

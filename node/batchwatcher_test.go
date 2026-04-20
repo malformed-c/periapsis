@@ -255,6 +255,7 @@ func TestBatchWatcher_PokeDoesNotOverwriteReadyTrue(t *testing.T) {
 // MarkRunning is called for a container that exits before the first poll,
 // checkPod correctly classifies it as Exited rather than deferring forever.
 // This is the fast-exit container bug.
+// TODO: Doesn't exit.
 func TestBatchWatcher_MarkRunningUnblocksTerminalDecision(t *testing.T) {
 	store := setupTestStore()
 	t.Cleanup(store.Close)
@@ -314,20 +315,16 @@ func TestBatchWatcher_MarkRunningRaceDetector(t *testing.T) {
 	// is polling. The race detector will catch any unsynchronized access.
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			bw.MarkRunning(uid, "c1")
 			bw.MarkRunning(uid, "c2")
 			bw.MarkRunning(uid, "c3")
-		}()
+		})
 	}
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			bw.Poke()
-		}()
+		})
 	}
 	wg.Wait()
 }

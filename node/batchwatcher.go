@@ -120,7 +120,7 @@ func withRLock(mu readLocker, fn func()) {
 // StartBatchWatcher creates and starts the batch watcher for a Gambit pawn.
 func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	if deps.EventRecorder == nil {
-		deps.EventRecorder = record.NewFakeRecorder(0)
+		deps.EventRecorder = record.NewFakeRecorder(1024)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	bw := &BatchWatcher{

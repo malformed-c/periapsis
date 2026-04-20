@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -143,6 +144,7 @@ func waitNotify(t *testing.T, ch chan *corev1.Pod, pred func(*corev1.Pod) bool, 
 	deadline := time.NewTimer(3 * time.Second)
 	defer deadline.Stop()
 	for {
+		t.Log("wait loop")
 		select {
 		case p := <-ch:
 			if pred(p) {
@@ -257,8 +259,11 @@ func TestBatchWatcher_PokeDoesNotOverwriteReadyTrue(t *testing.T) {
 // This is the fast-exit container bug.
 // TODO: Doesn't exit.
 func TestBatchWatcher_MarkRunningUnblocksTerminalDecision(t *testing.T) {
+	fmt.Println("Creating store")
 	store := setupTestStore()
 	t.Cleanup(store.Close)
+
+	fmt.Println("Store success")
 
 	pod := newRunningPod("uid-fast", "fast-exit", "job")
 	pod.Spec.RestartPolicy = corev1.RestartPolicyNever
@@ -266,6 +271,8 @@ func TestBatchWatcher_MarkRunningUnblocksTerminalDecision(t *testing.T) {
 	store.RegisterPending(uid, pod, &creationHandle{cancel: func() {}, done: make(chan struct{})})
 	store.PromoteRunning(uid, pod, "10.0.0.3")
 	store.InitRestartState(pod)
+
+	t.Log("Restart success")
 
 	// Container exited successfully before BatchWatcher ever saw it Running.
 	rt := newStubRuntime()

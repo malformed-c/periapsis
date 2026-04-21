@@ -339,10 +339,12 @@ func (s *PodStore) AlreadyRunning(uid string, pod *corev1.Pod) (exists bool, was
 	wasStub = len(ps.pod.Spec.Containers) == 0
 	if wasStub {
 		// Replace the empty stub with real pod and register its resources.
+		// DeepCopy for the same reason as PromoteRunning: prevent the caller
+		// from aliasing the store's pod pointer and mutating it concurrently.
 		cpu, mem := podResources(pod)
 		s.usedCPU.Add(cpu)
 		s.usedMem.Add(mem)
-		ps.pod = pod
+		ps.pod = pod.DeepCopy()
 	}
 	ps.hydrated = false
 	s.triggerSnapshot()
@@ -356,7 +358,12 @@ func (s *PodStore) AlreadyInFlight(uid string) bool {
 func (s *PodStore) PromoteRunning(uid string, pod *corev1.Pod, ip string) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		ps.pod = pod
+		// DeepCopy breaks the aliasing between the store's pod and the
+		// lifecycle goroutine's local pod variable. Without this, lifecycle.go
+		// continues mutating pod.Status (env resolution, PodIP, etc.) on the
+		// same pointer that Snapshot returns to BatchWatcher - a data race on
+		// pod.Status fields read by buildPodStatus concurrently.
+		ps.pod = pod.DeepCopy()
 		ps.ip = ip
 		ps.phase = corev1.PodRunning
 		ps.inFlight = nil

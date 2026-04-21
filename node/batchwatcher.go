@@ -519,14 +519,22 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				"pod", e.pod.Name, "storePhase", currentPhase)
 			continue
 		}
-		status := bw.deps.BuildPodStatus(e.pod, stateLookup)
+		// Fetch the current pod under lock rather than using e.pod from the
+		// snapshot. The snapshot pointer was valid at poll-start but may be
+		// stale by the time the coalescer runs (PromoteRunning could have
+		// replaced ps.pod). GetPodCopy gives a consistent DeepCopy of the
+		// current store state at push time.
+		currentPod := bw.deps.Store.GetPodCopy(e.uid)
+		if currentPod == nil {
+			continue // pod deleted mid-cycle
+		}
+		status := bw.deps.BuildPodStatus(currentPod, stateLookup)
 		bw.logger.Info("Coalescer: pushing status",
-			"pod", e.pod.Name, "computedPhase", status.Phase,
+			"pod", currentPod.Name, "computedPhase", status.Phase,
 			"ready", status.Conditions[0].Status,
 			"containers", len(status.ContainerStatuses))
-		updated := e.pod.DeepCopy()
-		status.DeepCopyInto(&updated.Status)
-		bw.deps.NotifyStatus(updated)
+		status.DeepCopyInto(&currentPod.Status)
+		bw.deps.NotifyStatus(currentPod)
 	}
 
 	// Rotate state maps for next cycle.
@@ -684,13 +692,15 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// not for plain Running containers, which would cause a spurious
 		// push on every poll cycle and bypass the coalescer entirely.
 		stateLookup := bw.makeStateLookup(stateMap)
-		status := bw.deps.BuildPodStatus(pod, stateLookup)
-		if status.Phase == corev1.PodRunning {
-			bw.logger.Info("checkPod: eager status push",
-				"pod", pod.Name, "ready", status.Conditions[0].Status)
-			updated := pod.DeepCopy()
-			status.DeepCopyInto(&updated.Status)
-			bw.deps.NotifyStatus(updated)
+		currentPod := bw.deps.Store.GetPodCopy(uid)
+		if currentPod != nil {
+			status := bw.deps.BuildPodStatus(currentPod, stateLookup)
+			if status.Phase == corev1.PodRunning {
+				bw.logger.Info("checkPod: eager status push",
+					"pod", currentPod.Name, "ready", status.Conditions[0].Status)
+				status.DeepCopyInto(&currentPod.Status)
+				bw.deps.NotifyStatus(currentPod)
+			}
 		}
 	}
 
@@ -715,18 +725,18 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		}
 		return perigeos.StateExited
 	}
-	status := bw.deps.BuildPodStatus(pod, stateLookup)
-	status.Phase = terminalPhase
 
-	updated := pod.DeepCopy()
-	status.DeepCopyInto(&updated.Status)
-
-	// Update both the phase map AND the pod's Status in-place so that
-	// GetPodStatus returns the terminal status even after the systemd
-	// unit is cleaned up.
+	// Update phase first so GetPodStatus returns terminal status even after
+	// the systemd unit is cleaned up, then push with current pod.
 	bw.deps.Store.SetPhase(uid, terminalPhase)
 
-	bw.deps.NotifyStatus(updated)
+	currentPod := bw.deps.Store.GetPodCopy(uid)
+	if currentPod != nil {
+		status := bw.deps.BuildPodStatus(currentPod, stateLookup)
+		status.Phase = terminalPhase
+		status.DeepCopyInto(&currentPod.Status)
+		bw.deps.NotifyStatus(currentPod)
+	}
 
 	// Clean up dead/failed systemd units now that we've read their state.
 	// Without this, transient units accumulate in systemd's listing.

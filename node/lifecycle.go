@@ -422,6 +422,7 @@ func (g *Gambit) launchContainer(
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
 		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
+
 		return fmt.Errorf("RunMachine: %w", err)
 	}
 
@@ -433,15 +434,19 @@ func (g *Gambit) launchContainer(
 		if err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
 			_ = g.Runtime.ResetUnit(context.Background(), uid, c.Name)
+
 			return fmt.Errorf("init timeout/err: %w", err)
 		}
+
 		if state == perigeos.StateFailed {
 			return fmt.Errorf("init container exited with error")
 		}
+
 	} else {
 		if err := g.waitForContainer(ctx, uid, c.Name, isInit, machineStartTimeout); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
 			_ = g.Runtime.ResetUnit(context.Background(), uid, c.Name)
+
 			return fmt.Errorf("waitForContainer: %w", err)
 		}
 
@@ -458,6 +463,7 @@ func (g *Gambit) launchContainer(
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
 			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
 			return fmt.Errorf("MakeSharedMounts: %w", err)
 		}
 
@@ -705,18 +711,22 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 			switch state {
 			case perigeos.StateRunning:
 				g.Logger.Debug("waitForContainer: ready", "uid", uid, "container", containerName, "state", state)
+
 				return nil
 
 			case perigeos.StateExited:
 				if isInit {
 					// Init containers are successful if they finish (Exit 0)
 					g.Logger.Debug("waitForContainer: init container finished", "uid", uid, "container", containerName)
+
 					return nil
 				}
 				if !seenActive {
 					// Ignore initial 'dead' state of transient units before they activate
+					g.Logger.Debug("waitForContainer: ignoring state", "uid", uid, "container", containerName)
 					break
 				}
+
 				// App container exited before it could be considered "Running"
 				return fmt.Errorf("app container %s exited prematurely", containerName)
 
@@ -724,6 +734,7 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 				// Startup failure (e.g. nspawn refused stale unix-export mount).
 				// Don't call MakeSharedMounts on a dead container.
 				g.Logger.Warn("waitForContainer: container failed on startup", "uid", uid, "container", containerName)
+
 				return fmt.Errorf("app container %s/%s failed on startup", uid, containerName)
 			}
 		}

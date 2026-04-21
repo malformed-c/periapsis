@@ -495,39 +495,39 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 		VK->K8s: Patch: delete B, upsert A\nThis is where things go wrong,\nbecause the patch is written to replace all node conditions\nit overwrites (drops) [C]
 		note left of K8s: Node Conditions are [A]\nNode condition C from ExternalUpdater is no longer present
 		@enduml
-			   ,--.                                                        ,---.          ,---------------.
+			   ,--.                                                        ,---.          ,---.
 		     |VK|                                                        |K8s|          |ExternalUpdater|
-		     `+-'                                                        `-+-'          `-------+-------'
-		      |  ,------------------------------------------!.             |                    |
+		     `+-'                                                        `-+-'          `---+---'
+		      |  ,---!.             |                    |
 		      |  |Updates internal node conditions to [A, B]|_\            |                    |
-		      |  `--------------------------------------------'            |                    |
+		      |  `---'            |                    |
 		      |                     Patch Upsert [A, B]                    |                    |
-		      | ----------------------------------------------------------->                    |
+		      | --->                    |
 		      |                                                            |                    |
-		      |                              ,--------------------------!. |                    |
+		      |                              ,---!. |                    |
 		      |                              |Node conditions are [A, B]|_\|                    |
-		      |                              `----------------------------'|                    |
+		      |                              `---'|                    |
 		      |                                                            |  Patch Upsert [C]  |
-		      |                                                            | <-------------------
+		      |                                                            | <---
 		      |                                                            |                    |
-		      |                           ,-----------------------------!. |                    |
+		      |                           ,---!. |                    |
 		      |                           |Node Conditions are [A, B, C]|_\|                    |
-		      |                           `-------------------------------'|                    |
-		      |  ,---------------------------------------!.                |                    |
+		      |                           `---'|                    |
+		      |  ,---!.                |                    |
 		      |  |Updates internal node conditions to [A]|_\               |                    |
-		      |  `-----------------------------------------'               |                    |
+		      |  `---'               |                    |
 		      | Patch: delete B, upsert A                                  |                    |
 		      | This is where things go wrong,                             |                    |
 		      | because the patch is written to replace all node conditions|                    |
 		      | it overwrites (drops) [C]                                  |                    |
-		      | ----------------------------------------------------------->                    |
+		      | --->                    |
 		      |                                                            |                    |
-		     ,----------------------------------------------------------!. |                    |
+		     ,---!. |                    |
 		     |Node Conditions are [A]                                   |_\|                    |
 		     |Node condition C from ExternalUpdater is no longer present  ||                    |
-		     `------------------------------------------------------------'+-.          ,-------+-------.
+		     `---'+-.          ,---+---.
 		     |VK|                                                        |K8s|          |ExternalUpdater|
-		     `--'                                                        `---'          `---------------'
+		     `--'                                                        `---'          `---'
 	*/
 	// In order to calculate that last patch to delete B, and upsert C, we need to know that C was added by
 	// "someone else". So, we keep track of our last applied value, and our current value. We then generate

@@ -188,7 +188,7 @@ func (h *Horizon) executeEffect(ctx context.Context, eff types.Effect) {
 	}
 }
 
-// --- Effect Handlers -----------------------------------------------------
+// --- Effect Handlers ---
 
 // handleUpdateStatus writes a computed PodStatus to the Kubernetes API.
 // All fields needed for the write come from the UpdateStatus value itself -
@@ -213,7 +213,7 @@ func (h *Horizon) handleRecordEvent(eff types.RecordEvent) {
 	h.recordEvent(eff.UID, eff.EventType, eff.Reason, eff.Message)
 }
 
-// --- K8s API Write -------------------------------------------------------
+// --- K8s API Write ---
 
 // writePodStatus performs the actual k8s API status update.
 // GET + UpdateStatus with UID guard and conflict retry.
@@ -264,7 +264,7 @@ func (h *Horizon) writePodStatus(ctx context.Context, uid, namespace, name strin
 	return nil
 }
 
-// --- Adapters ------------------------------------------------------------
+// --- Adapters ---
 
 // EventRecorderAdapter creates a RecordEvent function from a Kubernetes
 // EventRecorder and a pod lookup function. This decouples Horizon from

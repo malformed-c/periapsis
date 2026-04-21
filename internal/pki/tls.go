@@ -102,7 +102,7 @@ func GenerateCert(nodeName string, caCert *x509.Certificate, caKey any) (tls.Cer
 		}
 	}
 
-	// ----------------------------------------
+	// ---
 
 	// --- Signing Logic ---
 	var derBytes []byte

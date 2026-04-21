@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// --- Mock Runtime -------------------------------------------------------------
+// --- Mock Runtime ---
 
 type mockRuntimeForGhosts struct {
 	machines []perigeos.PodMetadata
@@ -72,7 +72,7 @@ func (r *mockRuntimeForGhosts) PortForward(ctx context.Context, podUID, containe
 	return nil
 }
 
-// --- Mock Network -------------------------------------------------------------
+// --- Mock Network ---
 
 type mockNetworkForGhosts struct {
 	tornDown []string
@@ -86,7 +86,7 @@ func (m *mockNetworkForGhosts) Teardown(_ context.Context, podUID, _, _ string) 
 	return nil
 }
 
-// --- Mock Pod Lister ----------------------------------------------------------
+// --- Mock Pod Lister ---
 
 type mockPodListerForGhosts struct {
 	pods []*corev1.Pod
@@ -104,7 +104,7 @@ func (m *mockPodListerForGhosts) Get(name string) (*corev1.Pod, error) {
 	return nil, nil
 }
 
-// --- Helpers ------------------------------------------------------------------
+// --- Helpers ---
 
 func newTestReconcilerForGhosts(
 	rt *mockRuntimeForGhosts,
@@ -125,7 +125,7 @@ func makePodForGhosts(name, namespace, uid string) *corev1.Pod {
 	}
 }
 
-// --- Tests --------------------------------------------------------------------
+// --- Tests ---
 
 // TestCleanGhosts_GhostPodIsEvicted verifies that pods in Gambit's map but not in
 // Kubernetes are evicted by cleanGhosts().

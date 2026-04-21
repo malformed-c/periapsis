@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// --- buildCNIConfig -----------------------------------------------------------
+// --- buildCNIConfig ---
 
 func TestBuildCNIConfig_NilRaw_NoSocket_ReturnsNil(t *testing.T) {
 	// Skip if a real constellation-agent socket exists on this host - the
@@ -60,7 +60,7 @@ func TestBuildCNIConfig_ExplicitBlock_Overrides(t *testing.T) {
 	}
 }
 
-// --- parseCPU -----------------------------------------------------------------
+// --- parseCPU ---
 
 func TestParseCPU_KubernetesQuantity(t *testing.T) {
 	def := resource.MustParse("100m")
@@ -153,7 +153,7 @@ func TestDeriveCPUWeight(t *testing.T) {
 	}
 }
 
-// --- Process – pawn set expansion --------------------------------------------
+// --- Process – pawn set expansion ---
 
 func defaultPawnCfg() RawPawnConfig {
 	return RawPawnConfig{IOReadBandwidthMax: "10M", IOWriteBandwidthMax: "10M"}
@@ -247,7 +247,7 @@ func TestProcess_PawnSet_ZeroCount_Ignored(t *testing.T) {
 	}
 }
 
-// --- Process – port assignment ------------------------------------------------
+// --- Process – port assignment ---
 
 func TestProcess_Ports_NoDuplicates(t *testing.T) {
 	raw := baseRaw(10000)

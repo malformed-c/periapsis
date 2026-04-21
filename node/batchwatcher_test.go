@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// --- helpers ----------------------------------------------------------------
+// --- helpers ---
 
 func bwLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -156,7 +156,7 @@ func waitNotify(t *testing.T, ch chan *corev1.Pod, pred func(*corev1.Pod) bool, 
 	}
 }
 
-// --- Tests ------------------------------------------------------------------
+// --- Tests ---
 
 // TestBatchWatcher_PokeTriggersStatusPush verifies that Poke() causes an
 // immediate poll and pushes a status update for a Running pod without

@@ -90,7 +90,7 @@ func NewPodStore(rt perigeos.Runtime, createConcurrency int, logger *slog.Logger
 	return store
 }
 
-// --- Internal Helpers -------------------------------------------------------
+// --- Internal Helpers ---
 
 func podResources(pod *corev1.Pod) (cpuMillis, memBytes int64) {
 	if pod == nil {
@@ -206,7 +206,7 @@ func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.Containe
 	*status = newStatuses
 }
 
-// --- PodTracker interface ---------------------------------------------------
+// --- PodTracker interface ---
 
 func (s *PodStore) IsInFlight(uid string) bool {
 	if ps := s.getPodState(uid); ps != nil {
@@ -256,7 +256,7 @@ func (s *PodStore) EvictGhost(uid string) {
 	}
 }
 
-// --- Accessors --------------------------------------------------------------
+// --- Accessors ---
 
 func (s *PodStore) PodCount() int {
 	s.registryMu.RLock()
@@ -306,7 +306,7 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 	return true
 }
 
-// --- Composite State Mutations ----------------------------------------------
+// --- Composite State Mutations ---
 
 func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creationHandle) {
 	ps := &podState{
@@ -563,7 +563,7 @@ func (s *PodStore) CancelInFlight(uid string) {
 	}
 }
 
-// --- Restart & Probe State --------------------------------------------------
+// --- Restart & Probe State ---
 
 func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 	uid := string(pod.UID)
@@ -747,7 +747,7 @@ func (s *PodStore) IncrementRestart(uid, containerName string) {
 	}
 }
 
-// --- Hydration --------------------------------------------------------------
+// --- Hydration ---
 
 func (s *PodStore) RegisterHydrated(uid string, pod *corev1.Pod, ip string) {
 	ps := &podState{
@@ -873,7 +873,7 @@ func (s *PodStore) PurgeHydrated(staleUIDs []string) {
 	s.triggerSnapshot()
 }
 
-// --- Pod Queries ------------------------------------------------------------
+// --- Pod Queries ---
 
 func (s *PodStore) GetPod(namespace, name string) (*corev1.Pod, error) {
 	s.registryMu.RLock()
@@ -982,7 +982,7 @@ func (s *PodStore) ActiveUIDs() map[string]bool {
 	return uids
 }
 
-// --- Resource Admission -----------------------------------------------------
+// --- Resource Admission ---
 
 // PSI thresholds for pod admission. When host-wide pressure exceeds these
 // values (avg10, percentage of wall time), new pods are rejected until
@@ -1055,7 +1055,7 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 	return alloc
 }
 
-// --- Utilities --------------------------------------------------------------
+// --- Utilities ---
 
 func (s *PodStore) CreateSem() chan struct{} {
 	return s.createSem

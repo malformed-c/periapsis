@@ -126,7 +126,7 @@ func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
 		workerCount = defaultEffectWorkers
 	}
 
-	// --- Effect worker pool ---------------------------------------------
+	// --- Effect worker pool ---
 	// Workers drain the effects channel. Started before the fact loop so
 	// there are consumers ready before any effects are produced.
 	wg := sync.WaitGroup{}
@@ -141,7 +141,7 @@ func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
 		})
 	}
 
-	// --- Anti-entropy loop ----------------------------------------------
+	// --- Anti-entropy loop ---
 	var aeWg sync.WaitGroup
 	aeCtx, aeCancel := context.WithCancel(ctx)
 	defer func() {
@@ -154,7 +154,7 @@ func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
 		s.runAntiEntropyLoop(aeCtx)
 	})
 
-	// --- Main fact loop (single goroutine) ------------------------------
+	// --- Main fact loop (single goroutine) ---
 Loop:
 	for {
 		select {
@@ -224,7 +224,7 @@ func (s *Syzygy) close() {
 	}
 }
 
-// --- Core Processing ----------------------------------------------------
+// --- Core Processing ---
 
 // processFact is the heart of the event loop. It:
 //  1. Extracts the UID from the Fact
@@ -277,7 +277,7 @@ func (s *Syzygy) processFact(fact types.Fact) {
 // All callbacks must be goroutine-safe.
 func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 	switch e := eff.(type) {
-	// --- Local state effects (callbacks, goroutine-safe) ----------------
+	// --- Local state effects (callbacks, goroutine-safe) ---
 
 	case types.SetPodPhase:
 		s.setPodPhase(e.UID, e.Phase)
@@ -288,7 +288,7 @@ func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 	case types.InitRestartState:
 		s.initRestartState(e.UID, e.Namespace, e.Name, e.Containers)
 
-	// --- k8s API effects (Horizon's own worker pool) --------------------
+	// --- k8s API effects (Horizon's own worker pool) ---
 
 	case types.UpdateStatus:
 		s.horizon.Send(e)
@@ -307,7 +307,7 @@ func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 	}
 }
 
-// --- Anti-Entropy --------------------------------------------------------
+// --- Anti-Entropy ---
 
 func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
@@ -336,7 +336,7 @@ func (s *Syzygy) runAntiEntropy(_ context.Context) {
 		"pods", len(s.states))
 }
 
-// --- Public Accessors ----------------------------------------------------
+// --- Public Accessors ---
 
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot - may be stale by read time.
@@ -363,7 +363,7 @@ func (s *Syzygy) UIDs() []string {
 	return uids
 }
 
-// --- Fact UID Extraction -------------------------------------------------
+// --- Fact UID Extraction ---
 
 func factUID(fact types.Fact) string {
 	return fact.UID()

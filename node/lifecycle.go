@@ -548,7 +548,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	}
 }
 
-// Helpers ---------------------------------------------------------------------
+// Helpers ---
 
 func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
 	if c.Resources.Limits != nil {

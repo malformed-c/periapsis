@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// --- Mock Runtime -------------------------------------------------------------
+// --- Mock Runtime ---
 
 type mockRuntime struct {
 	machines []perigeos.PodMetadata
@@ -71,7 +71,7 @@ func (r *mockRuntime) PortForward(ctx context.Context, podUID, containerName str
 	return nil
 }
 
-// --- Mock Network -------------------------------------------------------------
+// --- Mock Network ---
 
 type mockNetwork struct {
 	tornDown []string
@@ -85,7 +85,7 @@ func (m *mockNetwork) Teardown(_ context.Context, podUID, _, _ string) error {
 	return nil
 }
 
-// --- Mock Pod Lister ----------------------------------------------------------
+// --- Mock Pod Lister ---
 
 type mockPodLister struct {
 	pods []*corev1.Pod
@@ -103,14 +103,14 @@ func (m *mockPodLister) Get(name string) (*corev1.Pod, error) {
 	return nil, nil
 }
 
-// --- Helpers ------------------------------------------------------------------
+// --- Helpers ---
 
 func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) *TestReconciler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewReconcilerForTest(rt, nm, lister, logger)
 }
 
-// --- Tests --------------------------------------------------------------------
+// --- Tests ---
 
 func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
 	rt := &mockRuntime{

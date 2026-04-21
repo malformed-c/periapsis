@@ -58,7 +58,7 @@ func Reduce(state PodState, fact types.Fact) (PodState, []types.Effect) {
 	}
 }
 
-// --- UnitFact -----------------------------------------------------------
+// --- UnitFact ---
 
 func reduceUnitFact(state PodState, fact *types.UnitFact) (PodState, []types.Effect) {
 	containerName := ParseContainerFromUnit(fact.UnitName)
@@ -152,7 +152,7 @@ func reduceUnitFact(state PodState, fact *types.UnitFact) (PodState, []types.Eff
 	return state, effects
 }
 
-// --- ContainerStateFact (from poll) -------------------------------------
+// --- ContainerStateFact (from poll) ---
 
 func reduceContainerStateFact(state PodState, fact *types.ContainerStateFact) (PodState, []types.Effect) {
 	idx := state.FindContainer(fact.Container)
@@ -280,7 +280,7 @@ func reduceContainerStateFact(state PodState, fact *types.ContainerStateFact) (P
 	return state, effects
 }
 
-// --- ExitFact -----------------------------------------------------------
+// --- ExitFact ---
 
 func reduceExitFact(state PodState, fact *types.ExitFact) (PodState, []types.Effect) {
 	idx := state.FindContainer(fact.Container)
@@ -334,7 +334,7 @@ func reduceExitFact(state PodState, fact *types.ExitFact) (PodState, []types.Eff
 	return state, effects
 }
 
-// --- ProbeFact ----------------------------------------------------------
+// --- ProbeFact ---
 
 func reduceProbeFact(state PodState, fact *types.ProbeFact) (PodState, []types.Effect) {
 	idx := state.FindContainer(fact.Container)
@@ -375,7 +375,7 @@ func reduceProbeFact(state PodState, fact *types.ProbeFact) (PodState, []types.E
 	return state, effects
 }
 
-// --- SpecFact -----------------------------------------------------------
+// --- SpecFact ---
 
 func reduceSpecFact(state PodState, fact *types.SpecFact) (PodState, []types.Effect) {
 	if fact.Pod == nil {
@@ -416,7 +416,7 @@ func reduceSpecFact(state PodState, fact *types.SpecFact) (PodState, []types.Eff
 	return newState, effects
 }
 
-// --- PodAdmitFact -------------------------------------------------------
+// --- PodAdmitFact ---
 
 func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []types.Effect) {
 	if state.UID != "" {
@@ -447,7 +447,7 @@ func reducePodAdmitFact(state PodState, fact *types.PodAdmitFact) (PodState, []t
 	return newState, effects
 }
 
-// --- PodEvictFact -------------------------------------------------------
+// --- PodEvictFact ---
 
 func reducePodEvictFact(state PodState) (PodState, []types.Effect) {
 	// Emit ResetUnit for every tracked container so Horizon cleans up
@@ -463,7 +463,7 @@ func reducePodEvictFact(state PodState) (PodState, []types.Effect) {
 	return PodState{}, effects
 }
 
-// --- MarkRunningFact ----------------------------------------------------
+// --- MarkRunningFact ---
 
 func reduceMarkRunningFact(state PodState, fact *types.MarkRunningFact) (PodState, []types.Effect) {
 	idx := state.FindContainer(fact.ContainerName)
@@ -475,7 +475,7 @@ func reduceMarkRunningFact(state PodState, fact *types.MarkRunningFact) (PodStat
 	return state, nil
 }
 
-// --- BackoffResetFact ---------------------------------------------------
+// --- BackoffResetFact ---
 
 func reduceBackoffResetFact(state PodState, fact *types.BackoffResetFact) (PodState, []types.Effect) {
 	idx := state.FindContainer(fact.ContainerName)
@@ -487,7 +487,7 @@ func reduceBackoffResetFact(state PodState, fact *types.BackoffResetFact) (PodSt
 	return state, nil
 }
 
-// --- Phase Computation --------------------------------------------------
+// --- Phase Computation ---
 
 // recomputePhase computes the pod-level phase and readiness from the
 // container states, then emits an UpdateStatus effect if the status
@@ -571,7 +571,7 @@ func recomputePhase(state PodState) (PodState, []types.Effect) {
 	return state, effects
 }
 
-// --- Helpers ------------------------------------------------------------
+// --- Helpers ---
 
 // shouldRestart returns whether a container with the given exit code should
 // be restarted based on the pod's restart policy.

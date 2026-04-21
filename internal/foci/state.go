@@ -22,7 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// --- Container Phase ----------------------------------------------------
+// --- Container Phase ---
 
 // ContainerPhase represents the lifecycle phase of a container.
 // This is a flat enum - no pointer fields, no heap allocation.
@@ -51,7 +51,7 @@ func (p ContainerPhase) String() string {
 	}
 }
 
-// --- Container Spec (flat extraction from corev1.Container) -------------
+// --- Container Spec (flat extraction from corev1.Container) ---
 
 // ProbeSpec is the flat probe configuration extracted from corev1.Probe.
 // Only the fields needed by the state machine are kept.
@@ -85,7 +85,7 @@ type PodSpec struct {
 	Containers    []ContainerSpec
 }
 
-// --- Container State ----------------------------------------------------
+// --- Container State ---
 
 // ContainerState is the per-container state in the pod state machine.
 // All value types - no pointers, no DeepCopy needed.
@@ -110,7 +110,7 @@ type ContainerState struct {
 	StartupPassed bool
 }
 
-// --- Pod State ----------------------------------------------------------
+// --- Pod State ---
 
 // PodState is the per-pod state in the Syzygy's state map.
 // This is the single source of truth for one pod's state machine.
@@ -154,7 +154,7 @@ func (s PodState) FindSpec(name string) int {
 	return -1
 }
 
-// --- Constants ----------------------------------------------------------
+// --- Constants ---
 
 const (
 	RestartBackoffInit  = 10 * time.Second
@@ -162,7 +162,7 @@ const (
 	RestartBackoffReset = 10 * time.Minute
 )
 
-// --- Conversion ---------------------------------------------------------
+// --- Conversion ---
 
 // NewPodSpec extracts a flat PodSpec from a *corev1.Pod.
 // This is the one-time conversion cost at pod admission.

@@ -137,7 +137,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	createHomeDir(rootfs, uid, gid, logger)
 }
 
-// ---------------------------------------------------------------------------
+// ---
 // Host-side userns shim support (ADR-0010)
 //
 // The userns-shim binary runs inside the container, calls
@@ -145,7 +145,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 // and send the target uid:gid via a FIFO. This creates the user namespace
 // AFTER nspawn has joined the CNI netns, avoiding the --private-users +
 // --network-namespace-path incompatibility.
-// ---------------------------------------------------------------------------
+// ---
 
 const (
 	// usernsShimHostPath is the install location of the static userns-shim binary.

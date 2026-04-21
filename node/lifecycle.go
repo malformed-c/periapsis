@@ -151,6 +151,12 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		}
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkReady", "CNI network configured, podIP=%s", podIP)
 		g.store.PromoteRunning(uid, pod, podIP)
+		// Push ContainerCreating immediately so Kubernetes learns the pod IP
+		// even if container launch or waitForContainer stalls. The BatchWatcher
+		// will overwrite this with accurate Running/ready status once containers
+		// are observed. Called here (right after CNI), not at the end of this
+		// function, so a D-Bus hang in waitForContainer can't prevent the push.
+		g.pushContainerCreatingStatus(pod, podIP)
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Reconciling", "Resuming creation: network sandbox already exists")

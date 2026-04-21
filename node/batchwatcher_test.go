@@ -257,7 +257,6 @@ func TestBatchWatcher_PokeDoesNotOverwriteReadyTrue(t *testing.T) {
 // MarkRunning is called for a container that exits before the first poll,
 // checkPod correctly classifies it as Exited rather than deferring forever.
 // This is the fast-exit container bug.
-// TODO: Doesn't exit.
 func TestBatchWatcher_MarkRunningUnblocksTerminalDecision(t *testing.T) {
 	fmt.Println("Creating store")
 	store := setupTestStore()

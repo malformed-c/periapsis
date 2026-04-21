@@ -223,8 +223,8 @@ func (r *Reconciler) cleanGhosts(ctx context.Context) {
 
 // splitNsName splits "namespace/name" into its parts.
 func splitNsName(nsName string) (string, string) {
-	if i := strings.Index(nsName, "/"); i >= 0 {
-		return nsName[:i], nsName[i+1:]
+	if before0, after, ok := strings.Cut(nsName, "/"); ok {
+		return before0, after
 	}
 	return "", nsName
 }
@@ -286,7 +286,7 @@ func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {
 		name = pod.Name
 	}
 	if namespace == "" || name == "" {
-		r.logger.Warn("Reconciler: namespace/name missing for CNI teardown — lxc veth may leak",
+		r.logger.Warn("Reconciler: namespace/name missing for CNI teardown - lxc veth may leak",
 			"uid", m.UID, "namespace", namespace, "name", name,
 			"metaNamespace", m.Namespace, "metaName", m.Name)
 	}

@@ -105,7 +105,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "BackOff",
-				"Sandbox sync failed: %v. Retrying in %v", err, backoff)
+				"Sandbox sync failed: %v Retrying in %v", err, backoff)
 
 			// Sleep and retry. syncPodSandboxAndContainers will pick up right where it left off.
 			select {
@@ -142,18 +142,26 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		netPath = "/proc/1/ns/net"
 		podIP = resolveNodeIP(g.Config)
 		g.Logger.Debug("sync: step1 hostNetwork", "uid", uid, "pod", pod.Name, "ip", podIP)
+
 	} else if podIP == "" {
 		g.Logger.Debug("sync: step1 CNI setup", "uid", uid, "pod", pod.Name)
 		var err error
 		netPath, podIP, err = g.NetworkManager.Setup(ctx, uid, pod.Namespace, pod.Name, pod.Spec.NodeName)
+
 		if err != nil {
 			g.Logger.Warn("sync: step1 CNI failed", "uid", uid, "pod", pod.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "NetworkFailed", "CNI setup failed: %v", err)
+
+			// SAVE the IP immediately so retries skip this step,
+			// but DO NOT call PromoteRunning yet.
+			// TODO
+			// g.store.SetPodIP(uid, podIP)
+
 			return fmt.Errorf("network setup: %w", err)
 		}
+
 		g.Logger.Debug("sync: step1 CNI ready", "uid", uid, "pod", pod.Name, "ip", podIP, "netPath", netPath)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkReady", "CNI network configured, podIP=%s", podIP)
-		g.store.PromoteRunning(uid, pod, podIP)
 
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
@@ -176,9 +184,11 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	pod.Status.PodIPs = []corev1.PodIP{{IP: podIP}}
 	pod.Status.HostIP = resolveNodeIP(g.Config)
 	rm, _ := manager.NewResourceManager(nil, g.secretLister, g.cmLister, g.svcLister)
+
 	if err := podutils.PopulateEnvironmentVariables(ctx, pod, rm, g.EventRecorder); err != nil {
 		g.Logger.Warn("sync: step2 env resolution failed", "uid", uid, "pod", pod.Name, "err", err)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "PopulateEnvFailed", "environment variable resolution failed: %v", err)
+
 		return fmt.Errorf("env population: %w", err)
 	}
 
@@ -196,19 +206,25 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 		if isSidecar && state == perigeos.StateRunning {
 			g.Logger.Debug("sync: step3 sidecar already running, skipping", "uid", uid, "pod", pod.Name, "container", ic.Name)
+
 			continue
+
 		} else if !isSidecar && state == perigeos.StateExited {
 			g.Logger.Debug("sync: step3 init container already exited, skipping", "uid", uid, "pod", pod.Name, "container", ic.Name)
+
 			continue
 		}
 
 		g.Logger.Debug("sync: step3 launching init container", "uid", uid, "pod", pod.Name, "container", ic.Name, "isSidecar", isSidecar)
+
 		err := g.launchContainer(ctx, pod, ic, uid, netPath, podIP, pullCache, runtimeProfiles, !isSidecar)
 		if err != nil {
 			g.Logger.Warn("sync: step3 init container failed", "uid", uid, "pod", pod.Name, "container", ic.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "InitFailed", "Init container %s: %v", ic.Name, err)
+
 			return fmt.Errorf("init container %s failed: %w", ic.Name, err)
 		}
+
 		g.Logger.Debug("sync: step3 init container done", "uid", uid, "pod", pod.Name, "container", ic.Name)
 	}
 
@@ -219,19 +235,31 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
 
-		state := g.batchWatcher.ContainerState(uid, c.Name)
+		// ONLY skip if we are actually promoted and running.
+		// If we are still in the initial sync, we must verify the container ourselves.
+		if g.store.PodPhase(uid) == corev1.PodRunning {
 
-		// If systemd already knows about it, skip. Let the BatchWatcher handle its lifecycle.
-		if state == perigeos.StateRunning || state == perigeos.StateExited || state == perigeos.StateFailed {
-			g.Logger.Debug("sync: step4 container already known to systemd, skipping", "uid", uid, "pod", pod.Name, "container", c.Name, "state", state)
-			continue
+			state := g.batchWatcher.ContainerState(uid, c.Name)
+
+			// If systemd already knows about it, skip. Let the BatchWatcher handle its lifecycle.
+			if state == perigeos.StateRunning ||
+				state == perigeos.StateExited ||
+				state == perigeos.StateFailed {
+				g.Logger.Debug("sync: step4 container already known to systemd, skipping", "uid", uid, "pod", pod.Name, "container", c.Name, "state", state)
+
+				continue
+			}
 		}
 
 		g.Logger.Debug("sync: step4 launching container", "uid", uid, "pod", pod.Name, "container", c.Name)
+
 		err := g.launchContainer(ctx, pod, c, uid, netPath, podIP, pullCache, runtimeProfiles, false)
 		if err != nil {
 			g.Logger.Warn("sync: step4 container failed to start", "uid", uid, "pod", pod.Name, "container", c.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "StartFailed", "Container %s: %v", c.Name, err)
+
+			return fmt.Errorf("app container %s failed: %w", c.Name, err)
+
 		} else {
 			g.Logger.Debug("sync: step4 container started", "uid", uid, "pod", pod.Name, "container", c.Name)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Created", "Created container %s", c.Name)
@@ -373,15 +401,21 @@ func (g *Gambit) launchContainer(
 	}
 
 	// 4. Start the Machine
+	// Ensure any stale fragment from a previous failed attempt is cleared
+	// TODO: make a new method
+	// _ = g.Runtime.ResetUnit(ctx, uid, c.Name)
+
 	if profile.RunAsUser != nil {
 		if isPrivileged(c) {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "UserIdentity",
 				"Container %s: running as uid %d (privileged, no userns)", c.Name, *profile.RunAsUser)
+
 		} else {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "UserIdentity",
 				"Container %s: running as uid %d via userns shim", c.Name, *profile.RunAsUser)
 		}
 	}
+
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		// Immediately clean up the mount if systemd rejects the Run request
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
@@ -665,6 +699,7 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 
 			case perigeos.StateExited:
 				if isInit {
+					// Init containers are successful if they finish (Exit 0)
 					g.Logger.Debug("waitForContainer: init container finished", "uid", uid, "container", containerName)
 					return nil
 				}
@@ -672,10 +707,6 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 				return fmt.Errorf("app container %s exited prematurely", containerName)
 
 			case perigeos.StateFailed:
-				if isInit {
-					return nil // Init containers are allowed to finish
-				}
-
 				// Startup failure (e.g. nspawn refused stale unix-export mount).
 				// Don't call MakeSharedMounts on a dead container.
 				g.Logger.Warn("waitForContainer: container failed on startup", "uid", uid, "container", containerName)

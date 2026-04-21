@@ -435,6 +435,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			if _, retryErr := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); retryErr != nil {
 				return fmt.Errorf("failed to create machine unit (after reset retry): %w", retryErr)
 			}
+
 		} else {
 			return fmt.Errorf("failed to create machine unit: %w", err)
 		}

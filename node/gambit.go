@@ -373,7 +373,7 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 
 	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
 	// so HydrateFromRuntime knows not to resurrect them.
-	uid := string(pod.UID)
+	uid = string(pod.UID)
 	podIP := g.store.PodIP(uid)
 	counts := g.store.RestartCounts(uid)
 	backoffs := g.store.RestartBackoffs(uid)

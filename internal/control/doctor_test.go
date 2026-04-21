@@ -74,6 +74,9 @@ func (r *doctorMockRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bo
 func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
 	return true
 }
+func (r *doctorMockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
 
 // --- Mock Network ---
 

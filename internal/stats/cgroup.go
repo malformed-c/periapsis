@@ -87,7 +87,7 @@ func ReadContainerCPU(pawnName, podUID, containerName string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return usageUsec * 1000, nil // µs → ns
+	return usageUsec * 1000, nil // µs -> ns
 }
 
 // ReadContainerMemory reads memory stats for a container cgroup.

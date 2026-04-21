@@ -229,7 +229,7 @@ func (h *testHarness) injectViaHydrate() {
 // --- Snapshot helpers ---
 
 type stateSnapshot struct {
-	gambitUIDs  map[string]string // uid → ns/name
+	gambitUIDs  map[string]string // uid -> ns/name
 	systemdUIDs map[string]bool
 	diskUIDs    map[string]bool
 }

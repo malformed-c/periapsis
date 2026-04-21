@@ -154,12 +154,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		g.Logger.Debug("sync: step1 CNI ready", "uid", uid, "pod", pod.Name, "ip", podIP, "netPath", netPath)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkReady", "CNI network configured, podIP=%s", podIP)
 		g.store.PromoteRunning(uid, pod, podIP)
-		// Push ContainerCreating immediately so Kubernetes learns the pod IP
-		// even if container launch or waitForContainer stalls. The BatchWatcher
-		// will overwrite this with accurate Running/ready status once containers
-		// are observed. Called here (right after CNI), not at the end of this
-		// function, so a D-Bus hang in waitForContainer can't prevent the push.
-		g.pushContainerCreatingStatus(pod, podIP)
+
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
 		g.Logger.Debug("sync: step1 resuming, network already exists", "uid", uid, "pod", pod.Name, "ip", podIP, "netPath", netPath)
@@ -170,7 +165,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// This must happen after PromoteRunning makes the pod visible to the
 	// BatchWatcher - otherwise a D-Bus "running" event triggers a poll
 	// that sees no ProbeState, and IsContainerReady defaults to true,
-	// seeding prevReady=true and suppressing the Ready=false→true transition.
+	// seeding prevReady=true and suppressing the Ready=false->true transition.
 	// Placed here (between network setup and container launch) so it runs
 	// on both first creation and retry-after-failure.
 	g.store.InitRestartState(pod)
@@ -408,7 +403,7 @@ func (g *Gambit) launchContainer(
 			return fmt.Errorf("init container exited with error")
 		}
 	} else {
-		if err := g.waitForContainer(ctx, uid, c.Name, machineStartTimeout); err != nil {
+		if err := g.waitForContainer(ctx, uid, c.Name, isInit, machineStartTimeout); err != nil {
 			return fmt.Errorf("waitForContainer: %w", err)
 		}
 
@@ -640,9 +635,10 @@ func isPrivileged(c *corev1.Container) bool {
 		*c.SecurityContext.Privileged
 }
 
-func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string, timeout time.Duration) error {
+func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string, isInit bool, timeout time.Duration) error {
 	g.Logger.Debug("waitForContainer: enter", "uid", uid, "container", containerName, "timeout", timeout)
 	deadline := time.Now().Add(timeout)
+
 	for time.Now().Before(deadline) {
 		// Use a short per-call timeout so a hung D-Bus connection doesn't
 		// block the whole loop. Without this, a single stalled
@@ -651,16 +647,19 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 		pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		state, err := g.Runtime.MachineStatus(pollCtx, uid, containerName)
 		cancel()
+
 		if err != nil {
 			g.Logger.Debug("waitForContainer: MachineStatus error, retrying",
 				"uid", uid, "container", containerName, "err", err,
 				"remaining", time.Until(deadline).Round(time.Second))
+
 		} else {
 			g.Logger.Debug("waitForContainer: poll",
 				"uid", uid, "container", containerName, "state", state,
 				"remaining", time.Until(deadline).Round(time.Second))
+
 			switch state {
-			case perigeos.StateRunning, perigeos.StateExited:
+			case perigeos.StateRunning:
 				g.Logger.Debug("waitForContainer: ready", "uid", uid, "container", containerName, "state", state)
 				return nil
 
@@ -680,17 +679,21 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 				// Startup failure (e.g. nspawn refused stale unix-export mount).
 				// Don't call MakeSharedMounts on a dead container.
 				g.Logger.Warn("waitForContainer: container failed on startup", "uid", uid, "container", containerName)
-				return fmt.Errorf("container %s/%s failed on startup", uid, containerName)
+				return fmt.Errorf("app container %s/%s failed on startup", uid, containerName)
 			}
 		}
+
 		select {
 		case <-ctx.Done():
 			g.Logger.Debug("waitForContainer: context cancelled", "uid", uid, "container", containerName)
 			return ctx.Err()
+
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+
 	g.Logger.Warn("waitForContainer: timed out", "uid", uid, "container", containerName, "timeout", timeout)
+
 	return fmt.Errorf("container %s/%s did not become running within %s", uid, containerName, timeout)
 }
 

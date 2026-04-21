@@ -11,7 +11,7 @@ const TARGET = __ENV.TARGET || "http://10.43.48.129";
 
 export const options = {
   scenarios: {
-    // Ramp: gentle start → full load → sustained → cool down
+    // Ramp: gentle start -> full load -> sustained -> cool down
     ramp: {
       executor: "ramping-vus",
       startVUs: 0,

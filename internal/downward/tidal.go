@@ -45,7 +45,7 @@ func (t *Tidal) SetAPIServer(host, port string) {
 func (t *Tidal) ResolveEnv(pod *corev1.Pod, container *corev1.Container, podIP string) []string {
 	// Use ordered key list + map so overrides replace spec values in-place
 	// while preserving insertion order for non-overridden keys.
-	seen := make(map[string]int) // key → index in resolved
+	seen := make(map[string]int) // key -> index in resolved
 	var resolved []string
 
 	set := func(key, val string) {

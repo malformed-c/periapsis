@@ -18,10 +18,10 @@ package horizon
 //     to avoid clobbering a replacement pod
 //
 // Effects handled here (k8s API only):
-//   - UpdateStatus    → GET + UpdateStatus (with UID guard and retry)
-//   - RestartContainer → callback into Gambit
-//   - ResetUnit        → callback into runtime
-//   - RecordEvent      → Kubernetes EventRecorder
+//   - UpdateStatus    -> GET + UpdateStatus (with UID guard and retry)
+//   - RestartContainer -> callback into Gambit
+//   - ResetUnit        -> callback into runtime
+//   - RecordEvent      -> Kubernetes EventRecorder
 //
 // Effects NOT handled here (local state, routed via Syzygy):
 //   - SetPodPhase, PersistPodState, InitRestartState

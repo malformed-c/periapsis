@@ -24,12 +24,12 @@ func TestComputeUIDBASE(t *testing.T) {
 		t.Fatalf("UIDBASE %d exceeds max slot", base)
 	}
 
-	// Deterministic: same input → same output.
+	// Deterministic: same input -> same output.
 	if got := computeUIDBASE("test-pod-uid"); got != base {
 		t.Fatalf("non-deterministic: got %d then %d", base, got)
 	}
 
-	// Different input → likely different output (not guaranteed but extremely likely).
+	// Different input -> likely different output (not guaranteed but extremely likely).
 	other := computeUIDBASE("other-pod-uid")
 	if other == base {
 		t.Log("hash collision (acceptable but unlikely)")

@@ -77,7 +77,7 @@ CIDR allocation needs care - different clusters must not overlap pod CIDRs. Eith
 │  ┌------------------------------------------------------┐   │
 │  │           Periapsis Host Daemon (PID 1-ish)          │   │
 │  │                                                      │   │
-│  │   systemd DBus ←→ nspawn machines                    │   │
+│  │   systemd DBus ←-> nspawn machines                    │   │
 │  │   OCI image cache (shared)                           │   │
 │  │   cgroup slice management                            │   │
 │  │   Constellation agent lifecycle                      │   │

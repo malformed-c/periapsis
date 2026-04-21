@@ -274,15 +274,15 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	// RecordEvent effects flow back through Horizon.
 	//
 	// Substates that Reduce handles:
-	//   running, failed, start-pre, start, start-post  → phase transitions + Started event
-	//   stop-sigterm, stop-watchdog                    → Killing/SIGTERM event
-	//   stop-sigkill, stop-kill                        → Killing/SIGKILL event
-	//   dead, others                                   → ignored by Reduce (default case)
+	//   running, failed, start-pre, start, start-post  -> phase transitions + Started event
+	//   stop-sigterm, stop-watchdog                    -> Killing/SIGTERM event
+	//   stop-sigkill, stop-kill                        -> Killing/SIGKILL event
+	//   dead, others                                   -> ignored by Reduce (default case)
 	if bw.deps.SendFact != nil {
 		bw.deps.SendFact(types.NewUnitFact(uid, ev.UnitName, ev.SubState, 0))
 	}
 
-	// Map substate → MachineState for the local stateCache.
+	// Map substate -> MachineState for the local stateCache.
 	// "dead" and stop-* substates are intentionally not cached -
 	// the ticker poll reconciles them within containerWatchPoll.
 	var state perigeos.MachineState
@@ -604,7 +604,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 
 		// If the container appears exited but was never observed running,
 		// it may be in a brief inactive/dead state during unit startup
-		// (systemd transitions through inactive→active for transient units,
+		// (systemd transitions through inactive->active for transient units,
 		// and ExecMainStatus isn't updated until after the unit settles).
 		//
 		// However, if the machine existed in ListManagedMachines with exit
@@ -686,8 +686,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 				allExited = false
 				anyRestarting = true
 			}
-			// OnFailure + exit 0 → don't restart.
-			// Never → don't restart.
+			// OnFailure + exit 0 -> don't restart.
+			// Never -> don't restart.
 		}
 	}
 
@@ -871,9 +871,9 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 
 // makeStateLookup returns a stateLookup function for buildPodStatus that
 // correctly handles containers missing from ListManagedMachines:
-//   - restarting → StateFailed (produces CrashLoopBackOff)
-//   - previously seen running → StateExited (produces Completed)
-//   - otherwise → StateUnknown (produces ContainerCreating)
+//   - restarting -> StateFailed (produces CrashLoopBackOff)
+//   - previously seen running -> StateExited (produces Completed)
+//   - otherwise -> StateUnknown (produces ContainerCreating)
 func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineState) func(uid, containerName string) perigeos.MachineState {
 	return func(uid, containerName string) perigeos.MachineState {
 		key := uid + "/" + containerName
@@ -892,7 +892,7 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 		// Just read the map directly.
 
 		seen := bw.seenRunning[key]
-		bw.pollMu.Unlock()
+
 		if seen {
 			return perigeos.StateExited
 		}

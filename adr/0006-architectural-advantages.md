@@ -5,7 +5,7 @@
 
 ## Context
 
-Perigeos replaces the kubelet → CRI → containerd → runc stack with a direct systemd-nspawn model. This isn't just a different runtime - it removes architectural constraints that are baked into the standard Kubernetes data plane. Several long-standing Kubernetes pain points are fixable not because of cleverer code, but because the intermediary layers (CRI, containerd, shim) that prevent the fixes are absent.
+Perigeos replaces the kubelet -> CRI -> containerd -> runc stack with a direct systemd-nspawn model. This isn't just a different runtime - it removes architectural constraints that are baked into the standard Kubernetes data plane. Several long-standing Kubernetes pain points are fixable not because of cleverer code, but because the intermediary layers (CRI, containerd, shim) that prevent the fixes are absent.
 
 This ADR catalogs improvements that the architecture uniquely enables. Items are grouped by priority: high-value differentiators first, then incremental wins. Each item notes what blocks it in standard Kubernetes and why perigeos can do it.
 
@@ -31,7 +31,7 @@ This ADR catalogs improvements that the architecture uniquely enables. Items are
 
 **Problem in standard Kubernetes:** Kubelet implements ConfigMap/Secret volumes as atomic symlink swaps with a polling interval (default 60 seconds, configurable down to 1 second at the cost of API server load). Updates are delayed by up to one interval. There is no delivery guarantee - the pod doesn't know when the swap happened and gets no inotify event from the symlink swap itself (only from the target directory change, which some runtimes handle inconsistently).
 
-**Why perigeos can fix it:** Perigeos controls the overlayfs mount and the volume setup. ConfigMap volumes can be implemented as a FUSE filesystem that serves content directly from an API server watch stream. The flow becomes: ConfigMap update hits etcd → watch event fires → FUSE serves new content → inotify fires in the container on the actual file. Propagation latency drops from 60 seconds to watch latency (typically sub-second). Pods that `inotify` on their config files see changes immediately.
+**Why perigeos can fix it:** Perigeos controls the overlayfs mount and the volume setup. ConfigMap volumes can be implemented as a FUSE filesystem that serves content directly from an API server watch stream. The flow becomes: ConfigMap update hits etcd -> watch event fires -> FUSE serves new content -> inotify fires in the container on the actual file. Propagation latency drops from 60 seconds to watch latency (typically sub-second). Pods that `inotify` on their config files see changes immediately.
 
 **Implementation path:** New volume driver in `internal/volume` that mounts a FUSE filesystem for ConfigMap/Secret volumes. The FUSE process watches the relevant object via the existing informer infrastructure. Standard overlayfs-backed volumes stay as the default; FUSE mode is opt-in via an annotation (`periapsis.io/volume-mode: watch`) or global config.
 
@@ -39,9 +39,9 @@ This ADR catalogs improvements that the architecture uniquely enables. Items are
 
 ### Reduced startup hop count
 
-**Problem in standard Kubernetes:** Pod startup path: kubelet → CRI gRPC → containerd → containerd-shim-runc-v2 → runc → container PID 1. Four process hops and two IPC boundaries (CRI socket, shim ttrpc). Each hop adds latency and failure modes.
+**Problem in standard Kubernetes:** Pod startup path: kubelet -> CRI gRPC -> containerd -> containerd-shim-runc-v2 -> runc -> container PID 1. Four process hops and two IPC boundaries (CRI socket, shim ttrpc). Each hop adds latency and failure modes.
 
-**Why perigeos can fix it:** Perigeos startup path: Gambit → DBus call → systemd-nspawn → container PID 1. Two hops, one IPC boundary (DBus). The systemd service manager is already running (PID 1), so there's no daemon to start or connect to. Combined with lazy image pulling, cold-start pod latency can be an order of magnitude lower than containerd.
+**Why perigeos can fix it:** Perigeos startup path: Gambit -> DBus call -> systemd-nspawn -> container PID 1. Two hops, one IPC boundary (DBus). The systemd service manager is already running (PID 1), so there's no daemon to start or connect to. Combined with lazy image pulling, cold-start pod latency can be an order of magnitude lower than containerd.
 
 **No additional implementation needed** - this is already how perigeos works. Worth measuring and publishing benchmarks against containerd cold-start times.
 
@@ -55,7 +55,7 @@ This ADR catalogs improvements that the architecture uniquely enables. Items are
 
 ### Structured logging via journal
 
-**Problem in standard Kubernetes:** `kubectl logs` reads from a log file that the container runtime writes. The path involves three symlinks: `/var/log/containers/<pod>.log` → `/var/log/pods/<pod>/<container>/0.log` → runtime log file. Log rotation is the runtime's responsibility (containerd has separate rotation config from kubelet). `--previous` depends on the runtime keeping the last rotated file. `--since-time` scans the file for timestamps because there's no time index.
+**Problem in standard Kubernetes:** `kubectl logs` reads from a log file that the container runtime writes. The path involves three symlinks: `/var/log/containers/<pod>.log` -> `/var/log/pods/<pod>/<container>/0.log` -> runtime log file. Log rotation is the runtime's responsibility (containerd has separate rotation config from kubelet). `--previous` depends on the runtime keeping the last rotated file. `--since-time` scans the file for timestamps because there's no time index.
 
 **Why perigeos can fix it:** Container stdout/stderr goes to the systemd journal via `SyslogIdentifier`. The journal provides structured metadata (unit name, invocation ID), built-in size-based rotation, and cursor-based streaming with native time indexing. `--since-time` becomes a journal cursor seek instead of a file scan. `--previous` is an invocation ID lookup.
 

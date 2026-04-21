@@ -16,7 +16,7 @@ type ipPool struct {
 	base  uint32            // network address as uint32
 	next  uint32            // next host offset to try (starts at 2)
 	max   uint32            // last valid host offset
-	inUse map[uint32]string // offset → podUID
+	inUse map[uint32]string // offset -> podUID
 }
 
 func newIPPool(cidr string) (*ipPool, error) {

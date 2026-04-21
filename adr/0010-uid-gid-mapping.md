@@ -21,8 +21,8 @@ transient units.
 
 Periapsis runs containers via two runtime paths:
 
-1. **nspawn path** (`internal/runtime/systemd/runtime.go` → `RunMachine`): Full container via `systemd-nspawn`
-2. **chroot path** (`internal/runtime/systemd/program.go` → `runProgram`): Transient systemd service with `RootDirectory=` for host-PID workloads (CNI agents, kubelet plugins)
+1. **nspawn path** (`internal/runtime/systemd/runtime.go` -> `RunMachine`): Full container via `systemd-nspawn`
+2. **chroot path** (`internal/runtime/systemd/program.go` -> `runProgram`): Transient systemd service with `RootDirectory=` for host-PID workloads (CNI agents, kubelet plugins)
 
 ### The userns + netns ordering problem
 
@@ -50,19 +50,19 @@ C shim (`cmd/userns-shim/main.c`) as the container entrypoint:
 #### Protocol
 
 ```
-nspawn starts → shim is PID 1 (already in CNI netns)
+nspawn starts -> shim is PID 1 (already in CNI netns)
   ↓
 shim calls unshare(CLONE_NEWUSER)
   ↓
-shim writes "1\n" to /run/userns/ready  (FIFO → host)
+shim writes "1\n" to /run/userns/ready  (FIFO -> host)
   ↓
 perigeos reads ready FIFO, finds shim's host PID via machined
   ↓
 perigeos writes /proc/<pid>/uid_map and /proc/<pid>/gid_map
   ↓
-perigeos writes "<uid>:<gid>\n" to /run/userns/gate  (FIFO → shim)
+perigeos writes "<uid>:<gid>\n" to /run/userns/gate  (FIFO -> shim)
   ↓
-shim parses target, calls setgroups(0,NULL) → setgid() → setuid()
+shim parses target, calls setgroups(0,NULL) -> setgid() -> setuid()
   ↓
 shim exec()s the real workload - no lingering wrapper process
 ```
@@ -123,7 +123,7 @@ No user namespace available via `RootDirectory=`. Instead:
 - `usernsShimExists()` - checks shim binary at install path
 - `setupUserNSFIFOs(podUID, containerName)` - creates per-container FIFO dir with ready/gate
 - `cleanupUserNSFIFOs(podUID, containerName)` - removes FIFO dir
-- `completeUserNSSetup(fifoDir, machineName, podUID, targetUID, targetGID)` - goroutine: waits on ready FIFO → writes uid_map/gid_map via `/proc/<pid>/` → sends uid:gid via gate FIFO
+- `completeUserNSSetup(fifoDir, machineName, podUID, targetUID, targetGID)` - goroutine: waits on ready FIFO -> writes uid_map/gid_map via `/proc/<pid>/` -> sends uid:gid via gate FIFO
 - `prepareUserIdentity(rootfs, runAsUser, runAsGroup, logger)` - injects passwd/group entries, creates home dir
 
 ### RunMachine wiring (`runtime.go`)

@@ -216,7 +216,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	}
 
 	// Step 3: Write uid_map and gid_map.
-	// Map: inside 0-65535 → host UIDBASE to UIDBASE+65535.
+	// Map: inside 0-65535 -> host UIDBASE to UIDBASE+65535.
 	// The shim (host uid 0) is unmapped (65534) in the new userns until
 	// it calls setuid() to adopt the target identity.
 	uidbase := computeUIDBASE(podUID)

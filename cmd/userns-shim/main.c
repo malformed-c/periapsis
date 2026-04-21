@@ -99,7 +99,7 @@ int main(int argc, char *argv[]) {
   /*
    * Adopt the mapped identity. Host wrote setgroups "deny" so
    * supplementary groups cannot be re-added.
-   * Order: gid → uid. Once uid is non-zero we lose CAP_SETGID.
+   * Order: gid -> uid. Once uid is non-zero we lose CAP_SETGID.
    */
   if (setgid(target_gid) < 0)
     die("setgid");

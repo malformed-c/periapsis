@@ -23,7 +23,7 @@ func TestBuildCNIConfig_NilRaw_NoSocket_ReturnsNil(t *testing.T) {
 }
 
 func TestBuildCNIConfig_ExplicitBlock_Defaults(t *testing.T) {
-	raw := &RawCNIConfig{} // all empty → should fill defaults
+	raw := &RawCNIConfig{} // all empty -> should fill defaults
 	got := buildCNIConfig(raw)
 	if got == nil {
 		t.Fatal("expected non-nil CNIConfig for explicit (empty) block")
@@ -289,7 +289,7 @@ func TestProcess_Ports_ManualPortIsReserved(t *testing.T) {
 	seen := make(map[int]string)
 	for _, p := range cfg.Pawns {
 		if existing, dup := seen[p.Port]; dup {
-			t.Errorf("port collision: %d → %q and %q", p.Port, existing, p.Name)
+			t.Errorf("port collision: %d -> %q and %q", p.Port, existing, p.Name)
 		}
 		seen[p.Port] = p.Name
 	}

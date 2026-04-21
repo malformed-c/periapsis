@@ -45,7 +45,7 @@ set +e
 kubectl $KC exec test-exec-e2e -- /bin/sh -c 'exit 42' >/dev/null 2>&1
 rc=$?
 set -e
-if [[ "$rc" == "42" ]]; then pass "exit 42 → rc=42"; else fail "exit 42" "got rc=$rc"; fi
+if [[ "$rc" == "42" ]]; then pass "exit 42 -> rc=42"; else fail "exit 42" "got rc=$rc"; fi
 
 # --- Test 4: exit code 0 ---
 echo "[4] exit code 0"
@@ -53,7 +53,7 @@ set +e
 kubectl $KC exec test-exec-e2e -- /bin/sh -c 'exit 0' >/dev/null 2>&1
 rc=$?
 set -e
-if [[ "$rc" == "0" ]]; then pass "exit 0 → rc=0"; else fail "exit 0" "got rc=$rc"; fi
+if [[ "$rc" == "0" ]]; then pass "exit 0 -> rc=0"; else fail "exit 0" "got rc=$rc"; fi
 
 # --- Test 5: stdin piping ---
 echo "[5] stdin piping"

@@ -1,5 +1,5 @@
 // Package volume resolves Kubernetes pod volume specs + container volume mounts
-// into concrete host→container bind mounts for systemd-nspawn.
+// into concrete host->container bind mounts for systemd-nspawn.
 //
 // Supported volume types:
 //   - hostPath  - direct bind mount of a host path
@@ -73,7 +73,7 @@ func NewResolver(
 // Resolve returns the BindMounts for the given container within a pod.
 // It creates any necessary host-side directories/files.
 func (r *Resolver) Resolve(ctx context.Context, pod *corev1.Pod, container *corev1.Container) ([]perigeos.BindMount, error) {
-	// Build a map from volume name → volume spec for quick lookup.
+	// Build a map from volume name -> volume spec for quick lookup.
 	volByName := make(map[string]*corev1.Volume, len(pod.Spec.Volumes))
 	for i := range pod.Spec.Volumes {
 		volByName[pod.Spec.Volumes[i].Name] = &pod.Spec.Volumes[i]

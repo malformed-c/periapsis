@@ -49,8 +49,8 @@ type PodStore struct {
 	// It is ONLY locked when pods are added or removed, never during localized mutations.
 	registryMu  sync.RWMutex
 	pods        map[string]*podState
-	nameIndex   map[string]string         // "namespace/name" → UID
-	completed   map[string]completedEntry // "namespace/name" → entry (log fallback)
+	nameIndex   map[string]string         // "namespace/name" -> UID
+	completed   map[string]completedEntry // "namespace/name" -> entry (log fallback)
 	completedMu sync.Mutex                // separate lock - never held with registryMu
 
 	// atomic global counters for instant 0-lock queries

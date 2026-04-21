@@ -2,7 +2,7 @@ package foci
 
 // Reduce is the pure state machine transition function.
 //
-//   Reduce(state, fact) → (newState, effects)
+//   Reduce(state, fact) -> (newState, effects)
 //
 // Invariants:
 //   - No side effects - no I/O, no API calls, no shared mutation

@@ -83,7 +83,7 @@ type Server struct {
 
 	mu      sync.RWMutex
 	gambits []*node.Gambit
-	queues  map[string]QueueProvider // pawn name → PodController
+	queues  map[string]QueueProvider // pawn name -> PodController
 
 	imageLister ImageLister // optional; set via SetImageLister
 
@@ -101,8 +101,8 @@ func New(socketPath string, cfg *config.PerigeosConfig, logger *slog.Logger) *Se
 		logger:     logger,
 	}
 	// Build the unified method table.
-	// tcpAllowed=true  → available on both unix socket and TCP+mTLS.
-	// tcpAllowed=false → unix socket only (root-only, local operations).
+	// tcpAllowed=true  -> available on both unix socket and TCP+mTLS.
+	// tcpAllowed=false -> unix socket only (root-only, local operations).
 	// Adding a method: one entry here, one Client method. That's it.
 	s.methods = map[string]methodEntry{
 		"Status":  {func(ctx context.Context) any { return s.buildStatus() }, true},
@@ -258,7 +258,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 			continue
 		}
 
-		// Strip interface prefix: "io.perigeos.Manager.Status" → "Status"
+		// Strip interface prefix: "io.perigeos.Manager.Status" -> "Status"
 		method := req.Method
 		if idx := strings.LastIndex(method, "."); idx >= 0 {
 			method = method[idx+1:]
@@ -645,7 +645,7 @@ func countStaleSlices(activePawns map[string]struct{}) int {
 		if !e.IsDir() || !strings.HasPrefix(name, "perigeos-") || !strings.HasSuffix(name, ".slice") {
 			continue
 		}
-		// Extract pawn name: perigeos-compute-00.slice → compute-00
+		// Extract pawn name: perigeos-compute-00.slice -> compute-00
 		pawn := strings.TrimPrefix(name, "perigeos-")
 		pawn = strings.TrimSuffix(pawn, ".slice")
 		// Skip parent slices (e.g. "compute" which is parent of "compute-00")

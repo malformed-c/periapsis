@@ -168,7 +168,7 @@ func (ps *peerSelector) markBad(ep string) {
 }
 
 // peersWithInflight queries all peers for their in-flight layer hashes and
-// returns a map of hash → endpoint for hashes that match the given set.
+// returns a map of hash -> endpoint for hashes that match the given set.
 // Used to discover which peer is pulling a layer we also want, so we can
 // wait for it instead of pulling from upstream independently.
 func (im *ImageManager) peersWithInflight(ctx context.Context, wantHashes map[string]bool) map[string]string {
@@ -202,7 +202,7 @@ func (im *ImageManager) peersWithInflight(ctx context.Context, wantHashes map[st
 		}()
 	}
 
-	// hash → first peer that has it inflight
+	// hash -> first peer that has it inflight
 	found := make(map[string]string)
 	for i := 0; i < queried; i++ {
 		r := <-ch

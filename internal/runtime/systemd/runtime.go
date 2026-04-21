@@ -261,8 +261,8 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// --bind=<host>:<container> for rw, --bind-ro=<host>:<container> for ro.
 	// nspawn auto-creates destination directories inside the container rootfs.
 	//
-	// By default, nspawn uses MS_SLAVE propagation (host→container visible,
-	// container→host NOT visible). For mounts with Propagation: "Bidirectional",
+	// By default, nspawn uses MS_SLAVE propagation (host->container visible,
+	// container->host NOT visible). For mounts with Propagation: "Bidirectional",
 	// bidirectional (MS_SHARED) propagation is enabled via makeSharedMounts,
 	// which runs after the unit starts.
 	for _, bm := range cfg.BindMounts {
@@ -343,7 +343,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	}
 
 	// Set TimeoutStopSec from the pod's terminationGracePeriodSeconds so
-	// systemd's SIGTERM → wait → SIGKILL sequence matches the pod spec.
+	// systemd's SIGTERM -> wait -> SIGKILL sequence matches the pod spec.
 	if cfg.TerminationGracePeriodSeconds > 0 {
 		properties = append(properties, dbus.Property{
 			Name:  "TimeoutStopUSec",
@@ -1016,7 +1016,7 @@ func (s *SystemdRuntime) AttachContainer(
 // container's stdin; reads from the container's stdout come back on
 // attach.Stdout.
 func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, attach api.AttachIO) error {
-	// Relay stdout: PTY master → attach.Stdout
+	// Relay stdout: PTY master -> attach.Stdout
 	done := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 4096)
@@ -1032,7 +1032,7 @@ func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, at
 		}
 	}()
 
-	// Relay stdin: attach.Stdin → PTY master
+	// Relay stdin: attach.Stdin -> PTY master
 	if attach.Stdin() != nil {
 		go func() {
 			buf := make([]byte, 4096)
@@ -1067,8 +1067,8 @@ func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, at
 	return nil
 }
 
-// suppressSignalExit returns nil for exits caused by signals (e.g. Ctrl+C → 130,
-// Ctrl+\ → 131) so that normal interactive session termination isn't surfaced
+// suppressSignalExit returns nil for exits caused by signals (e.g. Ctrl+C -> 130,
+// Ctrl+\ -> 131) so that normal interactive session termination isn't surfaced
 // as an "Internal error occurred" to the user.
 func suppressSignalExit(err error) error {
 	if err == nil {

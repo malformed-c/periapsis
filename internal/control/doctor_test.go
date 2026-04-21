@@ -397,8 +397,8 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	//
 	// Revised plan:
 	//   gambit:  uid-a, uid-b, uid-c, uid-d
-	//   systemd: uid-a, uid-b, uid-orphan          → ghost=uid-c,uid-d; orphan=uid-orphan
-	//   disk:    uid-a, uid-b, uid-stale            → stale=uid-stale;   missing=uid-c,uid-d
+	//   systemd: uid-a, uid-b, uid-orphan          -> ghost=uid-c,uid-d; orphan=uid-orphan
+	//   disk:    uid-a, uid-b, uid-stale            -> stale=uid-stale;   missing=uid-c,uid-d
 
 	initial := []perigeos.PodMetadata{
 		{UID: "uid-a", Name: "pod-a", Namespace: "default"},

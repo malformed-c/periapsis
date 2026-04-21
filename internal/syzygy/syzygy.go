@@ -7,7 +7,7 @@ package syzygy
 //   Main goroutine (single-threaded):
 //     1. Receive Fact from inbox
 //     2. Look up PodState (zero-value if untracked)
-//     3. Call foci.Reduce(state, fact) → (newState, []Effect)
+//     3. Call foci.Reduce(state, fact) -> (newState, []Effect)
 //     4. Store newState in map
 //     5. Push each Effect into the effects channel (non-blocking)
 //

@@ -341,7 +341,7 @@ func TestBatchWatcher_MarkRunningRaceDetector(t *testing.T) {
 }
 
 // TestBatchWatcher_ReadinessTransitionPushed verifies that a readiness
-// probe transition (false → true) causes a status push even when the
+// probe transition (false -> true) causes a status push even when the
 // container's machine state doesn't change. This covers the prevReady
 // tracking path.
 func TestBatchWatcher_ReadinessTransitionPushed(t *testing.T) {
@@ -355,7 +355,7 @@ func TestBatchWatcher_ReadinessTransitionPushed(t *testing.T) {
 	store.InitRestartState(pod)
 	// InitRestartState defaults Ready=true when there's no readiness probe.
 	// Force it to false so the first poll seeds prevReady[key]=false and
-	// the subsequent false→true transition is detectable.
+	// the subsequent false->true transition is detectable.
 	store.UpdateProbeState(uid, "nginx", func(ps *ContainerProbeState) {
 		ps.Ready = false
 	})
@@ -380,7 +380,7 @@ func TestBatchWatcher_ReadinessTransitionPushed(t *testing.T) {
 		ps.Ready = true
 	})
 
-	// Second poll: readiness changed false→true, must trigger a push.
+	// Second poll: readiness changed false->true, must trigger a push.
 	bw.Poke()
 	got := waitNotify(t, notified, func(p *corev1.Pod) bool {
 		return string(p.UID) == uid &&

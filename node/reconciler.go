@@ -12,6 +12,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/network"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/volume"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	v1 "k8s.io/client-go/listers/core/v1"
 )
@@ -27,6 +28,11 @@ type PodTracker interface {
 	HasPod(uid string) bool
 	PodUIDs() map[string]string
 	EvictGhost(uid string)
+	// GetPodCopy returns a DeepCopy of the pod for the given uid, or nil if unknown.
+	// Used by the Reconciler to get authoritative namespace/name for CNI teardown
+	// rather than relying on systemd unit env vars which may be empty if the unit
+	// has already been collected.
+	GetPodCopy(uid string) *corev1.Pod
 }
 
 // Reconciler performs periodic drift correction between systemd's actual state
@@ -267,8 +273,26 @@ func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {
 	if err := r.runtime.StopMachine(ctx, m.UID, m.ContainerName); err != nil {
 		r.logger.Error("Reconciler: failed to stop machine", "uid", m.UID, "container", m.ContainerName, "err", err)
 	}
-	if err := r.network.Teardown(ctx, m.UID, m.Namespace, m.Name); err != nil {
-		r.logger.Error("Reconciler: failed to teardown network", "uid", m.UID, "err", err)
+
+	// Use authoritative namespace/name from PodStore when available.
+	// PodMetadata.Namespace and .Name come from readUnitEnv which reads
+	// PERIGEOS_META_* from the systemd unit's Environment property via D-Bus.
+	// Under load or after the unit is collected, that D-Bus call fails silently
+	// and returns empty strings. Cilium's CNI DEL then gets empty namespace/name,
+	// returns 404, and the lxc veth + endpoint state leak permanently.
+	namespace, name := m.Namespace, m.Name
+	if pod := r.tracker.GetPodCopy(m.UID); pod != nil {
+		namespace = pod.Namespace
+		name = pod.Name
+	}
+	if namespace == "" || name == "" {
+		r.logger.Warn("Reconciler: namespace/name missing for CNI teardown — lxc veth may leak",
+			"uid", m.UID, "namespace", namespace, "name", name,
+			"metaNamespace", m.Namespace, "metaName", m.Name)
+	}
+
+	if err := r.network.Teardown(ctx, m.UID, namespace, name); err != nil {
+		r.logger.Error("Reconciler: failed to teardown network", "uid", m.UID, "namespace", namespace, "name", name, "err", err)
 	}
 	if err := r.image.Unmount(m.UID + "-" + m.ContainerName); err != nil {
 		r.logger.Error("Reconciler: failed to unmount", "uid", m.UID, "container", m.ContainerName, "err", err)

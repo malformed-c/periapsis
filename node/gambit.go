@@ -95,6 +95,9 @@ type Gambit struct {
 	node *PawnNode
 }
 
+// Compile-time check that Gambit satisfies PodTracker.
+var _ PodTracker = (*Gambit)(nil)
+
 // creationHandle tracks an in-flight pod creation or a running watcher.
 // The cancel func signals the goroutine to stop; done is closed when it exits.
 type creationHandle struct {
@@ -305,6 +308,10 @@ func (g *Gambit) EvictGhost(uid string) {
 	g.store.EvictGhost(uid)
 	// Clean up persisted state so the ghost doesn't rehydrate on restart.
 	deletePodState(g.Config.BaseDir, g.Config.Name, uid)
+}
+
+func (g *Gambit) GetPodCopy(uid string) *corev1.Pod {
+	return g.store.GetPodCopy(uid)
 }
 
 func (g *Gambit) BuildNode() *corev1.Node {

@@ -6,6 +6,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/network"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/client-go/listers/core/v1"
 )
 
@@ -31,7 +32,8 @@ func (m *mockTracker) PodUIDs() map[string]string {
 	}
 	return uids
 }
-func (m *mockTracker) EvictGhost(uid string) { delete(m.hasPod, uid) }
+func (m *mockTracker) EvictGhost(uid string)          { delete(m.hasPod, uid) }
+func (m *mockTracker) GetPodCopy(_ string) *corev1.Pod { return nil }
 
 // TestReconciler wraps Reconciler with state-manipulation helpers.
 // Exported so package provider_test can use it.

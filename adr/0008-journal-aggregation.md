@@ -29,7 +29,7 @@ Each forwarded entry includes:
 - `container` - container name within the pod
 - `message` - log line
 - `timestamp` - journal realtime timestamp (microsecond precision)
-- `priority` - syslog priority (0–7)
+- `priority` - syslog priority (0-7)
 - `cursor` - journal cursor for resumption after reconnect
 
 ### Resumption

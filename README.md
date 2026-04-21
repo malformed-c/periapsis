@@ -90,7 +90,7 @@ Memory:  365 MiB        (engix99, daemon RSS ~220 KB/pod)
 L7 ingress via Envoy Gateway (hostNetwork DaemonSet on primary + control-plane nodes):
 
 - 1 M requests through Gateway API HTTPRoute, 4,869 rps, 0% errors
-- p95 = 134 ms, p99 = 151 ms - engix99 was at load average 100–200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
+- p95 = 134 ms, p99 = 151 ms - engix99 was at load average 100-200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
 
 See [docs/show-off.md](docs/show-off.md) for full results and comparison tables.
 

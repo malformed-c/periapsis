@@ -353,13 +353,16 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	// Create a snapshot of the pod right now
 	podCopy := pod.DeepCopy()
 
+	uid := string(pod.UID)
 	var caller string
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
 	g.Logger.Debug("notifyPodStatus",
+		"uid", uid,
 		"pod", pod.Name,
 		"phase", pod.Status.Phase,
+		"ip", pod.Status.PodIP,
 		"reason", pod.Status.Reason,
 		"containers", summarizeContainerStatuses(pod.Status.ContainerStatuses),
 		"caller", caller,

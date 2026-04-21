@@ -297,10 +297,15 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 		state = perigeos.StateCreating
 
 	default:
+		bw.logger.Debug("handleUnitEvent: ignoring substate",
+			"uid", uid, "container", containerName, "subState", ev.SubState)
 		return
 	}
 
 	key := uid + "/" + containerName
+
+	bw.logger.Debug("handleUnitEvent: substate mapped",
+		"uid", uid, "container", containerName, "subState", ev.SubState, "state", state, "isInit", isInit)
 
 	// Track seenRunning for BW's internal checkPod / makeStateLookup logic.
 	// (Syzygy tracks this independently via ContainerState.SeenRunning.)
@@ -317,7 +322,9 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	bw.stateCacheMu.Unlock()
 
 	if prev == state {
-		return // no change, skip poll trigger
+		bw.logger.Debug("handleUnitEvent: no state change, skipping poll",
+			"uid", uid, "container", containerName, "state", state)
+		return
 	}
 
 	// Trigger a full poll on transitions that affect pod phase.
@@ -325,17 +332,17 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 
 	if state == perigeos.StateRunning && !isInit {
 		bw.logger.Info("handleUnitEvent: triggering poll (app container Running)",
-			"pod", podName(pod), "container", containerName)
+			"uid", uid, "pod", podName(pod), "container", containerName)
 		bw.poll(ctx)
 
 	} else if state == perigeos.StateFailed {
 		bw.logger.Info("handleUnitEvent: triggering poll (container Failed)",
-			"pod", podName(pod), "container", containerName)
+			"uid", uid, "pod", podName(pod), "container", containerName)
 		bw.poll(ctx)
 
 	} else if state == perigeos.StateRunning && isInit {
 		bw.logger.Debug("handleUnitEvent: skipping poll (init container Running)",
-			"pod", podName(pod), "container", containerName)
+			"uid", uid, "pod", podName(pod), "container", containerName)
 	}
 }
 
@@ -515,8 +522,8 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
-			bw.logger.Info("Coalescer: skipping status push (phase filter)",
-				"pod", e.pod.Name, "storePhase", currentPhase)
+			bw.logger.Debug("Coalescer: skipping status push (phase filter)",
+				"uid", e.uid, "pod", e.pod.Name, "storePhase", currentPhase)
 			continue
 		}
 		// Fetch the current pod under lock rather than using e.pod from the
@@ -526,11 +533,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// current store state at push time.
 		currentPod := bw.deps.Store.GetPodCopy(e.uid)
 		if currentPod == nil {
-			continue // pod deleted mid-cycle
+			bw.logger.Debug("Coalescer: pod deleted mid-cycle, skipping", "uid", e.uid)
+			continue
 		}
 		status := bw.deps.BuildPodStatus(currentPod, stateLookup)
 		bw.logger.Info("Coalescer: pushing status",
-			"pod", currentPod.Name, "computedPhase", status.Phase,
+			"uid", e.uid, "pod", currentPod.Name, "computedPhase", status.Phase,
 			"ready", status.Conditions[0].Status,
 			"containers", len(status.ContainerStatuses))
 		status.DeepCopyInto(&currentPod.Status)
@@ -696,8 +704,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if currentPod != nil {
 			status := bw.deps.BuildPodStatus(currentPod, stateLookup)
 			if status.Phase == corev1.PodRunning {
-				bw.logger.Info("checkPod: eager status push",
-					"pod", currentPod.Name, "ready", status.Conditions[0].Status)
+				bw.logger.Info("checkPod: eager restart status push",
+					"uid", uid, "pod", currentPod.Name, "ready", status.Conditions[0].Status)
 				status.DeepCopyInto(&currentPod.Status)
 				bw.deps.NotifyStatus(currentPod)
 			}
@@ -715,7 +723,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	} else {
 		terminalPhase = corev1.PodFailed
 	}
-	bw.logger.Info("Setting terminal phase", "pod", pod.Name, "phase", terminalPhase, "allSucceeded", allSucceeded)
+	bw.logger.Info("checkPod: setting terminal phase",
+		"uid", uid, "pod", pod.Name, "phase", terminalPhase, "allSucceeded", allSucceeded)
 
 	// Build terminal status with a full buildPodStatus so restart counts,
 	// container states, and conditions are all consistent.
@@ -735,6 +744,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		status := bw.deps.BuildPodStatus(currentPod, stateLookup)
 		status.Phase = terminalPhase
 		status.DeepCopyInto(&currentPod.Status)
+		bw.logger.Info("checkPod: pushing terminal status",
+			"uid", uid, "pod", currentPod.Name, "phase", terminalPhase)
 		bw.deps.NotifyStatus(currentPod)
 	}
 
@@ -742,7 +753,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	// Without this, transient units accumulate in systemd's listing.
 	for _, c := range pod.Spec.Containers {
 		if err := bw.deps.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
-			bw.logger.Debug("ResetUnit failed (unit may already be collected)", "pod", pod.Name, "container", c.Name, "err", err)
+			bw.logger.Debug("ResetUnit failed (unit may already be collected)",
+				"uid", uid, "pod", pod.Name, "container", c.Name, "err", err)
 		}
 	}
 }

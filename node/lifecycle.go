@@ -403,7 +403,8 @@ func (g *Gambit) launchContainer(
 	// 4. Start the Machine
 	// Ensure any stale fragment from a previous failed attempt is cleared
 	// TODO: make a new method
-	// _ = g.Runtime.ResetUnit(ctx, uid, c.Name)
+	_ = g.Runtime.StopMachine(ctx, uid, c.Name)
+	_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
 	if profile.RunAsUser != nil {
 		if isPrivileged(c) {
@@ -419,6 +420,7 @@ func (g *Gambit) launchContainer(
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		// Immediately clean up the mount if systemd rejects the Run request
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 		return fmt.Errorf("RunMachine: %w", err)
 	}
@@ -438,6 +440,8 @@ func (g *Gambit) launchContainer(
 		}
 	} else {
 		if err := g.waitForContainer(ctx, uid, c.Name, isInit, machineStartTimeout); err != nil {
+			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
+			_ = g.Runtime.ResetUnit(context.Background(), uid, c.Name)
 			return fmt.Errorf("waitForContainer: %w", err)
 		}
 
@@ -673,6 +677,8 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 	g.Logger.Debug("waitForContainer: enter", "uid", uid, "container", containerName, "timeout", timeout)
 	deadline := time.Now().Add(timeout)
 
+	seenActive := false
+
 	for time.Now().Before(deadline) {
 		// Use a short per-call timeout so a hung D-Bus connection doesn't
 		// block the whole loop. Without this, a single stalled
@@ -692,6 +698,10 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 				"uid", uid, "container", containerName, "state", state,
 				"remaining", time.Until(deadline).Round(time.Second))
 
+			if state == perigeos.StateCreating || state == perigeos.StateRunning {
+				seenActive = true
+			}
+
 			switch state {
 			case perigeos.StateRunning:
 				g.Logger.Debug("waitForContainer: ready", "uid", uid, "container", containerName, "state", state)
@@ -702,6 +712,10 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 					// Init containers are successful if they finish (Exit 0)
 					g.Logger.Debug("waitForContainer: init container finished", "uid", uid, "container", containerName)
 					return nil
+				}
+				if !seenActive {
+					// Ignore initial 'dead' state of transient units before they activate
+					break
 				}
 				// App container exited before it could be considered "Running"
 				return fmt.Errorf("app container %s exited prematurely", containerName)

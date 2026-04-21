@@ -119,16 +119,16 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 			})
 
 			updated := s.store.ProbeState(uid, c.Name)
-		if updated != nil {
-			s.syzygy.Send(types.NewProbeFact(
-				uid, c.Name, "startup",
-				result == node.ProbeSuccess,
-				updated.StartupPassed,
-				updated.StartupPassed,
-				safeThreshold(c.StartupProbe.SuccessThreshold, 1),
-				safeThreshold(c.StartupProbe.FailureThreshold, 3),
-			))
-		}
+			if updated != nil {
+				s.syzygy.Send(types.NewProbeFact(
+					uid, c.Name, "startup",
+					result == node.ProbeSuccess,
+					updated.StartupPassed,
+					updated.StartupPassed,
+					safeThreshold(c.StartupProbe.SuccessThreshold, 1),
+					safeThreshold(c.StartupProbe.FailureThreshold, 3),
+				))
+			}
 
 			if restart {
 				s.logger.Warn("startup probe failed past threshold, needs restart",

@@ -663,7 +663,20 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 			case perigeos.StateRunning, perigeos.StateExited:
 				g.Logger.Debug("waitForContainer: ready", "uid", uid, "container", containerName, "state", state)
 				return nil
+
+			case perigeos.StateExited:
+				if isInit {
+					g.Logger.Debug("waitForContainer: init container finished", "uid", uid, "container", containerName)
+					return nil
+				}
+				// App container exited before it could be considered "Running"
+				return fmt.Errorf("app container %s exited prematurely", containerName)
+
 			case perigeos.StateFailed:
+				if isInit {
+					return nil // Init containers are allowed to finish
+				}
+
 				// Startup failure (e.g. nspawn refused stale unix-export mount).
 				// Don't call MakeSharedMounts on a dead container.
 				g.Logger.Warn("waitForContainer: container failed on startup", "uid", uid, "container", containerName)

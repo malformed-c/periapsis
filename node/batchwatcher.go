@@ -888,7 +888,9 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 		}
 		// Container was seen running but its unit is gone and it's not
 		// being restarted - it completed.
-		bw.pollMu.Lock()
+		// pollMu is already held by poll() (caller)
+		// Just read the map directly.
+
 		seen := bw.seenRunning[key]
 		bw.pollMu.Unlock()
 		if seen {

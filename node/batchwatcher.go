@@ -696,7 +696,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// CrashLoopBackOff status so kubectl sees it immediately rather
 		// than waiting for the coalescer (which may miss the window if
 		// the state transition and the next poll overlap).
-		// Only fires when maybeRestart was actually called this cycle —
+		// Only fires when maybeRestart was actually called this cycle -
 		// not for plain Running containers, which would cause a spurious
 		// push on every poll cycle and bypass the coalescer entirely.
 		stateLookup := bw.makeStateLookup(stateMap)

@@ -24,9 +24,18 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	// Pod is queued, waiting for a createSem slot - no machine exists yet.
 	// Return Pending so VK doesn't interpret NotFound as a missing pod.
+	// Include PodIP/PodIPs if CNI already ran (PromoteRunning may have fired
+	// before the BatchWatcher had a chance to push a status update, leaving a
+	// window where the store has a valid IP but the phase is still Pending).
 	phase := g.store.PodPhase(uid)
 	if phase == corev1.PodPending {
-		return &corev1.PodStatus{Phase: corev1.PodPending}, nil
+		ip := g.store.PodIP(uid)
+		status := &corev1.PodStatus{Phase: corev1.PodPending}
+		if ip != "" {
+			status.PodIP = ip
+			status.PodIPs = []corev1.PodIP{{IP: ip}}
+		}
+		return status, nil
 	}
 
 	// If the pod is in a terminal phase (set by BatchWatcher), return
@@ -185,10 +194,16 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 
 	ip := g.store.PodIP(uid)
 
+	podIPs := []corev1.PodIP{}
+	if ip != "" {
+		podIPs = []corev1.PodIP{{IP: ip}}
+	}
+
 	return &corev1.PodStatus{
 		Phase:     podPhase,
 		HostIP:    resolveNodeIP(g.Config),
 		PodIP:     ip,
+		PodIPs:    podIPs,
 		StartTime: pod.Status.StartTime,
 		Conditions: []corev1.PodCondition{{
 			Type:   corev1.PodReady,

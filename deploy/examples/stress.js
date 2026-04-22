@@ -1,10 +1,12 @@
 import http from "k6/http"
 import { check, sleep } from "k6"
 import { Rate } from "k6/metrics"
+import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.2/index.js"
 
 const errorRate = new Rate("errors")
 
-// Target: ClusterIP service (override with -e TARGET=...)
+// Target: ClusterIP service.
+// Override: k6 run -e TARGET=http://<clusterip> stress.js
 const TARGET = __ENV.TARGET || "http://10.43.48.129"
 
 export const options = {
@@ -13,12 +15,12 @@ export const options = {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "15s", target: 100 },
-        { duration: "30s", target: 500 },
-        { duration: "60s", target: 500 },
-        { duration: "30s", target: 1000 },
-        { duration: "60s", target: 1000 },
-        { duration: "15s", target: 0 },
+        { duration: "15s", target: 100  },  // warm up
+        { duration: "30s", target: 500  },  // ramp
+        { duration: "60s", target: 500  },  // sustain
+        { duration: "30s", target: 1000 },  // push
+        { duration: "60s", target: 1000 },  // sustain peak
+        { duration: "15s", target: 0    },  // cool down
       ],
     },
   },
@@ -27,6 +29,11 @@ export const options = {
     errors: ["rate<0.01"],
   },
 }
+
+// VU-local sets - each VU has its own JS context in k6.
+// Used for the unique-pod lower bound in handleSummary.
+const vuPods  = new Set()
+const vuPawns = new Set()
 
 export default function () {
   const res = http.get(TARGET, { timeout: "5s" })
@@ -37,19 +44,61 @@ export default function () {
     "has perigeos": (r) => r.body && r.body.includes("perigeos"),
   })
 
-  // Add 0 on success, 1 on failure so Rate = failures / total requests.
   errorRate.add(!ok)
 
-  if (res.status === 200 && res.body) {
+  if (ok && res.body) {
     const pawnMatch = res.body.match(/pawn<\/span><span class="value">([^<]+)<\/span>/)
-    if (pawnMatch) {
-      // Named checks per pawn accumulate across all VUs in k6's summary,
-      // giving a hit-count breakdown per node without custom metrics.
-      check(res, { [`pawn: ${pawnMatch[1].trim()}`]: () => true })
+    const podMatch  = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
+
+    if (pawnMatch && podMatch) {
+      const pawn = pawnMatch[1].trim()
+      const pod  = podMatch[1].trim()
+
+      // Named checks per pawn aggregate across all VUs and are accessible
+      // in handleSummary via data.metrics["checks{check:pawn: <n>}"].
+      check(res, { [`pawn: ${pawn}`]: () => true })
+
+      vuPods.add(pod)
+      vuPawns.add(pawn)
     } else {
       check(res, { "pawn: UNKNOWN": () => true })
     }
   }
 
   sleep(0.05)
+}
+
+export function handleSummary(data) {
+  const pawnHits = {}
+  let totalPawnHits = 0
+
+  Object.entries(data.metrics).forEach(([key, metric]) => {
+    const nameMatch = key.match(/^checks\{.*check:pawn: ([^,}]+)/)
+    if (!nameMatch) return
+    const pawn  = nameMatch[1].trim()
+    const count = metric.values?.passes ?? 0
+    pawnHits[pawn] = (pawnHits[pawn] || 0) + count
+    totalPawnHits += count
+  })
+
+  const sortedPawns = Object.entries(pawnHits).sort((a, b) => b[1] - a[1])
+
+  let report = `\n  █ CLUSTER LOAD DISTRIBUTION (direct ClusterIP)\n`
+  report += `    Unique pawns responding : ${sortedPawns.length}\n`
+  report += `    Unique pods (VU-1 view) : ${vuPods.size} (lower bound across ${vuPawns.size} pawns)\n\n`
+
+  if (sortedPawns.length > 0) {
+    report += `    PAWN HIT DISTRIBUTION:\n`
+    sortedPawns.forEach(([name, count]) => {
+      const pct = totalPawnHits > 0 ? ((count / totalPawnHits) * 100).toFixed(1) : "0.0"
+      const bar = "█".repeat(Math.round(parseFloat(pct) / 2))
+      report += `    ${name.padEnd(22)} ${bar.padEnd(50)} ${pct.padStart(5)}%  (${count} hits)\n`
+    })
+  } else {
+    report += `    No pawn data — body regex may not match or all requests failed.\n`
+  }
+
+  return {
+    stdout: textSummary(data, { indent: " ", enableColors: true }) + report,
+  }
 }

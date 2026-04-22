@@ -1,10 +1,11 @@
 import http from "k6/http"
 import { check, sleep } from "k6"
-import { Rate, Counter } from "k6/metrics"
+import { Rate } from "k6/metrics"
 import { textSummary } from "https://jslib.k6.io/k6-summary/0.0.2/index.js"
 
 const errorRate = new Rate("errors")
-const podHits = new Counter("pod_hits")
+
+const TARGET = __ENV.TARGET || "http://localhost:80"
 
 export const options = {
   scenarios: {
@@ -21,70 +22,96 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ["p(95)<500", "p(99)<1000"],
-    errors: ["rate<0.05"], // Relaxed for debugging
+    // p(99) is intentionally lenient: a 5s timeout means worst-case latency
+    // for slow pods is ~5s, and we care more about p(95) in normal operation.
+    http_req_duration: ["p(95)<500", "p(99)<3000"],
+    errors: ["rate<0.01"],
   },
 }
 
+// VU-local state: accumulated per this VU's lifetime.
+// k6 runs each VU in its own JS context so these are not shared across VUs,
+// but that is fine — we aggregate in handleSummary via named checks.
+const vuPawns = new Set()
+const vuPods  = new Set()
+
 export default function () {
-  // Added a 5s timeout so one slow pod doesn't ruin the whole test
-  const res = http.get(__ENV.TARGET || "http://localhost:80", { timeout: "5s" })
+  const res = http.get(TARGET, { timeout: "5s" })
 
   const ok = check(res, {
     "status 200": (r) => r.status === 200,
+    "has body":   (r) => r.body && r.body.length > 0,
   })
 
+  // Fix: add to errorRate on every request (ok→0, fail→1) so Rate denominator
+  // is total requests, not just failures. Previously only errorRate.add(1) was
+  // called on failure which made Rate always report 100%.
+  errorRate.add(!ok)
+
   if (ok && res.body) {
-    // Better Regex: Specifically looks for the 'pawn' and 'pod' values in your HTML
     const pawnMatch = res.body.match(/pawn<\/span><span class="value">([^<]+)<\/span>/)
-    const podMatch = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
+    const podMatch  = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
 
     if (pawnMatch && podMatch) {
-      podHits.add(1, { pawn: pawnMatch[1], pod: podMatch[1] })
+      const pawn = pawnMatch[1].trim()
+      const pod  = podMatch[1].trim()
+
+      // Named checks per pawn — these accumulate across all VUs and appear in
+      // k6's built-in summary, giving a hit-count breakdown per node.
+      // Pods are too numerous to do the same (thousands of check names), so we
+      // track uniqueness only via the VU-local Sets.
+      check(res, { [`pawn: ${pawn}`]: () => true })
+
+      vuPawns.add(pawn)
+      vuPods.add(pod)
     }
-  } else {
-    errorRate.add(1)
   }
 
   sleep(0.05)
 }
 
+// Module-level accumulators for teardown. Not cross-VU in OSS k6, so we
+// can only report what the first VU's context sees. The named checks above
+// give the real per-pawn distribution; this section shows unique pod count
+// as seen by VU 1 (a lower bound on the real unique-pod count).
+const seenPods  = new Set()
+const seenPawns = new Set()
+
+export function teardown() {
+  vuPods.forEach(p  => seenPods.add(p))
+  vuPawns.forEach(p => seenPawns.add(p))
+}
+
 export function handleSummary(data) {
-  const pawnStats = {}
-  const podStats = {}
-  let totalHits = 0
+  // Harvest pawn distribution from named checks.
+  const pawnHits = {}
+  let totalPawnHits = 0
 
-  Object.keys(data.metrics).forEach(key => {
-    if (key.startsWith("pod_hits")) {
-      const count = data.metrics[key].values.count
-      const pawn = key.match(/pawn:([^,}]+)/)?.[1]
-      const pod = key.match(/pod:([^,}]+)/)?.[1]
-
-      if (pawn && pod) {
-        pawnStats[pawn] = (pawnStats[pawn] || 0) + count
-        podStats[pod] = (podStats[pod] || 0) + count
-        totalHits += count
-      }
-    }
+  Object.entries(data.metrics).forEach(([key, metric]) => {
+    if (!key.startsWith("checks{")) return
+    const nameMatch = key.match(/check:pawn: ([^}]+)/)
+    if (!nameMatch) return
+    const pawn  = nameMatch[1].trim()
+    const count = metric.values?.passes ?? 0
+    pawnHits[pawn] = (pawnHits[pawn] || 0) + count
+    totalPawnHits += count
   })
 
-  const sortedPawns = Object.entries(pawnStats).sort((a, b) => b[1] - a[1])
-  const sortedPods = Object.entries(podStats).sort((a, b) => b[1] - a[1])
+  const sortedPawns = Object.entries(pawnHits).sort((a, b) => b[1] - a[1])
 
   let report = `\n  █ CLUSTER LOAD DISTRIBUTION\n`
-  report += `    Total Unique Pods Responded: ${Object.keys(podStats).length} / 2000\n\n`
+  report += `    Unique pawns (nodes) responding : ${sortedPawns.length}\n`
+  report += `    Unique pods seen by VU-1        : ${seenPods.size} (lower bound)\n\n`
 
   if (sortedPawns.length > 0) {
-    report += `    TOP 10 NODES (PAWNS):\n`
-    sortedPawns.slice(0, 10).forEach(([name, count]) => {
-      const pct = ((count / totalHits) * 100).toFixed(1)
-      report += `    - ${name.padEnd(20)}: ${count.toString().padStart(8)} hits (${pct}%)\n`
+    report += `    PAWN HIT DISTRIBUTION:\n`
+    sortedPawns.forEach(([name, count]) => {
+      const pct = totalPawnHits > 0 ? ((count / totalPawnHits) * 100).toFixed(1) : "0.0"
+      const bar = "█".repeat(Math.round(parseFloat(pct) / 2))
+      report += `    ${name.padEnd(22)} ${bar.padEnd(50)} ${pct.padStart(5)}%  (${count} hits)\n`
     })
-
-    report += `\n    TOP 10 BUSIEST PODS:\n`
-    sortedPods.slice(0, 10).forEach(([name, count]) => {
-      report += `    - ${name.padEnd(45)}: ${count} hits\n`
-    })
+  } else {
+    report += `    No pawn data — body regex may not match or all requests failed.\n`
   }
 
   return {

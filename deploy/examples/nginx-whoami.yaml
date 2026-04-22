@@ -109,7 +109,10 @@ metadata:
   namespace: nginx-demo
 
 spec:
-  replicas: 6
+  # Starting point for manual testing. For stress tests scale via:
+  #   kubectl scale deployment nginx-whoami -n nginx-demo --replicas=200
+  # The topologySpreadConstraints below will spread replicas evenly across nodes.
+  replicas: 20
   selector:
     matchLabels:
       app: nginx-whoami

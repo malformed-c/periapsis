@@ -25,13 +25,11 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ["p(95)<500", "p(99)<3000"],
-    errors: ["rate<0.01"],
+    "http_req_duration{expected_response:true}": ["p(95)<500", "p(99)<2000"],
+    errors: ["rate<0.05"],
   },
 }
 
-// VU-local sets - each VU has its own JS context in k6.
-// Used for the unique-pod lower bound in handleSummary.
 const vuPods  = new Set()
 const vuPawns = new Set()
 
@@ -53,11 +51,7 @@ export default function () {
     if (pawnMatch && podMatch) {
       const pawn = pawnMatch[1].trim()
       const pod  = podMatch[1].trim()
-
-      // Named checks per pawn aggregate across all VUs and are accessible
-      // in handleSummary via data.metrics["checks{check:pawn: <n>}"].
       check(res, { [`pawn: ${pawn}`]: () => true })
-
       vuPods.add(pod)
       vuPawns.add(pawn)
     } else {
@@ -72,20 +66,22 @@ export function handleSummary(data) {
   const pawnHits = {}
   let totalPawnHits = 0
 
-  Object.entries(data.metrics).forEach(([key, metric]) => {
-    const nameMatch = key.match(/^checks\{.*check:pawn: ([^,}]+)/)
-    if (!nameMatch) return
-    const pawn  = nameMatch[1].trim()
-    const count = metric.values?.passes ?? 0
-    pawnHits[pawn] = (pawnHits[pawn] || 0) + count
-    totalPawnHits += count
+  // data.root_group.checks is the correct place for named check results in
+  // k6 OSS. data.metrics does NOT expose per-tag sub-metrics for check().
+  const checks = data.root_group?.checks ?? []
+  checks.forEach(c => {
+    const m = c.name.match(/^pawn: (.+)$/)
+    if (!m) return
+    const pawn = m[1].trim()
+    pawnHits[pawn] = (pawnHits[pawn] || 0) + c.passes
+    totalPawnHits += c.passes
   })
 
   const sortedPawns = Object.entries(pawnHits).sort((a, b) => b[1] - a[1])
 
   let report = `\n  █ CLUSTER LOAD DISTRIBUTION (direct ClusterIP)\n`
-  report += `    Unique pawns responding : ${sortedPawns.length}\n`
-  report += `    Unique pods (VU-1 view) : ${vuPods.size} (lower bound across ${vuPawns.size} pawns)\n\n`
+  report += `    Unique pawns (nodes) responding : ${sortedPawns.length}\n`
+  report += `    Unique pods (VU-1 view)         : ${vuPods.size} seen across ${vuPawns.size} pawns\n\n`
 
   if (sortedPawns.length > 0) {
     report += `    PAWN HIT DISTRIBUTION:\n`

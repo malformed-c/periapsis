@@ -525,6 +525,29 @@ func main() {
                                 PersistPodState:  g.PersistPodStateByUID,
                                 InitRestartState: store.InitRestartStateFrom,
                                 MachineLister:    ml,
+                                // PodStore projection callbacks - called when Effects
+                                // update PodStore. These make PodStore a thin projection
+                                // that only gets updated through Syzygy Effects.
+                                RegisterPod: func(e types.RegisterPod) {
+                                        // RegisterPending handles the inFlight handle and
+                                        // resource accounting. The RegisterPod effect is
+                                        // used for paths where registration goes through
+                                        // the event loop (e.g. PodRegisterFact).
+                                        // Since CreatePod already calls RegisterPending
+                                        // directly, this is currently a no-op to avoid
+                                        // double registration. In a future phase, when
+                                        // all registration goes through Facts, this will
+                                        // call a new PodStore method.
+                                },
+                                PromotePodRunning: func(e types.PromotePodRunning) {
+                                        store.PromoteRunning(e.UID, e.Pod, e.PodIP)
+                                },
+                                MarkPodDeleting: func(e types.MarkPodDeleting) {
+                                        store.MarkDeleting(e.UID)
+                                },
+                                UnregisterPod: func(e types.UnregisterPod) {
+                                        store.Unregister(e.UID, e.Namespace, e.Name)
+                                },
                         })
 
                         wg.Go(func() { h.Run(ctx, 8) })
@@ -537,9 +560,12 @@ func main() {
 
                         // --- ProbeScheduler: runs probes and emits ProbeFacts to Syzygy ---
                         // Replaces the old probe logic inside BatchWatcher's poll loop.
+                        // Now uses Syzygy's StateReader interface to read probe timing
+                        // from foci.ContainerState instead of PodStore.
                         ps := probescheduler.NewProbeScheduler(probescheduler.ProbeSchedulerDeps{
                                 Store:  store,
                                 Syzygy: sz,
+                                State:  sz, // Syzygy implements StateReader via PodState(uid)
                                 Logger: pawnLogger,
                         })
                         wg.Go(func() { ps.Run(ctx) })

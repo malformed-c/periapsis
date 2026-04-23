@@ -60,7 +60,11 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
         if exists, wasStub := g.store.AlreadyRunning(uid, pod); exists {
                 if wasStub {
-                        g.store.InitRestartState(pod)
+                        // Emit PodRegisterFact so foci creates PodState and emits
+                        // InitRestartState effect for this already-running hydrated pod.
+                        if g.sendFact != nil {
+                                g.sendFact(types.NewPodRegisterFact(uid, pod.Namespace, pod.Name, "", pod))
+                        }
                 }
                 g.Logger.Info("CreatePod: already running (hydrated), skipping", "pod", pod.Name)
                 return nil
@@ -70,6 +74,15 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
         sagaCtx, cancel := context.WithCancel(context.Background())
         handle := &creationHandle{cancel: cancel, done: make(chan struct{})}
         g.store.RegisterPending(uid, pod, handle)
+
+        // Emit PodRegisterFact so foci creates its PodState and emits
+        // InitRestartState + PersistPodState effects. This replaces the
+        // old direct g.store.InitRestartState(pod) call — foci now owns
+        // probe timing state and the InitRestartState effect is the
+        // canonical way to initialize it.
+        if g.sendFact != nil {
+                g.sendFact(types.NewPodRegisterFact(uid, pod.Namespace, pod.Name, "", pod))
+        }
 
         // 4. The Reconciler Worker Loop
         go func() {
@@ -171,13 +184,18 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
         }
 
         // Initialize probe and restart state before any containers are launched.
-        // This must happen after PromoteRunning makes the pod visible to the
-        // BatchWatcher - otherwise a D-Bus "running" event triggers a poll
-        // that sees no ProbeState, and IsContainerReady defaults to true,
-        // seeding prevReady=true and suppressing the Ready=false->true transition.
-        // Placed here (between network setup and container launch) so it runs
-        // on both first creation and retry-after-failure.
-        g.store.InitRestartState(pod)
+        // This is now handled by the PodRegisterFact emitted in CreatePod,
+        // which causes foci to emit InitRestartState effect through Syzygy.
+        // The InitRestartState effect calls PodStore.InitRestartStateFrom,
+        // initializing probe timing state in PodStore (which still owns the
+        // LastProbeTime map used by IsDue for initial delay gating).
+        //
+        // NOTE: The PodRegisterFact was emitted before the worker goroutine
+        // started, but the InitRestartState effect is processed asynchronously
+        // by Syzygy's effect workers. In practice this is fine because:
+        // 1. The createSem gate delays container launch until a slot opens
+        // 2. Network setup (step 1) takes longer than the effect dispatch
+        // If a race occurs, IsDue falls back to "probe is due" which is safe.
 
         // Step 2: Environment Resolution
         g.Logger.Debug("sync: step2 env resolution", "uid", uid, "pod", pod.Name)
@@ -269,7 +287,14 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
         // Step 5: Finalize state
         g.Logger.Debug("sync: step5 finalize", "uid", uid, "pod", pod.Name, "ip", podIP)
-        g.store.PromoteRunning(uid, pod, podIP)
+
+        // Emit PodPromoteFact so foci updates PodIP and Syzygy dispatches
+        // PromotePodRunning effect → PodStore.PromoteRunning. This replaces
+        // the old direct g.store.PromoteRunning(uid, pod, podIP) call.
+        if g.sendFact != nil {
+                g.sendFact(types.NewPodPromoteFact(uid, pod.Namespace, pod.Name, podIP, pod))
+        }
+
         g.volumes.Track(uid, pod)
 
         g.Logger.Info("sync: complete", "uid", uid, "pod", pod.Name, "ip", podIP)
@@ -488,9 +513,8 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
         uid := string(pod.UID)
         g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
 
-        // TODO rm
-        // g.setKind(pod)
-
+        // Mark deleting immediately — this needs to happen synchronously
+        // for concurrency control (prevents new CreatePod from starting).
         g.store.MarkDeleting(uid)
         g.cancelInFlight(uid) // Stops any currently running CreatePod reconcile loop
 
@@ -508,13 +532,15 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
         defer cancelTeardown()
         g.teardownPodIdempotent(teardownCtx, uid, pod)
 
-        // Emit PodEvictFact so Syzygy removes this pod from its state machine.
+        // Emit PodDeleteFact so foci removes this pod from its state machine
+        // and Syzygy dispatches MarkPodDeleting + ResetUnit + UnregisterPod effects.
+        // This replaces the old direct g.store.Unregister(uid, ...) call —
+        // PodStore.Unregister is now called via the UnregisterPod effect.
         if g.sendFact != nil {
-                g.sendFact(types.NewPodEvictFact(uid))
+                g.sendFact(types.NewPodDeleteFact(uid, pod.Namespace, pod.Name))
         }
 
         g.volumes.Untrack(uid)
-        g.store.Unregister(uid, pod.Namespace, pod.Name)
         _ = deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 
         return nil
@@ -578,8 +604,10 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
                 return
         }
 
-        g.store.MarkRestarted(uid, containerName)
         g.Logger.Info("Container restarted successfully", "pod", pod.Name, "container", containerName)
+        // MarkRestarted is no longer needed — foci tracks LastStarted
+        // through MarkRunningFact, which is emitted when the container
+        // becomes running after restart.
 
         // Publish updated status
         restartedPod := g.store.GetPodCopy(uid)

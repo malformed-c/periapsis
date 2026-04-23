@@ -107,6 +107,9 @@ type creationHandle struct {
 }
 
 // containerRestartState tracks CrashLoopBackOff state for a single container.
+// Deprecated: This state is now tracked by foci.ContainerState. The remaining
+// fields are kept for backward compatibility with status.go and gambit.go
+// persistence, which will be migrated to read from foci in a future phase.
 type containerRestartState struct {
         count       int32
         backoff     time.Duration

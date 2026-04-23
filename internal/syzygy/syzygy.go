@@ -17,15 +17,15 @@ package syzygy
 //       are executed directly via injected callbacks
 //     - k8s API effects are forwarded to Horizon's own worker pool
 //
+//   Anti-entropy goroutine:
+//     - Periodically calls ListManagedMachines (via the Runtime callback)
+//     - Emits ContainerStateFact for each tracked container whose observed
+//       state differs from the state machine's current state
+//     - This replaces the old BatchWatcher poll loop entirely
+//
 // This decoupling means the main loop never blocks on I/O or slow callbacks.
 // The state map is exclusively owned by the main goroutine - no locks needed.
 // Effect workers only call pure callbacks or non-blocking horizon.Send().
-//
-// Memory at 3000 pods:
-//   - map[string]foci.PodState: ~1.5MB
-//   - No per-pod goroutines
-//   - No *corev1.Pod stored per pod
-//   - No DeepCopy on hot path
 
 import (
 	"context"
@@ -36,6 +36,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/foci"
 	"github.com/malformed-c/periapsis/internal/horizon"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -48,7 +49,18 @@ const (
 	// effectsBuf is the capacity of the effects channel.
 	// Sized for burst: 3000 pods × ~3 effects per Reduce call = ~9000 in-flight.
 	effectsBuf = 16384
+
+	// antiEntropyInterval is how often the anti-entropy loop reconciles
+	// state from ListManagedMachines. Replaces the old 2s BW ticker.
+	antiEntropyInterval = 5 * time.Second
 )
+
+// MachineLister is the interface for listing managed machines.
+// Injected as a callback so Syzygy doesn't import the runtime package
+// directly (avoids circular deps and keeps the anti-entropy loop testable).
+type MachineLister interface {
+	ListManagedMachines(ctx context.Context) ([]perigeos.PodMetadata, error)
+}
 
 // Syzygy is the event loop that owns all pod state.
 type Syzygy struct {
@@ -79,6 +91,9 @@ type Syzygy struct {
 
 	// initRestartState initializes restart/probe tracking for a new pod.
 	initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
+
+	// Anti-entropy: lists machines from systemd and emits ContainerStateFacts.
+	machineLister MachineLister
 }
 
 // SyzygyConfig holds the dependencies for creating a Syzygy.
@@ -91,6 +106,10 @@ type SyzygyConfig struct {
 	SetPodPhase      func(uid string, phase corev1.PodPhase)
 	PersistPodState  func(uid string)
 	InitRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
+
+	// MachineLister provides access to ListManagedMachines for anti-entropy.
+	// If nil, anti-entropy is disabled (useful for tests).
+	MachineLister MachineLister
 }
 
 // NewSyzygy creates a new Syzygy event loop.
@@ -116,6 +135,7 @@ func NewSyzygy(deps SyzygyConfig) *Syzygy {
 		setPodPhase:      deps.SetPodPhase,
 		persistPodState:  deps.PersistPodState,
 		initRestartState: deps.InitRestartState,
+		machineLister:    deps.MachineLister,
 	}
 }
 
@@ -309,8 +329,17 @@ func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 
 // --- Anti-Entropy ---
 
+// runAntiEntropyLoop periodically calls ListManagedMachines and emits
+// ContainerStateFacts for containers whose observed state differs from
+// the state machine's current state. This replaces the old BatchWatcher
+// ticker poll.
+//
+// The anti-entropy loop is the consistency backbone: D-Bus signals
+// (UnitFacts) are the fast path for reactive updates, but signals can
+// be missed (D-Bus queue overflow, perigeos restart, subscription lag).
+// Anti-entropy catches these gaps within antiEntropyInterval.
 func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(antiEntropyInterval)
 	defer ticker.Stop()
 
 	for {
@@ -319,6 +348,7 @@ func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
+			// Skip if inbox is backlogged - don't pile on.
 			if len(s.inbox) == 0 {
 				s.runAntiEntropy(ctx)
 			}
@@ -328,22 +358,116 @@ func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
 	}
 }
 
-// runAntiEntropy checks for state drift and reconciles.
-// TODO: Implement full anti-entropy - compare PodState phases against
-// PodStore phases, re-emit ContainerStateFacts for drifted pods.
-func (s *Syzygy) runAntiEntropy(_ context.Context) {
-	s.logger.Debug("anti-entropy: checking state",
-		"pods", len(s.states))
+// runAntiEntropy calls ListManagedMachines and emits ContainerStateFacts
+// for any container whose observed state differs from the state machine.
+func (s *Syzygy) runAntiEntropy(ctx context.Context) {
+	if s.machineLister == nil {
+		return
+	}
+
+	machines, err := s.machineLister.ListManagedMachines(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		s.logger.Warn("anti-entropy: ListManagedMachines failed", "err", err)
+		return
+	}
+
+	// Build an index of observed states.
+	observed := make(map[string]perigeos.PodMetadata, len(machines))
+	for _, m := range machines {
+		key := m.UID + "/" + m.ContainerName
+		observed[key] = m
+	}
+
+	// For each tracked pod, compare container states and emit ContainerStateFacts.
+	for uid, state := range s.states {
+		for i := range state.Containers {
+			cv := &state.Containers[i]
+			key := uid + "/" + cv.Name
+
+			obs, exists := observed[key]
+
+			// Map MachineState to foci.ContainerPhase for comparison.
+			var observedPhase foci.ContainerPhase
+			if exists {
+				switch obs.State {
+				case perigeos.StateRunning:
+					observedPhase = foci.PhaseRunning
+				case perigeos.StateCreating:
+					observedPhase = foci.PhaseCreating
+				case perigeos.StateFailed:
+					observedPhase = foci.PhaseCrashLoopBackOff
+				case perigeos.StateExited:
+					if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
+						observedPhase = foci.PhaseCrashLoopBackOff
+					} else {
+						observedPhase = foci.PhaseTerminated
+					}
+				default:
+					// StateUnknown - container not in systemd listing.
+					if cv.SeenRunning {
+						observedPhase = foci.PhaseTerminated
+					} else if cv.Restarting {
+						observedPhase = foci.PhaseCrashLoopBackOff
+					} else {
+						observedPhase = foci.PhaseCreating
+					}
+				}
+			} else {
+				// Container not found in ListManagedMachines.
+				if cv.Restarting {
+					observedPhase = foci.PhaseCrashLoopBackOff
+				} else if cv.SeenRunning {
+					observedPhase = foci.PhaseTerminated
+				} else {
+					// Never seen running, not in systemd - keep Creating.
+					continue
+				}
+			}
+
+			// Only emit if the observed phase differs from the state machine.
+			if cv.Phase == observedPhase {
+				continue
+			}
+
+			var machineState perigeos.MachineState
+			var exitCode int32
+			if exists {
+				machineState = obs.State
+				exitCode = obs.ExitCode
+			}
+
+			s.logger.Debug("anti-entropy: emitting ContainerStateFact",
+				"uid", uid, "container", cv.Name,
+				"currentState", cv.Phase, "observedPhase", observedPhase,
+				"machineState", machineState, "exitCode", exitCode)
+
+			fact := types.NewContainerStateFact(uid, cv.Name, machineState, exitCode)
+			// Self-send through the inbox so the main loop processes it
+			// in order with other facts.
+			s.Send(fact)
+		}
+	}
+}
+
+// shouldRestartFromState mirrors the restart policy logic from foci.Reduce.
+func shouldRestartFromState(policy corev1.RestartPolicy, exitCode int32) bool {
+	switch policy {
+	case corev1.RestartPolicyAlways:
+		return true
+	case corev1.RestartPolicyOnFailure:
+		return exitCode != 0
+	default:
+		return false
+	}
 }
 
 // --- Public Accessors ---
 
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot - may be stale by read time.
-//
-// NOTE: The states map is owned by the Run goroutine. This is safe for
-// concurrent reads because Go map reads don't conflict with other reads.
-// Add synchronization if concurrent writers are ever introduced.
 func (s *Syzygy) PodState(uid string) (foci.PodState, bool) {
 	state, ok := s.states[uid]
 	return state, ok

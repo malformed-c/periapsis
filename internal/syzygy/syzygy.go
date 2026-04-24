@@ -250,7 +250,7 @@ func (s *Syzygy) processFact(fact types.Fact) {
 	newState, effects := foci.Reduce(currentState, fact)
 
 	// PodEvictFact returns zero-value PodState - remove from map.
-	// Only log when the pod was actually in the map — without this guard,
+	// Only log when the pod was actually in the map - without this guard,
 	// every subsequent fact for an already-evicted pod causes Reduce to
 	// return zero-value state, triggering this log repeatedly.
 	_, wasTracked := s.states[uid]

@@ -169,6 +169,7 @@ func setupUserNSFIFOs(podUID, containerName string) (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dir, err)
 	}
+
 	for _, name := range []string{"ready", "gate"} {
 		p := filepath.Join(dir, name)
 		os.Remove(p) // remove stale FIFO from previous attempt
@@ -176,6 +177,7 @@ func setupUserNSFIFOs(podUID, containerName string) (string, error) {
 			return "", fmt.Errorf("mkfifo %s: %w", p, err)
 		}
 	}
+
 	return dir, nil
 }
 
@@ -197,14 +199,18 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	rf, err := os.Open(readyPath)
 	if err != nil {
 		logger.Error("Failed to open ready FIFO", "error", err)
+
 		return
 	}
+
 	buf := make([]byte, 4)
 	if _, err := rf.Read(buf); err != nil {
 		rf.Close()
 		logger.Error("Failed to read ready FIFO", "error", err)
+
 		return
 	}
+
 	rf.Close()
 	logger.Info("Shim signaled ready, writing uid_map/gid_map")
 
@@ -212,6 +218,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	pid, err := s.getMachineLeaderPID(machineName)
 	if err != nil {
 		logger.Error("Failed to get shim PID", "error", err)
+
 		return
 	}
 
@@ -225,6 +232,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	uidMapPath := fmt.Sprintf("/proc/%d/uid_map", pid)
 	if err := os.WriteFile(uidMapPath, []byte(mapLine), 0); err != nil {
 		logger.Error("Failed to write uid_map", "path", uidMapPath, "error", err)
+
 		return
 	}
 
@@ -234,12 +242,14 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	setgroupsPath := fmt.Sprintf("/proc/%d/setgroups", pid)
 	if err := os.WriteFile(setgroupsPath, []byte("deny"), 0); err != nil {
 		logger.Error("Failed to write setgroups deny", "path", setgroupsPath, "error", err)
+
 		return
 	}
 
 	gidMapPath := fmt.Sprintf("/proc/%d/gid_map", pid)
 	if err := os.WriteFile(gidMapPath, []byte(mapLine), 0); err != nil {
 		logger.Error("Failed to write gid_map", "path", gidMapPath, "error", err)
+
 		return
 	}
 
@@ -250,6 +260,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	gf, err := os.OpenFile(gatePath, os.O_WRONLY, 0)
 	if err != nil {
 		logger.Error("Failed to open gate FIFO", "error", err)
+
 		return
 	}
 	defer gf.Close()

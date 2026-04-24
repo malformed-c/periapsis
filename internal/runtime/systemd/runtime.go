@@ -229,9 +229,11 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if useUserNS {
 		var err error
 		usernsFIFODir, err = setupUserNSFIFOs(podUID, containerName)
+
 		if err != nil {
 			s.logger.Error("Failed to setup userns FIFOs, falling back to --user=", "error", err)
 			useUserNS = false
+
 		} else {
 			// Bind-mount the shim binary and FIFO directory into the container.
 			execStart = append(execStart,
@@ -240,6 +242,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			)
 		}
 	}
+
 	if !useUserNS && cfg.RunAsUser != nil {
 		// Fallback: use nspawn's --user= (no userns isolation).
 		if *cfg.RunAsUser != 0 {

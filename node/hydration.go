@@ -48,6 +48,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
 			continue
 		}
+
 		g.store.InitRestartState(state.Pod)
 		// InitRestartState resets restarts - re-apply the persisted counts
 		// and backoff durations.
@@ -105,11 +106,13 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 			if !e.IsDir() {
 				continue
 			}
+
 			name := e.Name()
 			uid := name
 			if len(name) > 36 && name[36] == '-' {
 				uid = name[:36]
 			}
+
 			if _, ok := hydratedUIDs[uid]; !ok {
 				dirPath := filepath.Join(podsDir, name)
 				// Unmount overlayfs if it's an overlay dir (uid-container).

@@ -154,8 +154,9 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 			// SAVE the IP immediately so retries skip this step,
 			// but DO NOT call PromoteRunning yet.
-			// TODO
-			// g.store.SetPodIP(uid, podIP)
+			if podIP != "" {
+				g.store.SetPodIP(uid, podIP)
+			}
 
 			return fmt.Errorf("network setup: %w", err)
 		}

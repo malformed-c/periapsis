@@ -122,6 +122,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	if deps.EventRecorder == nil {
 		deps.EventRecorder = record.NewFakeRecorder(1024)
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	bw := &BatchWatcher{
 		deps:         deps,
@@ -135,6 +136,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		seenRunning:  make(map[string]bool),
 		restarting:   make(map[string]bool),
 	}
+
 	// Seed seenRunning from hydrated pods - these containers were running
 	// before perigeos restarted, so the BatchWatcher must know they started
 	// even though it never observed the Running transition. Without this,
@@ -151,6 +153,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	}
 
 	go bw.run(ctx)
+
 	return bw
 }
 
@@ -181,9 +184,11 @@ func (bw *BatchWatcher) ContainerState(uid, containerName string) perigeos.Machi
 	bw.stateCacheMu.RLock()
 	state, ok := bw.stateCache[key]
 	bw.stateCacheMu.RUnlock()
+
 	if !ok {
 		return perigeos.StateUnknown
 	}
+
 	return state
 }
 
@@ -299,6 +304,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	default:
 		bw.logger.Debug("handleUnitEvent: ignoring substate",
 			"uid", uid, "container", containerName, "subState", ev.SubState)
+
 		return
 	}
 
@@ -329,15 +335,16 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 
 	// Trigger a full poll on transitions that affect pod phase.
 	// Init container Running: skip - app containers haven't been launched yet.
-
 	if state == perigeos.StateRunning && !isInit {
 		bw.logger.Info("handleUnitEvent: triggering poll (app container Running)",
 			"uid", uid, "pod", podName(pod), "container", containerName)
+
 		bw.poll(ctx)
 
 	} else if state == perigeos.StateFailed {
 		bw.logger.Info("handleUnitEvent: triggering poll (container Failed)",
 			"uid", uid, "pod", podName(pod), "container", containerName)
+
 		bw.poll(ctx)
 
 	} else if state == perigeos.StateRunning && isInit {
@@ -423,18 +430,22 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			if e.phase == corev1.PodPending || e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
 				continue
 			}
+
 			for j := range e.pod.Spec.Containers {
 				c := &e.pod.Spec.Containers[j]
 				key := e.uid + "/" + c.Name
 				if stateMap[key] != perigeos.StateRunning {
 					continue
 				}
+
 				ps := bw.deps.Store.ProbeState(e.uid, c.Name)
 				if ps == nil {
 					bw.logger.Debug("Probe fan-out: skipping (no probe state)",
 						"pod", e.pod.Name, "container", c.Name)
+
 					continue
 				}
+
 				probeWg.Go(func() {
 					sem <- struct{}{}
 					defer func() { <-sem }()
@@ -442,6 +453,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				})
 			}
 		}
+
 		probeWg.Wait()
 	}
 
@@ -452,8 +464,10 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// Skip pods still being created (Pending) - no machine yet.
 		if e.phase == corev1.PodPending {
 			bw.logger.Debug("Coalescer: skipping Pending pod", "pod", e.pod.Name)
+
 			continue
 		}
+
 		// Skip pods in terminal phase - unless a container's state changed
 		// to a *different known state*, meaning systemd settled to a different
 		// result (e.g. the pod was marked Succeeded from an intermediate
@@ -468,13 +482,16 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				prev, prevExists := bw.prevStateMap[key]
 				if prevExists && curExists && prev != cur {
 					needsReeval = true
+
 					break
 				}
 			}
+
 			if !needsReeval {
 				continue
 			}
 		}
+
 		if len(e.pod.Spec.Containers) == 0 {
 			continue
 		}
@@ -489,6 +506,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 					"prev", prev, "cur", cur)
 				changedPods[e.uid] = true
 			}
+
 			// Check readiness changes (probe transitions don't change machine state).
 			// Only track when ProbeState exists - before InitRestartState,
 			// IsContainerReady defaults to true, which would seed prevReady
@@ -501,6 +519,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 						bw.logger.Debug("Coalescer: readiness change",
 							"pod", e.pod.Name, "container", c.Name,
 							"prev", prev, "cur", ready)
+
 						changedPods[e.uid] = true
 						bw.prevReady[key] = ready
 					}
@@ -518,12 +537,14 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		if !changedPods[e.uid] {
 			continue
 		}
+
 		// Re-read podPhases under lock - checkPod may have set a terminal
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
 			bw.logger.Debug("Coalescer: skipping status push (phase filter)",
 				"uid", e.uid, "pod", e.pod.Name, "storePhase", currentPhase)
+
 			continue
 		}
 		// Fetch the current pod under lock rather than using e.pod from the
@@ -534,13 +555,16 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		currentPod := bw.deps.Store.GetPodCopy(e.uid)
 		if currentPod == nil {
 			bw.logger.Debug("Coalescer: pod deleted mid-cycle, skipping", "uid", e.uid)
+
 			continue
 		}
+
 		status := bw.deps.BuildPodStatus(currentPod, stateLookup)
 		bw.logger.Info("Coalescer: pushing status",
 			"uid", e.uid, "pod", currentPod.Name, "computedPhase", status.Phase,
 			"ready", status.Conditions[0].Status,
 			"containers", len(status.ContainerStatuses))
+
 		status.DeepCopyInto(&currentPod.Status)
 		bw.deps.NotifyStatus(currentPod)
 	}
@@ -583,6 +607,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if !exists {
 			state = perigeos.StateExited
 		}
+
 		bw.logger.Debug("checkPod container state", "pod", pod.Name, "container", c.Name, "state", state, "exists", exists, "policy", policy)
 
 		// If a restart goroutine is in-flight for this container
@@ -597,8 +622,10 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if isRestarting {
 			bw.logger.Debug("Container restart in progress - skipping terminal eval",
 				"pod", pod.Name, "container", c.Name)
+
 			allExited = false
 			allSucceeded = false
+
 			continue
 		}
 
@@ -613,12 +640,16 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if !bw.seenRunning[key] && (state == perigeos.StateExited || state == perigeos.StateUnknown) {
 			if exists && state == perigeos.StateExited && exitCodeMap[key] == 0 {
 				bw.logger.Debug("Fast-exit container completed successfully (never seen running but exit 0)", "pod", pod.Name, "container", c.Name)
+
 				bw.seenRunning[key] = true
 				// Fall through to the normal switch below.
+
 			} else {
 				bw.logger.Debug("Deferring terminal decision - container never seen running", "pod", pod.Name, "container", c.Name, "state", state)
+
 				allExited = false
 				allSucceeded = false
+
 				continue
 			}
 		}
@@ -675,6 +706,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 				if exitCode == 0 {
 					bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Completed",
 						"Container %s exited with code %d", c.Name, exitCode)
+
 				} else {
 					bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Failed",
 						"Container %s exited with error (code %d)", c.Name, exitCode)
@@ -706,6 +738,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			if status.Phase == corev1.PodRunning {
 				bw.logger.Info("checkPod: eager restart status push",
 					"uid", uid, "pod", currentPod.Name, "ready", status.Conditions[0].Status)
+
 				status.DeepCopyInto(&currentPod.Status)
 				bw.deps.NotifyStatus(currentPod)
 			}
@@ -720,9 +753,11 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	var terminalPhase corev1.PodPhase
 	if allSucceeded {
 		terminalPhase = corev1.PodSucceeded
+
 	} else {
 		terminalPhase = corev1.PodFailed
 	}
+
 	bw.logger.Info("checkPod: setting terminal phase",
 		"uid", uid, "pod", pod.Name, "phase", terminalPhase, "allSucceeded", allSucceeded)
 
@@ -732,6 +767,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		if s, ok := stateMap[u+"/"+cn]; ok {
 			return s
 		}
+
 		return perigeos.StateExited
 	}
 
@@ -746,6 +782,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		status.DeepCopyInto(&currentPod.Status)
 		bw.logger.Info("checkPod: pushing terminal status",
 			"uid", uid, "pod", currentPod.Name, "phase", terminalPhase)
+
 		bw.deps.NotifyStatus(currentPod)
 	}
 
@@ -767,8 +804,10 @@ func (bw *BatchWatcher) cleanupStaleUnits(ctx context.Context) {
 	cleaned, err := bw.deps.Runtime.CleanupStaleUnits(ctx, activeUIDs)
 	if err != nil {
 		bw.logger.Error("Startup stale unit cleanup failed", "err", err)
+
 		return
 	}
+
 	if cleaned > 0 {
 		bw.logger.Info("Cleaned up stale units from previous run", "count", cleaned)
 	}
@@ -787,32 +826,40 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 		if isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
 			// Network I/O outside any lock.
 			result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.StartupProbe, podIP)
+
 			bw.logger.Debug("Startup probe result",
 				"pod", pod.Name, "container", c.Name, "result", probeResultString(result),
 				"failCount", ps.StartupFailCount, "podIP", podIP)
+
 			// Write results under lock - concurrent with isContainerReady readers.
 			var restart bool
 			bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 				markProbed(ps, "startup")
 				restart = EvalStartup(ps, c.StartupProbe, result)
 			})
+
 			ps = bw.deps.Store.ProbeState(uid, c.Name)
 			if result == ProbeSuccess && ps != nil && ps.StartupPassed {
 				bw.logger.Info("Startup probe passed", "pod", pod.Name, "container", c.Name)
+
 				bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started",
 					"Container %s passed startup probe", c.Name)
 			}
+
 			if result == ProbeFailure && ps != nil {
 				bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 					"Startup probe failed for container %s (%d/%d)",
 					c.Name, ps.StartupFailCount, c.StartupProbe.FailureThreshold)
 			}
+
 			if restart {
 				bw.logger.Warn("Startup probe failed past threshold, restarting",
 					"pod", pod.Name, "container", c.Name)
+
 				bw.maybeRestart(ctx, uid, pod, c.Name)
 			}
 		}
+
 		return // don't run liveness/readiness until startup passes
 	}
 
@@ -821,15 +868,18 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.LivenessProbe, podIP)
 		bw.logger.Debug("Liveness probe result",
 			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
+
 		var restart bool
 		bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 			markProbed(ps, "liveness")
 			restart = EvalLiveness(ps, c.LivenessProbe, result)
 		})
+
 		if restart {
 			// Reset probe state so the restarted container starts fresh.
 			bw.deps.Store.ResetProbeState(uid, c.Name)
 		}
+
 		if result == ProbeFailure {
 			ps = bw.deps.Store.ProbeState(uid, c.Name)
 			if ps != nil {
@@ -838,10 +888,13 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 					c.Name, ps.LiveFailCount, c.LivenessProbe.FailureThreshold)
 			}
 		}
+
 		if restart {
 			bw.logger.Warn("Liveness probe failed past threshold, restarting",
 				"pod", pod.Name, "container", c.Name)
+
 			bw.maybeRestart(ctx, uid, pod, c.Name)
+
 			return
 		}
 	}
@@ -849,19 +902,23 @@ func (bw *BatchWatcher) runProbes(ctx context.Context, uid string, pod *corev1.P
 	// 3. Readiness probe - controls Ready condition on the container.
 	if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
 		result := bw.deps.Store.ProbeRunner().RunProbe(ctx, pod, c.Name, c.ReadinessProbe, podIP)
+
 		bw.logger.Debug("Readiness probe result",
 			"pod", pod.Name, "container", c.Name, "result", probeResultString(result), "podIP", podIP)
+
 		wasReady := ps.Ready
 		bw.deps.Store.UpdateProbeState(uid, c.Name, func(ps *ContainerProbeState) {
 			markProbed(ps, "readiness")
 			EvalReadiness(ps, c.ReadinessProbe, result)
 		})
+
 		ps = bw.deps.Store.ProbeState(uid, c.Name)
 		nowReady := ps != nil && ps.Ready
 		if result == ProbeFailure {
 			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Unhealthy",
 				"Readiness probe failed for container %s", c.Name)
 		}
+
 		if !wasReady && nowReady {
 			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ProbeReady",
 				"Container %s passed readiness probe", c.Name)
@@ -880,17 +937,19 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 		if s, ok := stateMap[key]; ok {
 			return s
 		}
+
 		bw.restartingMu.Lock()
 		restarting := bw.restarting[key]
 		bw.restartingMu.Unlock()
+
 		if restarting {
 			return perigeos.StateFailed
 		}
+
 		// Container was seen running but its unit is gone and it's not
 		// being restarted - it completed.
 		// pollMu is already held by poll() (caller)
 		// Just read the map directly.
-
 		seen := bw.seenRunning[key]
 
 		if seen {
@@ -913,9 +972,11 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 	}
 
 	bw.restartingMu.Lock()
+
 	if bw.restarting[key] {
 		bw.restartingMu.Unlock()
 		return
+
 	}
 	bw.restarting[key] = true
 	bw.restartingMu.Unlock()
@@ -928,6 +989,7 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 		bw.restartingMu.Lock()
 		delete(bw.restarting, key)
 		bw.restartingMu.Unlock()
+
 		return
 	}
 
@@ -937,6 +999,7 @@ func (bw *BatchWatcher) maybeRestart(ctx context.Context, uid string, pod *corev
 			delete(bw.restarting, key)
 			bw.restartingMu.Unlock()
 		}()
+
 		bw.deps.RestartContainer(ctx, uid, pod, containerName, count, backoff)
 	}()
 }

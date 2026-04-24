@@ -275,6 +275,34 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 			corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)
 	}
 
+	// Map substate to MachineState.
+	//
+	// We intentionally ignore "dead" - it's an intermediate substate that
+	// fires BEFORE systemd updates ExecMainStatus. If we react to it, we
+	// see exit code 0 and incorrectly mark the pod as Succeeded. Systemd
+	// always follows "dead" with either:
+	//   - "failed" (non-zero exit) → we react to this immediately
+	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
+	//     poll detects the unit is gone within 2s
+	// Emit informational events for container stop substates.
+	// These fire while the container is shutting down and let operators
+	// see exactly where time is spent during pod deletion.
+	switch ev.SubState {
+	case "stop-sigterm", "stop-watchdog":
+		// systemd sent SIGTERM; container has terminationGracePeriodSeconds to exit.
+		if pod != nil {
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing",
+				"Container %s received SIGTERM, waiting for graceful exit", containerName)
+		}
+
+	case "stop-sigkill", "stop-kill":
+		// Grace period expired; systemd is sending SIGKILL.
+		if pod != nil {
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Killing",
+				"Container %s grace period expired, sending SIGKILL", containerName)
+		}
+	}
+
 	// Emit UnitFact to Syzygy for all substates that affect pod state or
 	// produce k8s events (Started, Killing). Reduce handles the logic;
 	// RecordEvent effects flow back through Horizon.
@@ -306,7 +334,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 		bw.logger.Debug("handleUnitEvent: ignoring substate",
 			"uid", uid, "container", containerName, "subState", ev.SubState)
 
-		return
+		return // ignore "dead" and other transient states
 	}
 
 	key := uid + "/" + containerName
@@ -331,10 +359,36 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	if prev == state {
 		bw.logger.Debug("handleUnitEvent: no state change, skipping poll",
 			"uid", uid, "container", containerName, "state", state)
-		return
+
+		return // no change, skip poll trigger
 	}
 
-	// Trigger a full poll on transitions that affect pod phase.
+	// Emit container lifecycle events on state transitions.
+	// The D-Bus path is the fast reactive path - events fire within
+	// milliseconds of the actual systemd state change. The poll path
+	// (below in checkPod) covers failures and exits that the D-Bus
+	// path may miss (e.g. "dead" substate is intentionally ignored).
+	if state == perigeos.StateRunning {
+		if pod != nil {
+			reason := "Started"
+			if isInit {
+				reason = "InitStarted"
+			}
+
+			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, reason,
+				"Container %s started", containerName)
+		}
+	}
+
+	// Trigger a full poll on state transitions that affect pod status.
+	// For app container Running: pushes the Running phase immediately and
+	// starts the readiness probe initialDelay timer, instead of waiting
+	// up to containerWatchPoll (2s) for the ticker.
+	// For Failed: processes restart policy and pushes terminal phase.
+	// For init container Running: skip - app containers haven't been
+	// launched yet, so the poll would see them as missing and either
+	// defer terminal decisions or push premature ContainerCreating.
+	// The lifecycle code will trigger status updates when it finishes.
 	// Init container Running: skip - app containers haven't been launched yet.
 	if state == perigeos.StateRunning && !isInit {
 		bw.logger.Info("handleUnitEvent: triggering poll (app container Running)",

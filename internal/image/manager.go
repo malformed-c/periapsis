@@ -88,10 +88,13 @@ func (im *ImageManager) SweepStaleTmpDirs() {
 	if err != nil {
 		return // layer cache may not exist yet
 	}
+
 	for _, e := range entries {
 		if e.IsDir() && strings.HasPrefix(e.Name(), ".tmp-") {
 			path := filepath.Join(im.layerCache, e.Name())
+
 			im.logger.Info("Removing stale tmp layer dir", "path", path)
+
 			os.RemoveAll(path)
 		}
 	}
@@ -120,6 +123,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("read manifest dir: %w", err)
 	}
 
@@ -130,13 +134,16 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
+
 		// .json files are layer caches; .config.json and .digest are siblings.
 		// Derive the image name by reversing the safe-name encoding.
 		safe := strings.TrimSuffix(e.Name(), ".json")
 		if strings.HasSuffix(safe, ".config") {
 			continue // skip .config.json files
 		}
+
 		imageName := strings.NewReplacer("_", "/").Replace(safe)
+
 		// Restore the tag separator: the last "_" before a tag is actually ":"
 		// e.g. "library_nginx_latest" -> "library/nginx:latest" isn't fully
 		// recoverable without the original, so we store the safe name as-is
@@ -144,6 +151,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		if seen[imageName] {
 			continue
 		}
+
 		seen[imageName] = true
 
 		paths, err := im.loadLayerCache(imageName)
@@ -157,6 +165,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 			if info, err := dirSize(p); err == nil {
 				totalSize += info
 			}
+
 			// Also count the blob file if present.
 			blobFile := im.blobPath(filepath.Base(p))
 			if fi, err := os.Stat(blobFile); err == nil {
@@ -187,6 +196,7 @@ func (im *ImageManager) ListCachedImagesJSON() []map[string]any {
 			"layers": img.Layers, "size_bytes": img.SizeBytes,
 		}
 	}
+
 	return out
 }
 
@@ -197,11 +207,14 @@ func dirSize(dir string) (int64, error) {
 		if err != nil {
 			return nil // skip unreadable files
 		}
+
 		if !fi.IsDir() {
 			size += fi.Size()
 		}
+
 		return nil
 	})
+
 	return size, err
 }
 
@@ -215,22 +228,28 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 		// Fall back to persisted config cache.
 		if cfg, cached := im.configCache[imageName]; cached {
 			im.mu.Unlock()
+
 			return cfg.Entrypoint, cfg.Cmd
 		}
+
 		// Try loading from disk.
 		if cfg, err := im.loadImageConfig(imageName); err == nil {
 			im.configCache[imageName] = cfg
 			im.mu.Unlock()
+
 			return cfg.Entrypoint, cfg.Cmd
 		}
 		im.mu.Unlock()
+
 		return nil, nil
 	}
+
 	im.mu.Unlock()
 	cf, err := img.ConfigFile()
 	if err != nil {
 		return nil, nil
 	}
+
 	return cf.Config.Entrypoint, cf.Config.Cmd
 }
 
@@ -270,6 +289,7 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		im.mu.Lock()
 		cached, ok := im.manifestCache[imageName]
 		im.mu.Unlock()
+
 		if ok {
 			paths, err := im.layersFromImage(cached, opts)
 			if eventFn != nil {
@@ -278,6 +298,7 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 
 			return paths, err == nil, err
 		}
+
 		// Check disk-persisted layer cache (survives process restart).
 		if paths, err := im.loadLayerCache(imageName); err == nil {
 			if eventFn != nil {
@@ -308,16 +329,21 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 				if remoteDigest == cachedDigest {
 					im.logger.Debug("Always: remote digest matches cache, skipping pull",
 						"image", imageName, "digest", remoteDigest[:16])
+
 					if eventFn != nil {
 						eventFn("Normal", "ImageCached", fmt.Sprintf("Image %s is up to date (digest %s…)", imageName, remoteDigest[:16]))
 					}
+
 					return cachedPaths, true, nil
 				}
+
 				im.logger.Info("Always: remote digest changed, re-pulling",
 					"image", imageName, "cached", cachedDigest[:16], "remote", remoteDigest[:16])
 			}
+
 			// digest fetch failed (offline, rate-limited) - fall through to full manifest pull
 		}
+
 		// No cached digest yet (first pull was before this feature) - fall through
 	}
 
@@ -339,6 +365,7 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		if err != nil {
 			return nil, err
 		}
+
 		return img, nil
 	})
 	if err != nil {
@@ -347,11 +374,14 @@ func (im *ImageManager) PullWithOptions(imageName string, pullPolicy string, opt
 		im.mu.Lock()
 		cached, ok := im.manifestCache[imageName]
 		im.mu.Unlock()
+
 		if ok {
 			im.logger.Info("Registry unavailable, using cached manifest", "image", imageName, "err", err)
 			paths, layerErr := im.layersFromImage(cached, opts)
+
 			return paths, layerErr == nil, layerErr
 		}
+
 		// Try disk-persisted layer cache (survives process restart).
 		if paths, diskErr := im.loadLayerCache(imageName); diskErr == nil {
 			im.logger.Info("Registry unavailable, using disk-cached layers", "image", imageName, "err", err)
@@ -439,11 +469,13 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 		if err != nil {
 			return nil, fmt.Errorf("resolve diffID[%d]: %w", i, err)
 		}
+
 		h := diffID.Hex
 		// Only register as inflight if not already on disk - no point announcing
 		// a layer we already have.
 		if _, statErr := os.Stat(filepath.Join(im.layerCache, h)); statErr != nil {
 			infos[i] = layerInfo{hash: h, ch: im.markInflight(h)}
+
 		} else {
 			infos[i] = layerInfo{hash: h}
 		}
@@ -457,20 +489,25 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 		g.Go(func() error {
 			pathIface, err, _ := im.layerSF.Do(info.hash, func() (any, error) {
 				path, pullErr := im.ensureLayer(info.hash, layer, selector, opts.Event)
+
 				// Mark done (close channel) regardless of success/failure so
 				// waiting peers unblock and fall through to upstream themselves.
 				if info.ch != nil {
 					im.markLayerDone(info.hash, info.ch)
 				}
+
 				return path, pullErr
 			})
+
 			if err != nil {
 				return err
 			}
+
 			layerPaths[i] = pathIface.(string)
 			if opts.Progress != nil {
 				opts.Progress(int(doneCount.Add(1)), total)
 			}
+
 			return nil
 		})
 	}
@@ -482,12 +519,14 @@ func (im *ImageManager) layersFromImage(img v1.Image, opts PullOptions) ([]strin
 func (im *ImageManager) layerCacheFile(imageName string) string {
 	// Escape slashes and colons so the image name is a valid filename.
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
+
 	return filepath.Join(im.layerCache, ".manifests", safe+".json")
 }
 
 // imageConfigFile returns the path for a disk-persisted image config.
 func (im *ImageManager) imageConfigFile(imageName string) string {
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
+
 	return filepath.Join(im.layerCache, ".manifests", safe+".config.json")
 }
 
@@ -496,6 +535,7 @@ func (im *ImageManager) imageConfigFile(imageName string) string {
 // all layers: if the remote digest matches the cached digest, layers are current.
 func (im *ImageManager) manifestDigestFile(imageName string) string {
 	safe := strings.NewReplacer("/", "_", ":", "_").Replace(imageName)
+
 	return filepath.Join(im.layerCache, ".manifests", safe+".digest")
 }
 
@@ -504,6 +544,7 @@ func (im *ImageManager) saveManifestDigest(imageName, digest string) {
 	path := im.manifestDigestFile(imageName)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		im.logger.Error("Failed to create manifest dir", "path", filepath.Dir(path), "err", err)
+
 		return
 	}
 
@@ -519,6 +560,7 @@ func (im *ImageManager) loadManifestDigest(imageName string) string {
 	if err != nil {
 		return ""
 	}
+
 	return strings.TrimSpace(string(data))
 }
 
@@ -531,6 +573,7 @@ func (im *ImageManager) resolveManifestDigest(imageName string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+
 	desc, err := remote.Head(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
 		// remote.Head is not supported by all registries; fall back to full Get.
@@ -538,12 +581,15 @@ func (im *ImageManager) resolveManifestDigest(imageName string) (string, error) 
 		if imgErr != nil {
 			return "", fmt.Errorf("head: %w; get: %w", err, imgErr)
 		}
+
 		d, digestErr := img.Digest()
 		if digestErr != nil {
 			return "", digestErr
 		}
+
 		return d.String(), nil
 	}
+
 	return desc.Digest.String(), nil
 }
 
@@ -551,6 +597,7 @@ func (im *ImageManager) resolveManifestDigest(imageName string) (string, error) 
 func (im *ImageManager) saveImageConfig(imageName string, cfg *imageConfig) {
 	path := im.imageConfigFile(imageName)
 	os.MkdirAll(filepath.Dir(path), 0755)
+
 	data, _ := json.Marshal(cfg)
 	os.WriteFile(path, data, 0644)
 }
@@ -561,10 +608,12 @@ func (im *ImageManager) loadImageConfig(imageName string) (*imageConfig, error) 
 	if err != nil {
 		return nil, err
 	}
+
 	var cfg imageConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
 	return &cfg, nil
 }
 
@@ -572,6 +621,7 @@ func (im *ImageManager) loadImageConfig(imageName string) (*imageConfig, error) 
 func (im *ImageManager) saveLayerCache(imageName string, layerPaths []string) {
 	path := im.layerCacheFile(imageName)
 	os.MkdirAll(filepath.Dir(path), 0755)
+
 	data, _ := json.Marshal(layerPaths)
 	os.WriteFile(path, data, 0644)
 }
@@ -583,16 +633,19 @@ func (im *ImageManager) loadLayerCache(imageName string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var paths []string
 	if err := json.Unmarshal(data, &paths); err != nil {
 		return nil, err
 	}
+
 	// Verify all layers still exist on disk.
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
 			return nil, fmt.Errorf("cached layer missing: %s", p)
 		}
 	}
+
 	return paths, nil
 }
 
@@ -616,6 +669,7 @@ func (im *ImageManager) markInflight(hash string) chan struct{} {
 	if loaded {
 		return actual.(chan struct{})
 	}
+
 	return ch
 }
 
@@ -635,8 +689,10 @@ func (im *ImageManager) InflightHashes() []string {
 	var hashes []string
 	im.inflightLayers.Range(func(k, _ any) bool {
 		hashes = append(hashes, k.(string))
+
 		return true
 	})
+
 	return hashes
 }
 
@@ -652,6 +708,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 	// 1. Already extracted.
 	if _, err := os.Stat(destPath); err == nil {
 		abs, _ := filepath.Abs(destPath)
+
 		return abs, nil
 	}
 
@@ -668,6 +725,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 		if err := extractCompressedBlob(blobFile, tmpPath); err == nil {
 			return commitLayer(tmpPath, destPath)
 		}
+
 		// Corrupt blob - remove and fall through.
 		os.Remove(blobFile)
 		os.RemoveAll(tmpPath)
@@ -694,26 +752,31 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 			if eventFn != nil {
 				eventFn("Normal", "PeerWait", fmt.Sprintf("Layer %s is being pulled from peer %s, waiting", hash[:12], peerEp))
 			}
+
 			if waitForPeerLayer(ctx, im.peerClient, peerEp, hash) {
 				// Peer finished - fetch from it.
 				body, err := fetchOnePeer(ctx, im.peerClient, hash, peerEp)
 				if err == nil {
 					err = saveAndExtract(stallReader(body, peerStallTimeout), blobFile, tmpPath)
 					body.Close()
+
 					if err == nil {
 						if eventFn != nil {
 							eventFn("Normal", "PulledFromPeer", fmt.Sprintf("Layer %s pulled from peer %s (waited for inflight)", hash[:12], peerEp))
 						}
+
 						return commitLayer(tmpPath, destPath)
 					}
 				}
 				// Peer fetch failed after wait - fall through to selector / upstream.
 				os.Remove(blobFile)
 				os.RemoveAll(tmpPath)
+
 				if err := os.MkdirAll(tmpPath, 0755); err != nil {
 					return "", err
 				}
 			}
+
 			// Peer timed out or disappeared - fall through to upstream.
 		}
 
@@ -723,23 +786,30 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 			if !ok {
 				break // no healthy peers left
 			}
+
 			im.logger.Info("Pulling layer from peer", "hash", hash[:12], "peer", peerEp)
+
 			err := saveAndExtract(peerBody, blobFile, tmpPath)
 			peerBody.Close()
+
 			if err == nil {
 				if eventFn != nil {
 					eventFn("Normal", "PulledFromPeer", fmt.Sprintf("Layer %s pulled from peer %s", hash[:12], peerEp))
 				}
+
 				return commitLayer(tmpPath, destPath)
 			}
+
 			// Stall or extraction error - evict this peer and try the next.
 			im.logger.Warn("Peer layer fetch failed, trying next peer", "hash", hash[:12], "peer", peerEp, "err", err)
 			if eventFn != nil {
 				eventFn("Warning", "PeerFallback", fmt.Sprintf("Peer %s stalled on layer %s, trying next peer", peerEp, hash[:12]))
 			}
+
 			selector.markBad(peerEp)
 			os.Remove(blobFile)
 			os.RemoveAll(tmpPath)
+
 			if err := os.MkdirAll(tmpPath, 0755); err != nil {
 				return "", err
 			}
@@ -757,20 +827,26 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 			if eventFn != nil {
 				eventFn("Warning", "RegistryRetry", fmt.Sprintf("Retrying layer %s from registry (attempt %d/%d): %v", hash[:12], attempt+1, maxAttempts, lastErr))
 			}
+
 			os.Remove(blobFile)
 			os.RemoveAll(tmpPath)
+
 			if err := os.MkdirAll(tmpPath, 0755); err != nil {
 				return "", err
 			}
+
 			time.Sleep(time.Duration(attempt) * 3 * time.Second)
 		}
 
 		im.logger.Info("Pulling layer from upstream", "hash", hash)
+
 		rc, err := layer.Compressed()
 		if err != nil {
 			lastErr = err
+
 			continue
 		}
+
 		guarded := &rateGuard{ReadCloser: rc, started: time.Now(), minRate: registryMinRate, warmup: registryWarmup}
 		lastErr = saveAndExtract(guarded, blobFile, tmpPath)
 		rc.Close()
@@ -780,6 +856,7 @@ func (im *ImageManager) ensureLayer(hash string, layer v1.Layer, selector *peerS
 	}
 
 	os.RemoveAll(tmpPath)
+
 	return "", fmt.Errorf("upstream layer fetch failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
@@ -797,6 +874,7 @@ func saveAndExtract(compressedStream io.Reader, blobFile, dst string) error {
 	if err != nil {
 		bf.Close()
 		os.Remove(tmpBlob)
+
 		return err
 	}
 
@@ -806,6 +884,7 @@ func saveAndExtract(compressedStream io.Reader, blobFile, dst string) error {
 
 	if extractErr != nil {
 		os.Remove(tmpBlob)
+
 		return extractErr
 	}
 
@@ -819,11 +898,13 @@ func extractCompressedBlob(blobFile, dst string) error {
 		return err
 	}
 	defer f.Close()
+
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return err
 	}
 	defer gz.Close()
+
 	return extractLayer(dst, tar.NewReader(gz))
 }
 
@@ -847,6 +928,7 @@ func (r *rateGuard) Read(p []byte) (int, error) {
 			return n, fmt.Errorf("download stalled: %.0f B/s (min %d B/s)", float64(r.total)/elapsed, r.minRate)
 		}
 	}
+
 	return n, err
 }
 
@@ -857,10 +939,12 @@ func commitLayer(tmpPath, destPath string) (string, error) {
 		abs, _ := filepath.Abs(destPath)
 		return abs, nil
 	}
+
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.RemoveAll(tmpPath)
 		return "", fmt.Errorf("layer commit failed: %w", err)
 	}
+
 	abs, _ := filepath.Abs(destPath)
 	return abs, nil
 }
@@ -974,6 +1058,7 @@ func (im *ImageManager) Unmount(podUID string) error {
 			if errors.Is(err, unix.EINVAL) {
 				break // no more mounts
 			}
+
 			return fmt.Errorf("unmount %s: %w", target, err)
 		}
 	}
@@ -986,7 +1071,9 @@ func (im *ImageManager) Unmount(podUID string) error {
 		if rmErr = os.RemoveAll(base); rmErr == nil {
 			return nil
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
+
 	return rmErr
 }

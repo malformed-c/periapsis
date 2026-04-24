@@ -312,8 +312,13 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 		// Clear failed fragment files from systemd
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
-		// Unmount the container filesystem
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		// Unmount the container filesystem and remove the overlay dir.
+		overlayName := uid + "-" + c.Name
+		_ = g.ImageManager.Unmount(overlayName)
+		overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
+		if err := os.RemoveAll(overlayDir); err != nil {
+			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
+		}
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", c.Name)
 	}
@@ -330,7 +335,9 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 	_ = volResolver.Cleanup()
 
 	podDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid)
-	_ = os.RemoveAll(podDir)
+	if err := os.RemoveAll(podDir); err != nil {
+		g.Logger.Warn("teardown: failed to remove pod workspace dir", "uid", uid, "err", err)
+	}
 }
 
 // launchContainer handles pulling, mounting, starting, and waiting for a container.

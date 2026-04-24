@@ -357,7 +357,7 @@ func (g *Gambit) launchContainer(
 		layers = entry.layers
 
 	} else {
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Resolving", "Ensuring image %s for container %s", c.Image, c.Name)
 
 		var err error
 		var cached bool
@@ -372,10 +372,10 @@ func (g *Gambit) launchContainer(
 
 		pullCache[c.Image] = pullCacheEntry{layers: layers, cached: cached}
 		if cached {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present", c.Image)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImageCached", "Image %s already present", c.Image)
 
 		} else {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s", c.Image)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImagePulled", "Pulled image %s", c.Image)
 		}
 	}
 

@@ -450,7 +450,11 @@ func (s *Syzygy) runAntiEntropy(ctx context.Context) {
                                 case perigeos.StateCreating:
                                         observedPhase = foci.PhaseCreating
                                 case perigeos.StateFailed:
-                                        observedPhase = foci.PhaseCrashLoopBackOff
+                                        if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
+                                                observedPhase = foci.PhaseCrashLoopBackOff
+                                        } else {
+                                                observedPhase = foci.PhaseTerminated
+                                        }
                                 case perigeos.StateExited:
                                         if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
                                                 observedPhase = foci.PhaseCrashLoopBackOff

@@ -29,10 +29,16 @@ import (
 // any side effects. If the PodState is zero-valued (UID is empty), the
 // fact is for an untracked pod and is ignored.
 func Reduce(state PodState, fact types.Fact) (PodState, []types.Effect) {
-        // Ignore facts for untracked pods.
-        if state.UID == "" {
-                return state, nil
-        }
+	// Admit and Register facts can handle zero-value states (new pods).
+	switch fact.(type) {
+	case *types.PodAdmitFact, *types.PodRegisterFact:
+		// proceed to switch
+	default:
+		// Ignore other facts for untracked pods.
+		if state.UID == "" {
+			return state, nil
+		}
+	}
 
         switch f := fact.(type) {
         case *types.UnitFact:

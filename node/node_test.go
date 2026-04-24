@@ -17,12 +17,12 @@ package node
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 
+	"github.com/malformed-c/periapsis/internal/test/fixtures"
 	"gotest.tools/assert"
 	"gotest.tools/assert/cmp"
 	corev1 "k8s.io/api/core/v1"
@@ -44,7 +44,7 @@ func testNodeRun(t *testing.T, enableLease bool) {
 
 	c := testclient.NewSimpleClientset()
 
-	testP := &testNodeProvider{NodeProvider: &NaiveNodeProvider{}}
+	testP := fixtures.NewProviderFixture()
 
 	nodes := c.CoreV1().Nodes()
 	leases := c.CoordinationV1().Leases(corev1.NamespaceNodeLease)
@@ -142,7 +142,7 @@ func testNodeRun(t *testing.T, enableLease bool) {
 	defer nw.Stop()
 	nr = nw.ResultChan()
 
-	testP.triggerStatusUpdate(n)
+	testP.TriggerStatusUpdate(n)
 
 	eCtx, eCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer eCancel()
@@ -174,7 +174,7 @@ func testNodeRun(t *testing.T, enableLease bool) {
 
 func TestNodeCustomUpdateStatusErrorHandler(t *testing.T) {
 	c := testclient.NewSimpleClientset()
-	testP := &testNodeProvider{NodeProvider: &NaiveNodeProvider{}}
+	testP := fixtures.NewProviderFixture()
 	nodes := c.CoreV1().Nodes()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -205,7 +205,7 @@ func TestNodeCustomUpdateStatusErrorHandler(t *testing.T) {
 	err = nodes.Delete(ctx, node.serverNode.Name, metav1.DeleteOptions{})
 	assert.NilError(t, err)
 
-	testP.triggerStatusUpdate(node.serverNode.DeepCopy())
+	testP.TriggerStatusUpdate(node.serverNode.DeepCopy())
 
 	timer = time.NewTimer(10 * time.Second)
 	defer timer.Stop()
@@ -278,7 +278,7 @@ func TestPingAfterStatusUpdate(t *testing.T) {
 	c := testclient.NewSimpleClientset()
 	nodes := c.CoreV1().Nodes()
 
-	testP := &testNodeProviderPing{}
+	testP := fixtures.NewProviderFixture()
 
 	interval := 10 * time.Millisecond
 	maxAllowedInterval := time.Duration(2.5 * float64(interval.Nanoseconds()))
@@ -316,14 +316,14 @@ func TestPingAfterStatusUpdate(t *testing.T) {
 
 	notifyTimer := time.After(interval * time.Duration(10))
 	<-notifyTimer
-	testP.triggerStatusUpdate(testNodeCopy)
+	testP.TriggerStatusUpdate(testNodeCopy)
 
 	endTimer := time.After(interval * time.Duration(10))
 	<-endTimer
 
-	testP.maxPingIntervalLock.Lock()
-	defer testP.maxPingIntervalLock.Unlock()
-	assert.Assert(t, testP.maxPingInterval < maxAllowedInterval, "maximum time between node pings (%v) was greater than the maximum expected interval (%v)", testP.maxPingInterval, maxAllowedInterval)
+	testP.PingMu.Lock()
+	defer testP.PingMu.Unlock()
+	assert.Assert(t, testP.MaxPingInterval < maxAllowedInterval, "maximum time between node pings (%v) was greater than the maximum expected interval (%v)", testP.MaxPingInterval, maxAllowedInterval)
 }
 
 // Are annotations that were created before the VK existed preserved?
@@ -333,7 +333,7 @@ func TestBeforeAnnotationsPreserved(t *testing.T) {
 
 	c := testclient.NewSimpleClientset()
 
-	testP := &testNodeProvider{NodeProvider: &NaiveNodeProvider{}}
+	testP := fixtures.NewProviderFixture()
 
 	nodes := c.CoreV1().Nodes()
 
@@ -373,7 +373,7 @@ func TestBeforeAnnotationsPreserved(t *testing.T) {
 		return e.Object != nil
 	}))
 
-	testP.notifyNodeStatus(&corev1.Node{
+	testP.NodeNotifier(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"testAnnotation": "value",
@@ -404,7 +404,7 @@ func TestManualConditionsPreserved(t *testing.T) {
 
 	c := testclient.NewSimpleClientset()
 
-	testP := &testNodeProvider{NodeProvider: &NaiveNodeProvider{}}
+	testP := fixtures.NewProviderFixture()
 
 	nodes := c.CoreV1().Nodes()
 
@@ -452,7 +452,7 @@ func TestManualConditionsPreserved(t *testing.T) {
 		Message: "This is the base condition. It is set by VK, and should always be there.",
 	}
 
-	testP.notifyNodeStatus(&corev1.Node{
+	testP.NodeNotifier(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"testAnnotation": "value",
@@ -521,7 +521,7 @@ func TestManualConditionsPreserved(t *testing.T) {
 	}
 
 	// Everything but node status is ignored here
-	testP.notifyNodeStatus(&corev1.Node{
+	testP.NodeNotifier(&corev1.Node{
 		// Annotations is left empty
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
@@ -567,18 +567,18 @@ func TestNodePingSingleInflight(t *testing.T) {
 
 	const pingTimeout = 100 * time.Millisecond
 	c := testclient.NewSimpleClientset()
-	testP := &testNodeProviderPing{}
+	testP := fixtures.NewProviderFixture()
 
-	calls := newWaitableInt()
-	finished := newWaitableInt()
+	calls := fixtures.NewWaitableInt()
+	finished := fixtures.NewWaitableInt()
 
 	ctx, cancel := context.WithTimeout(testCtx, time.Second)
 	defer cancel()
 
 	// The ping callback function is meant to block during the entire lifetime of the node ping controller.
 	// The point is to check whether or it allows callbacks to stack up.
-	testP.customPingFunction = func(context.Context) error {
-		calls.increment()
+	testP.CustomPingFunction = func(context.Context) error {
+		calls.Increment()
 		// This timer has to be longer than that of the context of the controller because we want to make sure
 		// that goroutines are not allowed to stack up. If this exits as soon as that timeout is up, finished
 		// will be incremented and we might miss goroutines stacking up, so we wait a tiny bit longer than
@@ -587,7 +587,7 @@ func TestNodePingSingleInflight(t *testing.T) {
 		// This is the context tied to the lifetime of the node ping controller, not the context created
 		// for the specific invocation of this ping function
 		<-ctx.Done()
-		finished.increment()
+		finished.Increment()
 		return nil
 	}
 
@@ -606,15 +606,15 @@ func TestNodePingSingleInflight(t *testing.T) {
 	assert.Assert(t, timeTakenToCompleteFirstPing < pingTimeout*5, "Time taken to complete first ping: %v", timeTakenToCompleteFirstPing)
 
 	assert.Assert(t, cmp.Error(firstPing.error, context.DeadlineExceeded.Error()))
-	assert.Assert(t, cmp.Equal(1, calls.read()))
-	assert.Assert(t, cmp.Equal(0, finished.read()))
+	assert.Assert(t, cmp.Equal(1, calls.Value()))
+	assert.Assert(t, cmp.Equal(0, finished.Value()))
 
 	// Wait until the first sleep finishes (the test context is done)
-	assert.NilError(t, finished.until(testCtx, func(i int) bool { return i > 0 }))
+	assert.NilError(t, finished.Until(testCtx, func(i int) bool { return i > 0 }))
 
 	// Assert we didn't stack up goroutines, and that the one goroutine in flight finishd
-	assert.Assert(t, cmp.Equal(1, calls.read()))
-	assert.Assert(t, cmp.Equal(1, finished.read()))
+	assert.Assert(t, cmp.Equal(1, calls.Value()))
+	assert.Assert(t, cmp.Equal(1, finished.Value()))
 
 }
 
@@ -622,52 +622,6 @@ func testNode(t *testing.T) *corev1.Node {
 	n := &corev1.Node{}
 	n.Name = strings.ToLower(t.Name())
 	return n
-}
-
-type testNodeProvider struct {
-	NodeProvider
-	statusHandlers []func(*corev1.Node)
-	// Callback to VK
-	notifyNodeStatus func(*corev1.Node)
-}
-
-func (p *testNodeProvider) NotifyNodeStatus(ctx context.Context, h func(*corev1.Node)) {
-	p.notifyNodeStatus = h
-}
-
-func (p *testNodeProvider) triggerStatusUpdate(n *corev1.Node) {
-	for _, h := range p.statusHandlers {
-		h(n)
-	}
-	p.notifyNodeStatus(n)
-}
-
-// testNodeProviderPing tracks the maximum time interval between calls to Ping
-type testNodeProviderPing struct {
-	testNodeProvider
-	customPingFunction  func(context.Context) error
-	lastPingTime        time.Time
-	maxPingIntervalLock sync.Mutex
-	maxPingInterval     time.Duration
-}
-
-func (tnp *testNodeProviderPing) Ping(ctx context.Context) error {
-	if tnp.customPingFunction != nil {
-		return tnp.customPingFunction(ctx)
-	}
-
-	now := time.Now()
-	if tnp.lastPingTime.IsZero() {
-		tnp.lastPingTime = now
-		return nil
-	}
-	tnp.maxPingIntervalLock.Lock()
-	defer tnp.maxPingIntervalLock.Unlock()
-	if now.Sub(tnp.lastPingTime) > tnp.maxPingInterval {
-		tnp.maxPingInterval = now.Sub(tnp.lastPingTime)
-	}
-	tnp.lastPingTime = now
-	return nil
 }
 
 type watchGetter interface {

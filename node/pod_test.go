@@ -33,19 +33,20 @@ import (
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 
+	"github.com/malformed-c/periapsis/internal/test/fixtures"
 	testutil "github.com/malformed-c/periapsis/internal/test/util"
 )
 
 type TestController struct {
 	*PodController
-	mock   *mockProviderAsync
+	mock   *fixtures.ProviderFixture
 	client *fake.Clientset
 }
 
 func newTestController() *TestController {
 	fk8s := fake.NewSimpleClientset()
 
-	p := newMockProvider()
+	p := fixtures.NewProviderFixture()
 	iFactory := kubeinformers.NewSharedInformerFactoryWithOptions(fk8s, 10*time.Minute)
 	podController, err := NewPodController(PodControllerConfig{
 		PodClient:         fk8s.CoreV1(),
@@ -215,8 +216,8 @@ func TestPodCreateNewPod(t *testing.T) {
 
 	assert.Check(t, is.Nil(err))
 	// createOrUpdate called CreatePod but did not call UpdatePod because the pod did not exist
-	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
-	assert.Check(t, is.Equal(svr.mock.updates.read(), 0))
+	assert.Check(t, is.Equal(svr.mock.Creates.Value(), 1))
+	assert.Check(t, is.Equal(svr.mock.Updates.Value(), 0))
 }
 
 func TestPodUpdateExisting(t *testing.T) {
@@ -229,8 +230,8 @@ func TestPodUpdateExisting(t *testing.T) {
 
 	err := svr.createOrUpdatePod(context.Background(), pod.DeepCopy())
 	assert.Check(t, is.Nil(err))
-	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
-	assert.Check(t, is.Equal(svr.mock.updates.read(), 0))
+	assert.Check(t, is.Equal(svr.mock.Creates.Value(), 1))
+	assert.Check(t, is.Equal(svr.mock.Updates.Value(), 0))
 
 	pod2 := pod.DeepCopy()
 	pod2.Spec.Containers[0].Image = "nginx:1.15.12-perl"
@@ -239,8 +240,8 @@ func TestPodUpdateExisting(t *testing.T) {
 	assert.Check(t, is.Nil(err))
 
 	// createOrUpdate didn't call CreatePod but did call UpdatePod because the spec changed
-	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
-	assert.Check(t, is.Equal(svr.mock.updates.read(), 1))
+	assert.Check(t, is.Equal(svr.mock.Creates.Value(), 1))
+	assert.Check(t, is.Equal(svr.mock.Updates.Value(), 1))
 }
 
 func TestPodNoSpecChange(t *testing.T) {
@@ -253,15 +254,15 @@ func TestPodNoSpecChange(t *testing.T) {
 
 	err := svr.createOrUpdatePod(context.Background(), pod.DeepCopy())
 	assert.Check(t, is.Nil(err))
-	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
-	assert.Check(t, is.Equal(svr.mock.updates.read(), 0))
+	assert.Check(t, is.Equal(svr.mock.Creates.Value(), 1))
+	assert.Check(t, is.Equal(svr.mock.Updates.Value(), 0))
 
 	err = svr.createOrUpdatePod(context.Background(), pod.DeepCopy())
 	assert.Check(t, is.Nil(err))
 
 	// createOrUpdate didn't call CreatePod or UpdatePod, spec didn't change
-	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
-	assert.Check(t, is.Equal(svr.mock.updates.read(), 0))
+	assert.Check(t, is.Equal(svr.mock.Creates.Value(), 1))
+	assert.Check(t, is.Equal(svr.mock.Updates.Value(), 0))
 }
 
 func TestPodStatusDelete(t *testing.T) {

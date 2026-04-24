@@ -27,15 +27,15 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		uid := string(state.Pod.UID)
 		// Skip terminal pods - they completed before the restart and should
 		// not be resurrected. The PodController will see them as gone.
-		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
+		if state.State.Phase == corev1.PodSucceeded || state.State.Phase == corev1.PodFailed {
 			g.Logger.Info("Skipping terminal pod from disk",
-				"pod", state.Pod.Name, "phase", state.Phase)
+				"pod", state.Pod.Name, "phase", state.State.Phase)
 			continue
 		}
 		entries = append(entries, hydratedEntry{
 			uid: uid,
 			pod: state.Pod,
-			ip:  state.PodIP,
+			ip:  state.State.PodIP,
 		})
 		diskUIDs[uid] = struct{}{}
 	}
@@ -45,22 +45,16 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 
 	// Initialize probe states for disk-restored pods (must happen outside the lock).
 	for _, state := range states {
-		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
+		if state.State.Phase == corev1.PodSucceeded || state.State.Phase == corev1.PodFailed {
 			continue
 		}
 		g.store.InitRestartState(state.Pod)
 		// InitRestartState resets restarts - re-apply the persisted counts
 		// and backoff durations.
 		uid := string(state.Pod.UID)
-		if len(state.Restarts) > 0 {
-			for cname, count := range state.Restarts {
-				g.store.PatchRestartCount(uid, cname, count)
-			}
-		}
-		if len(state.Backoffs) > 0 {
-			for cname, backoffSec := range state.Backoffs {
-				g.store.PatchBackoff(uid, cname, backoffSec)
-			}
+		for _, cs := range state.State.Containers {
+			g.store.PatchRestartCount(uid, cs.Name, cs.RestartCount)
+			g.store.PatchBackoff(uid, cs.Name, cs.Backoff.Seconds())
 		}
 	}
 

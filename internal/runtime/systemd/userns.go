@@ -49,10 +49,13 @@ func injectPasswdEntry(rootfs string, uid, gid int64, logger *slog.Logger) error
 		return fmt.Errorf("open %s: %w", passwdPath, err)
 	}
 	defer f.Close()
+
 	if _, err := f.WriteString(line); err != nil {
 		return fmt.Errorf("write passwd entry: %w", err)
 	}
+
 	logger.Info("Injected /etc/passwd entry", "uid", uid, "gid", gid, "username", username)
+
 	return nil
 }
 
@@ -112,7 +115,9 @@ func entryExists(path, value string, fieldIdx int) bool {
 		if len(fields) > fieldIdx && fields[fieldIdx] == value {
 			return true
 		}
+
 	}
+
 	return false
 }
 
@@ -122,6 +127,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	if runAsUser == nil {
 		return
 	}
+
 	uid := *runAsUser
 	gid := int64(0)
 	if runAsGroup != nil {
@@ -131,9 +137,11 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	if err := injectPasswdEntry(rootfs, uid, gid, logger); err != nil {
 		logger.Error("Failed to inject passwd entry", "error", err)
 	}
+
 	if err := injectGroupEntry(rootfs, gid, logger); err != nil {
 		logger.Error("Failed to inject group entry", "error", err)
 	}
+
 	createHomeDir(rootfs, uid, gid, logger)
 }
 

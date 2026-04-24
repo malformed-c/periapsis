@@ -363,6 +363,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 		return // no change, skip poll trigger
 	}
 
+	// TODO: Remove
 	// Emit container lifecycle events on state transitions.
 	// The D-Bus path is the fast reactive path - events fire within
 	// milliseconds of the actual systemd state change. The poll path

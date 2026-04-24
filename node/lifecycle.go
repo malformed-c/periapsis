@@ -516,6 +516,14 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	g.store.MarkDeleting(uid)
 	g.cancelInFlight(uid) // Stops any currently running CreatePod reconcile loop
 
+	// Delete the state file first, before any D-Bus operations.
+	// teardownPodIdempotent may block on StopMachine, and if the process is
+	// killed mid-teardown the file would survive. On restart, hydration would
+	// re-load the pod and attempt a second teardown — hitting Cilium 404s and
+	// leaving stale dirs. Deleting early makes orphan detection safe: a pod
+	// without a state file is simply not hydrated on restart.
+	_ = deletePodState(g.Config.BaseDir, g.Config.Name, uid)
+
 	gracePeriod := podTerminationGracePeriod(pod)
 	if gracePeriod > 0 {
 		var cancel context.CancelFunc
@@ -532,7 +540,6 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	g.volumes.Untrack(uid)
 	g.store.Unregister(uid, pod.Namespace, pod.Name)
-	_ = deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 
 	return nil
 }

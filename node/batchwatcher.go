@@ -520,7 +520,13 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// Skip pods still being created (Pending) - no machine yet.
 		if e.phase == corev1.PodPending {
 			bw.logger.Debug("Coalescer: skipping Pending pod", "pod", e.pod.Name)
+			continue
+		}
 
+		// Skip pods being deleted — teardown is in progress, pushing
+		// Running/CrashLoopBackOff status would race with VK's terminal push.
+		if bw.deps.Store.IsDeleting(e.uid) {
+			bw.logger.Debug("Coalescer: skipping deleting pod", "uid", e.uid, "pod", e.pod.Name)
 			continue
 		}
 
@@ -779,7 +785,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		}
 	}
 
-	if anyRestarting {
+	if anyRestarting && !bw.deps.Store.IsDeleting(uid) {
 		// At least one container is being restarted. Eagerly push a
 		// CrashLoopBackOff status so kubectl sees it immediately rather
 		// than waiting for the coalescer (which may miss the window if
@@ -787,6 +793,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// Only fires when maybeRestart was actually called this cycle -
 		// not for plain Running containers, which would cause a spurious
 		// push on every poll cycle and bypass the coalescer entirely.
+		// Skip for pods being deleted — teardown is in progress and a
+		// CrashLoopBackOff push would race with VK's terminal status.
 		stateLookup := bw.makeStateLookup(stateMap)
 		currentPod := bw.deps.Store.GetPodCopy(uid)
 		if currentPod != nil {

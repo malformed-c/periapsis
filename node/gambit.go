@@ -111,8 +111,12 @@ var _ PodTracker = (*Gambit)(nil)
 // creationHandle tracks an in-flight pod creation or a running watcher.
 // The cancel func signals the goroutine to stop; done is closed when it exits.
 type creationHandle struct {
-        cancel context.CancelFunc
-        done   chan struct{}
+        cancel     context.CancelFunc
+        done       chan struct{}
+        // registered is closed by RegisterPodCB once store.RegisterPending
+        // completes. The saga goroutine waits on this before proceeding so
+        // it never touches PodStore before the pod is registered.
+        registered chan struct{}
 }
 
 // containerRestartState tracks CrashLoopBackOff state for a single container.
@@ -428,31 +432,40 @@ func (g *Gambit) RegisterPodCB(e types.RegisterPod) {
 
 	if e.InFlight {
 		g.store.RegisterPending(e.UID, e.Pod, handle)
-	} else {
-		// Used for hydrated pods - AlreadyRunning already handled it.
-        }
+	}
+	// else: hydrated pods — AlreadyRunning already registered them.
+
+	// Unblock the saga goroutine. Must happen after RegisterPending so
+	// the pod is visible in PodStore before the saga touches it.
+	if handle != nil {
+		close(handle.registered)
+	}
 }
 
-// PersistPodStateByUID persists pod state to disk using foci.PodState
-// as the source of truth. This is the callback wired into Syzygy.
+// PersistPodStateByUID persists pod state to disk. Uses foci.PodState
+// as the source of truth when available. This is the callback wired into Syzygy.
 func (g *Gambit) PersistPodStateByUID(uid string) {
-        pod := g.store.GetPodCopy(uid)
-        if pod == nil {
-                return
-	}
-
-	// Fetch foci state from Syzygy.
-	if g.stateReader == nil {
-		g.Logger.Warn("PersistPodStateByUID: no stateReader registered", "uid", uid)
+	pod := g.store.GetPodCopy(uid)
+	if pod == nil {
 		return
 	}
 
-	state, ok := g.stateReader.PodState(uid)
-	if !ok {
-		// This can happen during initial creation before the admit fact is processed.
-		g.Logger.Debug("PersistPodStateByUID: foci state not found yet", "uid", uid)
-		return
-        }
+	var state foci.PodState
+	if g.stateReader != nil {
+		if s, ok := g.stateReader.PodState(uid); ok {
+			state = s
+		} else {
+			// foci state not ready yet (e.g. during initial creation before
+			// PodRegisterFact is processed). Write pod-only state so at least
+			// the spec survives a restart — foci state will be rebuilt from
+			// D-Bus signals and anti-entropy on next startup.
+			g.Logger.Debug("PersistPodStateByUID: foci state not found yet, persisting spec only", "uid", uid)
+		}
+	} else {
+		// stateReader not wired — should not happen in production but
+		// persist what we have rather than silently dropping.
+		g.Logger.Warn("PersistPodStateByUID: stateReader not set, persisting spec only", "uid", uid)
+	}
 
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
 		Pod:   pod,
@@ -469,12 +482,6 @@ func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1
 }
 
 // --- Pod Lifecycle ---
-
-// TODO rm
-// func (g *Gambit) setKind(pod *corev1.Pod) {
-//      pod.Kind = "Pod"
-//      pod.APIVersion = "v1"
-// }
 
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.

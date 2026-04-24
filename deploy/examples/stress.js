@@ -15,12 +15,12 @@ export const options = {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "15s", target: 100  },  // warm up
-        { duration: "30s", target: 500  },  // ramp
-        { duration: "60s", target: 500  },  // sustain
+        { duration: "15s", target: 100 },  // warm up
+        { duration: "30s", target: 500 },  // ramp
+        { duration: "60s", target: 500 },  // sustain
         { duration: "30s", target: 1000 },  // push
         { duration: "60s", target: 1000 },  // sustain peak
-        { duration: "15s", target: 0    },  // cool down
+        { duration: "15s", target: 0 },  // cool down
       ],
     },
   },
@@ -30,15 +30,15 @@ export const options = {
   },
 }
 
-const vuPods  = new Set()
+const vuPods = new Set()
 const vuPawns = new Set()
 
 export default function () {
   const res = http.get(TARGET, { timeout: "5s" })
 
   const ok = check(res, {
-    "status 200":   (r) => r.status === 200,
-    "has body":     (r) => r.body && r.body.length > 0,
+    "status 200": (r) => r.status === 200,
+    "has body": (r) => r.body && r.body.length > 0,
     "has perigeos": (r) => r.body && r.body.includes("perigeos"),
   })
 
@@ -46,11 +46,11 @@ export default function () {
 
   if (ok && res.body) {
     const pawnMatch = res.body.match(/pawn<\/span><span class="value">([^<]+)<\/span>/)
-    const podMatch  = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
+    const podMatch = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
 
     if (pawnMatch && podMatch) {
       const pawn = pawnMatch[1].trim()
-      const pod  = podMatch[1].trim()
+      const pod = podMatch[1].trim()
       check(res, { [`pawn: ${pawn}`]: () => true })
       vuPods.add(pod)
       vuPawns.add(pawn)
@@ -91,7 +91,7 @@ export function handleSummary(data) {
       report += `    ${name.padEnd(22)} ${bar.padEnd(50)} ${pct.padStart(5)}%  (${count} hits)\n`
     })
   } else {
-    report += `    No pawn data — body regex may not match or all requests failed.\n`
+    report += `    No pawn data - body regex may not match or all requests failed.\n`
   }
 
   return {

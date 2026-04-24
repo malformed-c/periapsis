@@ -30,13 +30,16 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
 			g.Logger.Info("Skipping terminal pod from disk",
 				"pod", state.Pod.Name, "phase", state.Phase)
+
 			continue
 		}
+
 		entries = append(entries, hydratedEntry{
 			uid: uid,
 			pod: state.Pod,
 			ip:  state.PodIP,
 		})
+
 		diskUIDs[uid] = struct{}{}
 	}
 
@@ -76,9 +79,11 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if m.UID == "" {
 			continue
 		}
+
 		if _, onDisk := diskUIDs[m.UID]; onDisk {
 			continue // already restored from disk
 		}
+
 		// Construct a minimal stub pod for fallback registration.
 		if m.Name != "" && m.Namespace != "" {
 			pod := &corev1.Pod{
@@ -115,15 +120,19 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 
 			if _, ok := hydratedUIDs[uid]; !ok {
 				dirPath := filepath.Join(podsDir, name)
+
 				// Unmount overlayfs if it's an overlay dir (uid-container).
 				var cleanErr error
 				if len(name) > 36 && name[36] == '-' {
 					cleanErr = g.ImageManager.Unmount(name)
+
 				} else {
 					cleanErr = os.RemoveAll(dirPath)
 				}
+
 				if cleanErr != nil {
 					g.Logger.Warn("Failed to clean orphan disk dir at startup", "dir", name, "err", cleanErr)
+
 				} else {
 					g.Logger.Info("Cleaned orphan disk dir at startup", "dir", name)
 				}
@@ -160,9 +169,11 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 				for _, p := range pods {
 					if string(p.UID) == uid {
 						found = true
+
 						break
 					}
 				}
+
 				if found {
 					continue
 				}
@@ -183,6 +194,7 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 		if err := os.RemoveAll(podDir); err != nil {
 			g.Logger.Warn("PurgeStaleHydrated: failed to remove pod dir", "uid", uid, "err", err)
 		}
+
 		// Clean up any per-container overlay dirs (<uid>-<container>/).
 		podsDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods")
 		if entries, err := os.ReadDir(podsDir); err == nil {

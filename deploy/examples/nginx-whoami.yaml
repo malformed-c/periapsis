@@ -112,7 +112,7 @@ spec:
   # Starting point for manual testing. For stress tests scale via:
   #   kubectl scale deployment nginx-whoami -n nginx-demo --replicas=200
   # The topologySpreadConstraints below will spread replicas evenly across nodes.
-  replicas: 20
+  replicas: 1
   selector:
     matchLabels:
       app: nginx-whoami
@@ -137,6 +137,7 @@ spec:
       initContainers:
       - name: page-gen
         image: docker.io/library/alpine:3.21
+        imagePullPolicy: IfNotPresent
         resources:
           requests:
             cpu: 10m
@@ -144,6 +145,7 @@ spec:
           limits:
             cpu: 100m
             memory: 32Mi
+
         env:
         - name: POD_NAME
           valueFrom:
@@ -179,8 +181,10 @@ spec:
 
       containers:
       - name: nginx
-        # Pin minor version to avoid silent drift. alpine variant keeps image small.
+        # Pin minor version to avoid silent drift.
+        # alpine variant keeps image small.
         image: docker.io/library/nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
 

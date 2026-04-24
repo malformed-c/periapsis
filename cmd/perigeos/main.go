@@ -34,6 +34,7 @@ import (
         "github.com/malformed-c/periapsis/internal/runtime/systemd"
         "github.com/malformed-c/periapsis/internal/server"
         "github.com/malformed-c/periapsis/internal/syzygy"
+	"github.com/malformed-c/periapsis/internal/types"
         "github.com/malformed-c/periapsis/internal/vklogger"
         vklog "github.com/malformed-c/periapsis/log"
         "github.com/malformed-c/periapsis/node"
@@ -528,17 +529,7 @@ func main() {
                                 // PodStore projection callbacks - called when Effects
                                 // update PodStore. These make PodStore a thin projection
                                 // that only gets updated through Syzygy Effects.
-                                RegisterPod: func(e types.RegisterPod) {
-                                        // RegisterPending handles the inFlight handle and
-                                        // resource accounting. The RegisterPod effect is
-                                        // used for paths where registration goes through
-                                        // the event loop (e.g. PodRegisterFact).
-                                        // Since CreatePod already calls RegisterPending
-                                        // directly, this is currently a no-op to avoid
-                                        // double registration. In a future phase, when
-                                        // all registration goes through Facts, this will
-                                        // call a new PodStore method.
-                                },
+				RegisterPod:       g.RegisterPodCB,
                                 PromotePodRunning: func(e types.PromotePodRunning) {
                                         store.PromoteRunning(e.UID, e.Pod, e.PodIP)
                                 },
@@ -549,6 +540,8 @@ func main() {
                                         store.Unregister(e.UID, e.Namespace, e.Name)
                                 },
                         })
+
+			g.SetStateReader(sz)
 
                         wg.Go(func() { h.Run(ctx, 8) })
                         wg.Go(func() { sz.Run(ctx, 0) })

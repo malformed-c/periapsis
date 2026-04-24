@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/malformed-c/periapsis/internal/foci"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -13,24 +14,15 @@ import (
 // Written atomically to <baseDir>/pawns/<pawn>/pods/<uid>/pod-state.json.
 // Survives perigeos restarts; on host reboot the state is used to rediscover
 // what pods were running and restart them per their restartPolicy.
+//
+// Refactored to use foci.PodState as the single source of truth.
 type PersistedPodState struct {
 	// Pod is the full pod spec as delivered by the VK informer.
+	// Required for startup hydration (RegisterPending).
 	Pod *corev1.Pod `json:"pod"`
 
-	// PodIP is the IP assigned by CNI. Not in the pod spec.
-	PodIP string `json:"podIP,omitempty"`
-
-	// Phase is the pod phase at last update.
-	Phase corev1.PodPhase `json:"phase"`
-
-	// Restarts is the per-container restart count at last update.
-	Restarts map[string]int32 `json:"restarts,omitempty"`
-
-	// Backoffs is the per-container CrashLoopBackOff duration in seconds.
-	// Persisted alongside restart counts so that backoff delays survive
-	// perigeos restarts. Without this, a container that had accumulated
-	// a 5-minute backoff resets to 10 seconds after restart.
-	Backoffs map[string]float64 `json:"backoffs,omitempty"`
+	// State is the snapshot of the foci state machine.
+	State foci.PodState `json:"state"`
 }
 
 const podStateFile = "pod-state.json"

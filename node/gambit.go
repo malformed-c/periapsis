@@ -10,10 +10,12 @@ import (
         "path/filepath"
         "runtime"
         "strings"
+	"sync"
         "time"
 
         "github.com/malformed-c/periapsis/internal/config"
         "github.com/malformed-c/periapsis/internal/downward"
+	"github.com/malformed-c/periapsis/internal/foci"
         "github.com/malformed-c/periapsis/internal/image"
         "github.com/malformed-c/periapsis/internal/network"
         "github.com/malformed-c/periapsis/internal/pki"
@@ -87,6 +89,13 @@ type Gambit struct {
         // the syncProviderWrapper's 5-second polling loop.
         podNotify func(*corev1.Pod)
 
+	// stateReader provides access to Syzygy's pod state machines.
+	stateReader StateReader
+
+	// regMu protects regHandles.
+	regMu      sync.Mutex
+	regHandles map[string]*creationHandle
+
         // syncRequester is the forward reconciler callback. When set, Gambit
         // (via BatchWatcher or Reconciler) can request the PodController re-sync
         // a pod from the K8s side. The sync handler's podsEffectivelyEqual
@@ -102,8 +111,12 @@ var _ PodTracker = (*Gambit)(nil)
 // creationHandle tracks an in-flight pod creation or a running watcher.
 // The cancel func signals the goroutine to stop; done is closed when it exits.
 type creationHandle struct {
-        cancel context.CancelFunc
-        done   chan struct{}
+        cancel     context.CancelFunc
+        done       chan struct{}
+        // registered is closed by RegisterPodCB once store.RegisterPending
+        // completes. The saga goroutine waits on this before proceeding so
+        // it never touches PodStore before the pod is registered.
+        registered chan struct{}
 }
 
 // containerRestartState tracks CrashLoopBackOff state for a single container.
@@ -178,6 +191,21 @@ type GambitDeps struct {
         SecretInformer cache.SharedIndexInformer
 }
 
+// StateReader provides read access to foci.PodState from Syzygy.
+type StateReader interface {
+	PodState(uid string) (foci.PodState, bool)
+}
+
+func (g *Gambit) SetStateReader(reader StateReader) {
+	g.stateReader = reader
+}
+
+func (g *Gambit) RegisterHandle(uid string, handle *creationHandle) {
+	g.regMu.Lock()
+	defer g.regMu.Unlock()
+	g.regHandles[uid] = handle
+}
+
 func NewGambit(deps GambitDeps) *Gambit {
         nodeIP := resolveNodeIP(deps.Config)
         // Get the real host node name for CSI volume mounting.
@@ -199,6 +227,7 @@ func NewGambit(deps GambitDeps) *Gambit {
                 kubeClient:     deps.KubeClient,
                 clusterDNS:     deps.ClusterDNS,
                 hostNodeName:   hostNodeName,
+		regHandles:     make(map[string]*creationHandle),
         }
         if deps.APIServerHost != "" {
                 g.Tidal.SetAPIServer(deps.APIServerHost, deps.APIServerPort)
@@ -379,20 +408,8 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
                 g.podNotify(podCopy)
         }
 
-        // Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
-        // so HydrateFromRuntime knows not to resurrect them.
-        podIP := g.store.PodIP(uid)
-        counts := g.store.RestartCounts(uid)
-        backoffs := g.store.RestartBackoffs(uid)
-        if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-                Pod:      pod,
-                PodIP:    podIP,
-                Phase:    pod.Status.Phase,
-                Restarts: counts,
-                Backoffs: backoffs,
-        }); err != nil {
-                g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
-        }
+	// Persist state to disk.
+	g.PersistPodStateByUID(uid)
 }
 
 // NotifyPodStatus is the exported wrapper for notifyPodStatus.
@@ -401,36 +418,61 @@ func (g *Gambit) NotifyPodStatus(pod *corev1.Pod) {
 }
 
 // PersistPodState writes the current in-memory state for a pod to disk
-// without pushing a status update to Kubernetes. Use this funnel when
-// internal state changes (e.g. backoff reset, restart count bump) need
-// to survive a perigeos restart but don't warrant a k8s status push.
-// The full notifyPodStatus path is preferred when a k8s push is also
-// desired, as it calls writePodState internally.
+// without pushing a status update to Kubernetes.
+// Deprecated: Use PersistPodStateByUID.
 func (g *Gambit) PersistPodState(pod *corev1.Pod) {
-        uid := string(pod.UID)
-        podIP := g.store.PodIP(uid)
-        counts := g.store.RestartCounts(uid)
-        backoffs := g.store.RestartBackoffs(uid)
-        if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-                Pod:      pod,
-                PodIP:    podIP,
-                Phase:    g.store.PodPhase(uid),
-                Restarts: counts,
-                Backoffs: backoffs,
-        }); err != nil {
-                g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
-        }
+	g.PersistPodStateByUID(string(pod.UID))
 }
 
-// PersistPodStateByUID persists pod state to disk using only the pod UID.
-// This is the callback wired into SyzygyDeps.PersistPodState - Syzygy
-// holds no *corev1.Pod, only the UID from the PersistPodState effect.
+func (g *Gambit) RegisterPodCB(e types.RegisterPod) {
+	g.regMu.Lock()
+	handle := g.regHandles[e.UID]
+	delete(g.regHandles, e.UID)
+	g.regMu.Unlock()
+
+	if e.InFlight {
+		g.store.RegisterPending(e.UID, e.Pod, handle)
+	}
+	// else: hydrated pods — AlreadyRunning already registered them.
+
+	// Unblock the saga goroutine. Must happen after RegisterPending so
+	// the pod is visible in PodStore before the saga touches it.
+	if handle != nil {
+		close(handle.registered)
+	}
+}
+
+// PersistPodStateByUID persists pod state to disk. Uses foci.PodState
+// as the source of truth when available. This is the callback wired into Syzygy.
 func (g *Gambit) PersistPodStateByUID(uid string) {
-        pod := g.store.GetPodCopy(uid)
-        if pod == nil {
-                return
-        }
-        g.PersistPodState(pod)
+	pod := g.store.GetPodCopy(uid)
+	if pod == nil {
+		return
+	}
+
+	var state foci.PodState
+	if g.stateReader != nil {
+		if s, ok := g.stateReader.PodState(uid); ok {
+			state = s
+		} else {
+			// foci state not ready yet (e.g. during initial creation before
+			// PodRegisterFact is processed). Write pod-only state so at least
+			// the spec survives a restart — foci state will be rebuilt from
+			// D-Bus signals and anti-entropy on next startup.
+			g.Logger.Debug("PersistPodStateByUID: foci state not found yet, persisting spec only", "uid", uid)
+		}
+	} else {
+		// stateReader not wired — should not happen in production but
+		// persist what we have rather than silently dropping.
+		g.Logger.Warn("PersistPodStateByUID: stateReader not set, persisting spec only", "uid", uid)
+	}
+
+	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
+		Pod:   pod,
+		State: state,
+	}); err != nil {
+		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
+	}
 }
 
 // RestartContainerCB is the exported wrapper for restartContainer callback.
@@ -440,12 +482,6 @@ func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1
 }
 
 // --- Pod Lifecycle ---
-
-// TODO rm
-// func (g *Gambit) setKind(pod *corev1.Pod) {
-//      pod.Kind = "Pod"
-//      pod.APIVersion = "v1"
-// }
 
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.

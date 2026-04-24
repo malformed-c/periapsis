@@ -387,6 +387,15 @@ func (s *PodStore) MarkDeleting(uid string) {
 	}
 }
 
+func (s *PodStore) SetPodIP(uid, ip string) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+		ps.ip = ip
+		ps.mu.Unlock()
+		s.triggerSnapshot()
+	}
+}
+
 func (s *PodStore) Unregister(uid, namespace, name string) {
 	s.registryMu.Lock()
 	ps, ok := s.pods[uid]

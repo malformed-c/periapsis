@@ -72,9 +72,11 @@ type Syzygy struct {
 
         logger *slog.Logger
 
-        // states is the single source of truth for all pod state machines.
-        // Only accessed from the Run goroutine - no locks needed.
-        states map[string]foci.PodState
+        // statesMu protects states. The main Loop goroutine holds a write
+        // lock during processFact. The anti-entropy goroutine and external
+        // accessors (PodState, UIDs, PodCount) hold read locks.
+        statesMu sync.RWMutex
+        states   map[string]foci.PodState
 
         // horizon executes k8s API effects.
         horizon *horizon.Horizon
@@ -302,19 +304,22 @@ func (s *Syzygy) processFact(fact types.Fact) {
                 return
         }
 
+        s.statesMu.Lock()
         currentState := s.states[uid]
+        s.statesMu.Unlock()
 
         // Pure computation - no side effects.
         newState, effects := foci.Reduce(currentState, fact)
 
         // PodEvictFact returns zero-value PodState - remove from map.
+        s.statesMu.Lock()
         if newState.UID == "" {
                 delete(s.states, uid)
                 s.logger.Info("pod evicted from state machine", "uid", uid)
-
         } else {
                 s.states[uid] = newState
         }
+        s.statesMu.Unlock()
 
         // Push effects to the worker pool. Non-blocking.
         for _, eff := range effects {
@@ -433,8 +438,17 @@ func (s *Syzygy) runAntiEntropy(ctx context.Context) {
                 observed[key] = m
         }
 
+        // Snapshot states under read lock so the anti-entropy goroutine
+        // doesn't race with processFact writes.
+        s.statesMu.RLock()
+        snapshot := make(map[string]foci.PodState, len(s.states))
+        for k, v := range s.states {
+                snapshot[k] = v
+        }
+        s.statesMu.RUnlock()
+
         // For each tracked pod, compare container states and emit ContainerStateFacts.
-        for uid, state := range s.states {
+        for uid, state := range snapshot {
                 for i := range state.Containers {
                         cv := &state.Containers[i]
                         key := uid + "/" + cv.Name
@@ -450,7 +464,11 @@ func (s *Syzygy) runAntiEntropy(ctx context.Context) {
                                 case perigeos.StateCreating:
                                         observedPhase = foci.PhaseCreating
                                 case perigeos.StateFailed:
-                                        observedPhase = foci.PhaseCrashLoopBackOff
+                                        if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
+                                                observedPhase = foci.PhaseCrashLoopBackOff
+                                        } else {
+                                                observedPhase = foci.PhaseTerminated
+                                        }
                                 case perigeos.StateExited:
                                         if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
                                                 observedPhase = foci.PhaseCrashLoopBackOff
@@ -521,21 +539,28 @@ func shouldRestartFromState(policy corev1.RestartPolicy, exitCode int32) bool {
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot - may be stale by read time.
 func (s *Syzygy) PodState(uid string) (foci.PodState, bool) {
+        s.statesMu.RLock()
         state, ok := s.states[uid]
+        s.statesMu.RUnlock()
         return state, ok
 }
 
 // PodCount returns the number of tracked pods.
 func (s *Syzygy) PodCount() int {
-        return len(s.states)
+        s.statesMu.RLock()
+        n := len(s.states)
+        s.statesMu.RUnlock()
+        return n
 }
 
 // UIDs returns all tracked pod UIDs.
 func (s *Syzygy) UIDs() []string {
+        s.statesMu.RLock()
         uids := make([]string, 0, len(s.states))
         for uid := range s.states {
                 uids = append(uids, uid)
         }
+        s.statesMu.RUnlock()
         return uids
 }
 

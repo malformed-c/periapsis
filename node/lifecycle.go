@@ -72,14 +72,17 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
         // 3. Register as Pending (In-Flight)
         sagaCtx, cancel := context.WithCancel(context.Background())
-        handle := &creationHandle{cancel: cancel, done: make(chan struct{})}
-        g.store.RegisterPending(uid, pod, handle)
+        handle := &creationHandle{
+                cancel:     cancel,
+                done:       make(chan struct{}),
+                registered: make(chan struct{}),
+        }
 
-        // Emit PodRegisterFact so foci creates its PodState and emits
-        // InitRestartState + PersistPodState effects. This replaces the
-        // old direct g.store.InitRestartState(pod) call — foci now owns
-        // probe timing state and the InitRestartState effect is the
-        // canonical way to initialize it.
+        // Stash handle so RegisterPodCB can call store.RegisterPending with it.
+        g.RegisterHandle(uid, handle)
+
+        // Emit PodRegisterFact — Syzygy processes it and dispatches RegisterPod
+        // effect → RegisterPodCB → store.RegisterPending → closes handle.registered.
         if g.sendFact != nil {
                 g.sendFact(types.NewPodRegisterFact(uid, pod.Namespace, pod.Name, "", pod))
         }
@@ -88,6 +91,15 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
         go func() {
                 defer close(handle.done)
                 defer cancel()
+
+                // Wait until RegisterPodCB has called store.RegisterPending.
+                // Without this, the saga goroutine can reach createSem or
+                // g.store.PodIP before the pod is visible in PodStore.
+                select {
+                case <-handle.registered:
+                case <-sagaCtx.Done():
+                        return
+                }
 
                 createSem := g.store.CreateSem()
                 select {
@@ -168,8 +180,9 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
                         // SAVE the IP immediately so retries skip this step,
                         // but DO NOT call PromoteRunning yet.
-                        // TODO
-                        // g.store.SetPodIP(uid, podIP)
+			if podIP != "" {
+				g.store.SetPodIP(uid, podIP)
+			}
 
                         return fmt.Errorf("network setup: %w", err)
                 }
@@ -300,10 +313,8 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
         g.Logger.Info("sync: complete", "uid", uid, "pod", pod.Name, "ip", podIP)
         g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
 
-        // Emit PodAdmitFact so Syzygy starts tracking this pod in its state machine.
-        if g.sendFact != nil {
-                g.sendFact(types.NewPodAdmitFact(uid, pod.Namespace, pod.Name, podIP, pod))
-        }
+        // PodRegisterFact was already sent in CreatePod before containers launched.
+        // PodPromoteFact was sent above after CNI. No additional admit fact needed.
 
         return nil
 }

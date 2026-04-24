@@ -616,7 +616,13 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 		if err != nil {
 			return pkgerrors.Wrap(err, "Cannot generate patch")
 		}
-		log.G(ctx).WithError(err).WithField("patch", string(patchBytes)).Debug("Generated three way patch")
+		var patchObj any
+		if jsonErr := json.Unmarshal(patchBytes, &patchObj); jsonErr == nil {
+			log.G(ctx).WithField("patch", patchObj).Debug("Generated three way patch")
+
+		} else {
+			log.G(ctx).WithField("patch", string(patchBytes)).Debug("Generated three way patch")
+		}
 
 		updatedNode, err = nodes.Patch(ctx, nodeFromProvider.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 		if err != nil {

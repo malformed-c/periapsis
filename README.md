@@ -212,3 +212,7 @@ Optional: Constellation for eBPF CNI (default: veth bridges)
 
 - [Constellation](https://github.com/malformed-c/constellation) - eBPF/Cilium CNI used with Periapsis
 - [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - Upstream fork base
+
+---
+
+Kubernetes is a trademark of The Linux Foundation

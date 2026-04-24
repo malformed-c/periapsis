@@ -616,12 +616,12 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 		if err != nil {
 			return pkgerrors.Wrap(err, "Cannot generate patch")
 		}
-		log.G(ctx).WithError(err).WithField("patch", string(patchBytes)).Debug("Generated three way patch")
+		log.G(ctx).WithField("patch", json.RawMessage(patchBytes)).Debug("Generated three way patch")
 
 		updatedNode, err = nodes.Patch(ctx, nodeFromProvider.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 		if err != nil {
 			// We cannot wrap this error because the kubernetes error module doesn't understand wrapping
-			log.G(ctx).WithField("patch", string(patchBytes)).WithError(err).Warn("Failed to patch node status")
+			log.G(ctx).WithField("patch", json.RawMessage(patchBytes)).WithError(err).Warn("Failed to patch node status")
 			return err
 		}
 		return nil

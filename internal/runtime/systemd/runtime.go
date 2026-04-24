@@ -282,8 +282,8 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// Build env map for Kubernetes-style $(VAR_NAME) substitution in args/command.
 	envMap := make(map[string]string, len(cfg.Environment))
 	for _, kv := range cfg.Environment {
-		if idx := strings.IndexByte(kv, '='); idx >= 0 {
-			envMap[kv[:idx]] = kv[idx+1:]
+		if before, after, ok := strings.Cut(kv, "="); ok {
+			envMap[before] = after
 		}
 	}
 
@@ -294,27 +294,33 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if len(effectiveEntrypoint) == 0 {
 		effectiveEntrypoint = cfg.ImageEntrypoint
 	}
+
 	var effectiveCmd []string
 	if len(cfg.Container.Args) > 0 {
 		effectiveCmd = cfg.Container.Args
+
 	} else if len(cfg.Container.Command) == 0 {
 		// Only use image CMD when neither command nor args are overridden.
 		effectiveCmd = cfg.ImageCmd
 	}
+
 	var fullCmd []string
 	for _, part := range append(effectiveEntrypoint, effectiveCmd...) {
 		fullCmd = append(fullCmd, substituteEnvVars(part, envMap))
 	}
+
 	if len(fullCmd) == 0 {
 		// Last resort for images with no entrypoint (e.g. scratch).
 		fullCmd = []string{"/bin/sleep", "infinity"}
 	}
+
 	if useUserNS {
 		// Prepend the userns shim - it calls unshare(CLONE_NEWUSER), waits
 		// for perigeos to write uid_map/gid_map, adopts the target identity,
 		// then exec()s the real workload.
 		fullCmd = append([]string{usernsShimContainerPath}, fullCmd...)
 	}
+
 	execStart = append(execStart, fullCmd...)
 
 	// Embed pod metadata as PERIGEOS_META_* environment variables.
@@ -364,6 +370,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if err != nil {
 			return fmt.Errorf("create stdio PTY for %s: %w", machineName, err)
 		}
+
 		slavePath := slave.Name()
 		slave.Close() // systemd reopens the slave by path
 
@@ -378,11 +385,13 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			termios.Cflag |= unix.CS8
 			_ = unix.IoctlSetTermios(int(master.Fd()), unix.TCSETS, termios)
 		}
+
 		properties = append(properties,
 			dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
 			dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
 			dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
 		)
+
 		s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
 	}
 
@@ -425,6 +434,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
 			masterVal.(*os.File).Close()
 		}
+
 		if useUserNS {
 			cleanupUserNSFIFOs(podUID, containerName)
 		}
@@ -434,7 +444,9 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if strings.Contains(err.Error(), "already loaded") || strings.Contains(err.Error(), "fragment file") {
 			_, _ = s.conn.StopUnitContext(ctx, serviceName, "replace", nil)
 			_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
+
 			time.Sleep(200 * time.Millisecond)
+
 			if _, retryErr := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); retryErr != nil {
 				return fmt.Errorf("failed to create machine unit (after reset retry): %w", retryErr)
 			}
@@ -453,6 +465,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if cfg.RunAsGroup != nil {
 			targetGID = *cfg.RunAsGroup
 		}
+
 		go func() {
 			s.completeUserNSSetup(usernsFIFODir, machineName, podUID, targetUID, targetGID)
 			cleanupUserNSFIFOs(podUID, containerName)

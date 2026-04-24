@@ -41,13 +41,34 @@ func newRunningPod(uid, name string, containers ...string) *corev1.Pod {
 }
 
 // factCollector collects facts sent through SendFact.
+// Thread-safe: Send is called from the BW goroutine; Len/Get are called
+// from the test goroutine. Uses a mutex to avoid the data race.
 type factCollector struct {
+        mu    sync.Mutex
         facts []types.Fact
 }
 
 func (fc *factCollector) Send(fact types.Fact) bool {
+        fc.mu.Lock()
         fc.facts = append(fc.facts, fact)
+        fc.mu.Unlock()
         return true
+}
+
+func (fc *factCollector) Len() int {
+        fc.mu.Lock()
+        defer fc.mu.Unlock()
+        return len(fc.facts)
+}
+
+// Get returns a copy of fact at index i, or nil if out of range.
+func (fc *factCollector) Get(i int) types.Fact {
+        fc.mu.Lock()
+        defer fc.mu.Unlock()
+        if i >= len(fc.facts) {
+                return nil
+        }
+        return fc.facts[i]
 }
 
 // stubRuntime implements perigeos.Runtime for BatchWatcher tests.
@@ -147,7 +168,7 @@ func TestBatchWatcher_EventBasedEmitsUnitFact(t *testing.T) {
         })
 
         // Wait briefly for the event to be processed.
-        waitFor(t, func() bool { return len(fc.facts) > 0 }, 2*time.Second, "UnitFact to be emitted")
+        waitFor(t, func() bool { return fc.Len() > 0 }, 2*time.Second, "UnitFact to be emitted")
 
         if len(fc.facts) == 0 {
                 t.Fatal("expected at least one UnitFact to be emitted")

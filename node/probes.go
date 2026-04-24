@@ -134,7 +134,6 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		pr.logger.Debug("HTTP probe succeeded", "url", url, "status", resp.StatusCode)
 		return ProbeSuccess
 	}
 	pr.logger.Debug("HTTP probe failed (bad status)", "url", url, "status", resp.StatusCode)
@@ -189,13 +188,31 @@ func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialD
 	if periodSeconds <= 0 {
 		periodSeconds = 10 // k8s default
 	}
-	last, ok := state.LastProbeTime[probeType]
+	_, ok := state.LastProbeTime[probeType]
 	if !ok {
-		// First probe: respect initial delay from container start.
-		if initialDelaySeconds > 0 && !state.StartedAt.IsZero() {
-			return time.Since(state.StartedAt) >= time.Duration(initialDelaySeconds)*time.Second
+		// First probe: seed LastProbeTime with a random jitter in [0, periodSeconds)
+		// so pods started at the same time don't all probe simultaneously.
+		// The jitter is added on top of initialDelaySeconds so manifest semantics
+		// are preserved — the first probe won't fire before initialDelaySeconds.
+		if state.LastProbeTime == nil {
+			state.LastProbeTime = make(map[string]time.Time)
 		}
-		return true
+		jitter := time.Duration(rand.Int63n(int64(periodSeconds))) * time.Second
+		initialDelay := time.Duration(initialDelaySeconds) * time.Second
+		if !state.StartedAt.IsZero() {
+			// Schedule first fire at: startedAt + initialDelay + jitter.
+			// Subtract one period so the normal ">= period since last" check fires at the right time.
+			state.LastProbeTime[probeType] = state.StartedAt.Add(initialDelay + jitter - time.Duration(periodSeconds)*time.Second)
+		} else {
+			// No StartedAt — fire after jitter from now.
+			state.LastProbeTime[probeType] = time.Now().Add(jitter - time.Duration(periodSeconds)*time.Second)
+		}
+	}
+	last := state.LastProbeTime[probeType]
+	if initialDelaySeconds > 0 && !state.StartedAt.IsZero() {
+		if time.Since(state.StartedAt) < time.Duration(initialDelaySeconds)*time.Second {
+			return false
+		}
 	}
 	return time.Since(last) >= time.Duration(periodSeconds)*time.Second
 }

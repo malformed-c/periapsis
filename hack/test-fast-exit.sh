@@ -43,7 +43,7 @@ force_delete_ns "$NS"
 kubectl $KC create ns "$NS" 2>/dev/null || true
 sleep 1
 
-# ── Test 1: Instant exit (echo + exit 0) reaches Completed ─────────────────
+# -- Test 1: Instant exit (echo + exit 0) reaches Completed -----------------
 echo "Test 1: Instant exit (echo + exit 0)"
 cat <<EOF | kubectl $KC apply -f -
 apiVersion: v1
@@ -85,7 +85,7 @@ else
     fail "instant-exit logs" "expected 'hello' in logs"
 fi
 
-# ── Test 2: Instant failure (exit 1) reaches Failed ───────────────────────
+# -- Test 2: Instant failure (exit 1) reaches Failed -----------------------
 echo "Test 2: Instant failure (exit 1)"
 cat <<EOF | kubectl $KC apply -f -
 apiVersion: v1
@@ -118,7 +118,7 @@ else
     fail "instant-fail pod phase" "expected Failed, got '$phase'"
 fi
 
-# ── Test 3: Job with fast-exit completes ──────────────────────────────────
+# -- Test 3: Job with fast-exit completes ----------------------------------
 echo "Test 3: Job with fast-exit container completes"
 cat <<EOF | kubectl $KC apply -f -
 apiVersion: batch/v1
@@ -154,7 +154,7 @@ else
     fail "fast-job completion" "expected 1 success, got completions='$completions' status='$status'"
 fi
 
-# ── Test 4: Event-based detection speed ──────────────────────────────────
+# -- Test 4: Event-based detection speed ----------------------------------
 echo "Test 4: Event-based detection is faster than poll interval"
 start_time=$(date +%s)
 cat <<EOF | kubectl $KC apply -f -
@@ -189,7 +189,7 @@ else
     fail "timing-test speed" "took ${elapsed}s (threshold 20s)"
 fi
 
-# ── Summary ──────────────────────────────────────────────────────────────
+# -- Summary --------------------------------------------------------------
 echo
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

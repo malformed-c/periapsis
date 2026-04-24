@@ -26,7 +26,7 @@ func newTestConstellationManager(t *testing.T) *ConstellationNetworkManager {
 	return m
 }
 
-// ─── writeConfig ─────────────────────────────────────────────────────────────
+// --- writeConfig ---
 
 func TestWriteConfig_JSONShape(t *testing.T) {
 	m := newTestConstellationManager(t)
@@ -139,7 +139,7 @@ func TestWriteConfig_Idempotent(t *testing.T) {
 	}
 }
 
-// ─── runtimeConf ─────────────────────────────────────────────────────────────
+// --- runtimeConf ---
 
 func TestRuntimeConf_Fields(t *testing.T) {
 	m := newTestConstellationManager(t)
@@ -223,7 +223,7 @@ func TestRuntimeConf_CNIArgs_NodeNameAffectsArgCount(t *testing.T) {
 	}
 }
 
-// ─── ipFromResult ─────────────────────────────────────────────────────────────
+// --- ipFromResult ---
 
 func TestIPFromResult_Nil(t *testing.T) {
 	if ip := ipFromResult(nil); ip != "" {

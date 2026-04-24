@@ -3,6 +3,7 @@ package node
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/psi"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,8 +49,8 @@ type PodStore struct {
 	// It is ONLY locked when pods are added or removed, never during localized mutations.
 	registryMu  sync.RWMutex
 	pods        map[string]*podState
-	nameIndex   map[string]string         // "namespace/name" → UID
-	completed   map[string]completedEntry // "namespace/name" → entry (log fallback)
+	nameIndex   map[string]string         // "namespace/name" -> UID
+	completed   map[string]completedEntry // "namespace/name" -> entry (log fallback)
 	completedMu sync.Mutex                // separate lock - never held with registryMu
 
 	// atomic global counters for instant 0-lock queries
@@ -88,7 +90,7 @@ func NewPodStore(rt perigeos.Runtime, createConcurrency int, logger *slog.Logger
 	return store
 }
 
-// ─── Internal Helpers ───────────────────────────────────────────────────────
+// --- Internal Helpers ---
 
 func podResources(pod *corev1.Pod) (cpuMillis, memBytes int64) {
 	if pod == nil {
@@ -204,7 +206,7 @@ func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.Containe
 	*status = newStatuses
 }
 
-// ─── PodTracker interface ───────────────────────────────────────────────────
+// --- PodTracker interface ---
 
 func (s *PodStore) IsInFlight(uid string) bool {
 	if ps := s.getPodState(uid); ps != nil {
@@ -254,7 +256,7 @@ func (s *PodStore) EvictGhost(uid string) {
 	}
 }
 
-// ─── Accessors ──────────────────────────────────────────────────────────────
+// --- Accessors ---
 
 func (s *PodStore) PodCount() int {
 	s.registryMu.RLock()
@@ -304,7 +306,7 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 	return true
 }
 
-// ─── Composite State Mutations ──────────────────────────────────────────────
+// --- Composite State Mutations ---
 
 func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creationHandle) {
 	ps := &podState{
@@ -337,10 +339,12 @@ func (s *PodStore) AlreadyRunning(uid string, pod *corev1.Pod) (exists bool, was
 	wasStub = len(ps.pod.Spec.Containers) == 0
 	if wasStub {
 		// Replace the empty stub with real pod and register its resources.
+		// DeepCopy for the same reason as PromoteRunning: prevent the caller
+		// from aliasing the store's pod pointer and mutating it concurrently.
 		cpu, mem := podResources(pod)
 		s.usedCPU.Add(cpu)
 		s.usedMem.Add(mem)
-		ps.pod = pod
+		ps.pod = pod.DeepCopy()
 	}
 	ps.hydrated = false
 	s.triggerSnapshot()
@@ -354,11 +358,20 @@ func (s *PodStore) AlreadyInFlight(uid string) bool {
 func (s *PodStore) PromoteRunning(uid string, pod *corev1.Pod, ip string) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		ps.pod = pod
+		// DeepCopy breaks the aliasing between the store's pod and the
+		// lifecycle goroutine's local pod variable. Without this, lifecycle.go
+		// continues mutating pod.Status (env resolution, PodIP, etc.) on the
+		// same pointer that Snapshot returns to BatchWatcher - a data race on
+		// pod.Status fields read by buildPodStatus concurrently.
+		ps.pod = pod.DeepCopy()
 		ps.ip = ip
 		ps.phase = corev1.PodRunning
 		ps.inFlight = nil
 		ps.mu.Unlock()
+		slog.Debug("PromoteRunning",
+			"pod", pod.Name, "uid", uid, "ip", ip,
+			"containers", len(pod.Spec.Containers),
+			"caller", callerSite())
 		s.triggerSnapshot()
 	}
 }
@@ -398,15 +411,41 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 		if wasDeleting {
 			s.deletingCount.Add(-1)
 		}
+
 		s.triggerSnapshot()
+	}
+}
+
+func (s *PodStore) setPhase(ps *podState, phase corev1.PodPhase) {
+	ps.phase = phase
+
+	if ps.pod != nil {
+		ps.pod.Status.Phase = phase
 	}
 }
 
 func (s *PodStore) SetPhase(uid string, phase corev1.PodPhase) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		ps.phase = phase
+		s.setPhase(ps, phase)
 		ps.mu.Unlock()
+
+		s.triggerSnapshot()
+	}
+}
+
+func (s *PodStore) SetPodStatus(uid string, status corev1.PodStatus) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+
+		s.setPhase(ps, status.Phase)
+
+		if ps.pod != nil {
+			status.DeepCopyInto(&ps.pod.Status)
+		}
+
+		ps.mu.Unlock()
+
 		s.triggerSnapshot()
 	}
 }
@@ -471,15 +510,17 @@ func (s *PodStore) SetContainerState(uid string, containerName string, state cor
 
 		if updated {
 			changed = true
+
 		} else {
-			// Efficient error logging without heavy functional transformations
 			var names []string
-			for _, c := range ps.pod.Status.ContainerStatuses {
-				names = append(names, c.Name)
-			}
+
 			for _, c := range ps.pod.Status.InitContainerStatuses {
 				names = append(names, c.Name)
 			}
+			for _, c := range ps.pod.Status.ContainerStatuses {
+				names = append(names, c.Name)
+			}
+
 			s.logger.Error("Container wasn't found", "name", containerName, "available", names)
 		}
 	}()
@@ -505,6 +546,7 @@ func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message strin
 		ps.mu.Unlock()
 		s.triggerSnapshot()
 	}
+
 	return failedPod
 }
 
@@ -521,7 +563,7 @@ func (s *PodStore) CancelInFlight(uid string) {
 	}
 }
 
-// ─── Restart & Probe State ──────────────────────────────────────────────────
+// --- Restart & Probe State ---
 
 func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 	uid := string(pod.UID)
@@ -549,6 +591,59 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 	ps.restarts = rs
 	ps.probes = probes
 	ps.mu.Unlock()
+
+	slog.Info("InitRestartState",
+		"pod", pod.Name, "uid", uid,
+		"containers", len(pod.Spec.Containers),
+		"caller", callerSite())
+	for _, c := range pod.Spec.Containers {
+		slog.Debug("InitRestartState: container",
+			"pod", pod.Name, "container", c.Name,
+			"hasReadinessProbe", c.ReadinessProbe != nil,
+			"initialReady", c.ReadinessProbe == nil)
+	}
+}
+
+// InitRestartStateFrom is the flat-payload variant of InitRestartState.
+// It accepts the same data as ContainerInitPayload from the types package,
+// so Syzygy can call it without holding a *corev1.Pod pointer.
+// This is the target call site for the Syzygy-wired path.
+func (s *PodStore) InitRestartStateFrom(uid, namespace, name string, containers []types.ContainerInitPayload) {
+	ps := s.getPodState(uid)
+	if ps == nil {
+		return
+	}
+
+	rs := make(map[string]*containerRestartState, len(containers))
+	probes := make(map[string]*ContainerProbeState, len(containers))
+
+	for _, c := range containers {
+		rs[c.Name] = &containerRestartState{
+			backoff:     restartBackoffInit,
+			lastStarted: time.Now(),
+		}
+		probes[c.Name] = &ContainerProbeState{
+			StartedAt:     time.Now(),
+			Ready:         !c.HasReadinessProbe,
+			LastProbeTime: make(map[string]time.Time),
+		}
+	}
+
+	ps.mu.Lock()
+	ps.restarts = rs
+	ps.probes = probes
+	ps.mu.Unlock()
+
+	slog.Info("InitRestartStateFrom",
+		"pod", name, "uid", uid,
+		"containers", len(containers),
+		"caller", callerSite())
+	for _, c := range containers {
+		slog.Debug("InitRestartStateFrom: container",
+			"pod", name, "container", c.Name,
+			"hasReadinessProbe", c.HasReadinessProbe,
+			"initialReady", !c.HasReadinessProbe)
+	}
 }
 
 func (s *PodStore) RestartCounts(uid string) map[string]int32 {
@@ -652,7 +747,7 @@ func (s *PodStore) IncrementRestart(uid, containerName string) {
 	}
 }
 
-// ─── Hydration ──────────────────────────────────────────────────────────────
+// --- Hydration ---
 
 func (s *PodStore) RegisterHydrated(uid string, pod *corev1.Pod, ip string) {
 	ps := &podState{
@@ -778,7 +873,7 @@ func (s *PodStore) PurgeHydrated(staleUIDs []string) {
 	s.triggerSnapshot()
 }
 
-// ─── Pod Queries ────────────────────────────────────────────────────────────
+// --- Pod Queries ---
 
 func (s *PodStore) GetPod(namespace, name string) (*corev1.Pod, error) {
 	s.registryMu.RLock()
@@ -814,10 +909,12 @@ func (s *PodStore) GetPodCopy(uid string) *corev1.Pod {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		if ps.pod != nil {
 			return ps.pod.DeepCopy()
 		}
 	}
+
 	return nil
 }
 
@@ -885,7 +982,7 @@ func (s *PodStore) ActiveUIDs() map[string]bool {
 	return uids
 }
 
-// ─── Resource Admission ─────────────────────────────────────────────────────
+// --- Resource Admission ---
 
 // PSI thresholds for pod admission. When host-wide pressure exceeds these
 // values (avg10, percentage of wall time), new pods are rejected until
@@ -958,7 +1055,7 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 	return alloc
 }
 
-// ─── Utilities ──────────────────────────────────────────────────────────────
+// --- Utilities ---
 
 func (s *PodStore) CreateSem() chan struct{} {
 	return s.createSem
@@ -1027,4 +1124,18 @@ func (s *PodStore) ResetBackoff(uid, containerName string) {
 		}
 		ps.mu.Unlock()
 	}
+}
+
+// callerSite returns a short "file:line" for the caller's caller (skip=2).
+func callerSite() string {
+	if _, file, line, ok := runtime.Caller(2); ok {
+		for i := len(file) - 1; i >= 0; i-- {
+			if file[i] == '/' {
+				file = file[i+1:]
+				break
+			}
+		}
+		return fmt.Sprintf("%s:%d", file, line)
+	}
+	return "unknown"
 }

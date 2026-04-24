@@ -19,7 +19,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 )
 
-// ─── GenerateCert - self-signed ───────────────────────────────────────────────
+// --- GenerateCert - self-signed ---
 
 func TestGenerateCert_SelfSigned_IsUsable(t *testing.T) {
 	cert, err := pki.GenerateCert("pawn-01", nil, nil)
@@ -115,7 +115,7 @@ func TestGenerateCert_SelfSigned_VerifiesAgainstItself(t *testing.T) {
 	}
 }
 
-// ─── GenerateCert - CA-signed ─────────────────────────────────────────────────
+// --- GenerateCert - CA-signed ---
 
 func TestGenerateCert_CASigned_VerifiesAgainstCA(t *testing.T) {
 	caCert, caKey := makeTestCA(t)
@@ -174,7 +174,7 @@ func TestGenerateCert_CASigned_ContainsNodeNameDNSSAN(t *testing.T) {
 	}
 }
 
-// ─── LoadCA ───────────────────────────────────────────────────────────────────
+// --- LoadCA ---
 
 func TestLoadCA_RSA_RoundTrip(t *testing.T) {
 	caCert, caKey := makeTestCA(t)
@@ -267,7 +267,7 @@ func TestLoadCA_ThenSignCert_Verifies(t *testing.T) {
 	}
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ---
 
 func parseCert(t *testing.T, tlsCert tls.Certificate) *x509.Certificate {
 	t.Helper()

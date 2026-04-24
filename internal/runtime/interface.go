@@ -41,8 +41,8 @@ type Runtime interface {
 	// network namespace. stream is bidirectionally copied to/from the connection.
 	PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error
 
-	// AttachToContainer attaches to the stdio of a running container's PID 1.
-	AttachToContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
+	// AttachContainer attaches to the stdio of a running container's PID 1.
+	AttachContainer(ctx context.Context, podUID, containerName string, attach api.AttachIO) error
 
 	// InitPawnSlice creates the cgroup slice for a pawn and applies resource limits.
 	InitPawnSlice(ctx context.Context, cfg PawnSliceConfig) error
@@ -53,7 +53,7 @@ type Runtime interface {
 	CheckMachined(ctx context.Context) error
 
 	// SubscribeEvents returns a channel that receives UnitEvent values
-	// whenever a managed unit changes state (e.g. active→dead/failed).
+	// whenever a managed unit changes state (e.g. active->dead/failed).
 	// The BatchWatcher uses this to reactively update container state
 	// instead of waiting for the next poll tick.
 	// The channel is closed when ctx is cancelled.
@@ -110,14 +110,14 @@ const (
 	ExecMachinectl
 )
 
-// BindMount represents a host→container bind mount to be passed to nspawn.
+// BindMount represents a host->container bind mount to be passed to nspawn.
 type BindMount struct {
 	HostPath      string
 	ContainerPath string
 	ReadOnly      bool
 	// Propagation mirrors Kubernetes MountPropagationMode:
-	// "" / HostToContainer → MS_SLAVE (default)
-	// Bidirectional        → MS_SHARED
+	// "" / HostToContainer -> MS_SLAVE (default)
+	// Bidirectional        -> MS_SHARED
 	Propagation string
 }
 
@@ -177,7 +177,7 @@ type PodConfig struct {
 	ImageCmd        []string
 
 	// TerminationGracePeriodSeconds from the pod spec. Sets TimeoutStopSec
-	// on the systemd unit so SIGTERM → wait → SIGKILL follows the pod's
+	// on the systemd unit so SIGTERM -> wait -> SIGKILL follows the pod's
 	// requested grace period. 0 means use systemd default (90s).
 	TerminationGracePeriodSeconds int64
 }

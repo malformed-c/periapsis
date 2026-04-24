@@ -48,10 +48,10 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 
 	mux := http.NewServeMux()
 	api.AttachPodRoutes(api.PodHandlerConfig{
-		GetContainerLogs:  g.GetContainerLogs,
-		RunInContainer:    g.RunInContainer,
-		AttachToContainer: g.AttachToContainer,
-		PortForward:       g.PortForward,
+		GetContainerLogs: g.GetContainerLogs,
+		RunInContainer:   g.RunInContainer,
+		AttachContainer:  g.AttachContainer,
+		PortForward:      g.PortForward,
 	}, mux, true)
 
 	// /blobs/{digest} - serves cached compressed OCI layer tarballs to peers.

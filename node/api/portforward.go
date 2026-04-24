@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/malformed-c/periapsis/internal/kubernetes/portforward"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubelet/pkg/cri/streaming/portforward"
 )
 
 // PortForwardHandlerFunc defines the handler function used to

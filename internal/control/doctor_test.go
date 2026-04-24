@@ -21,7 +21,7 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// ─── Mock Runtime ─────────────────────────────────────────────────────────────
+// --- Mock Runtime ---
 
 // doctorMockRuntime implements perigeos.Runtime for doctor tests.
 // Only ListManagedMachines is exercised by doctor; all other methods are stubs.
@@ -50,7 +50,7 @@ func (r *doctorMockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.C
 func (r *doctorMockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
 	return nil
 }
-func (r *doctorMockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+func (r *doctorMockRuntime) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
 func (r *doctorMockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
@@ -74,8 +74,11 @@ func (r *doctorMockRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bo
 func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
 	return true
 }
+func (r *doctorMockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
 
-// ─── Mock Network ─────────────────────────────────────────────────────────────
+// --- Mock Network ---
 
 // doctorMockNetwork implements network.NetworkManager. All calls are no-ops.
 type doctorMockNetwork struct{}
@@ -87,7 +90,7 @@ func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ---
 
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
@@ -154,7 +157,7 @@ func callDoctor(t *testing.T, s *Server) DoctorResponse {
 	return resp
 }
 
-// ─── scanDiskPods tests ────────────────────────────────────────────────────────
+// --- scanDiskPods tests ---
 
 func TestScanDiskPods(t *testing.T) {
 	baseDir := t.TempDir()
@@ -215,7 +218,7 @@ func TestScanDiskPods_OnlyDirs(t *testing.T) {
 	}
 }
 
-// ─── diagnosePawn / doctor handler tests ──────────────────────────────────────
+// --- diagnosePawn / doctor handler tests ---
 
 func TestDoctorHealthy(t *testing.T) {
 	// gambit, systemd and disk all agree: one pod, uid-1.
@@ -394,8 +397,8 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	//
 	// Revised plan:
 	//   gambit:  uid-a, uid-b, uid-c, uid-d
-	//   systemd: uid-a, uid-b, uid-orphan          → ghost=uid-c,uid-d; orphan=uid-orphan
-	//   disk:    uid-a, uid-b, uid-stale            → stale=uid-stale;   missing=uid-c,uid-d
+	//   systemd: uid-a, uid-b, uid-orphan          -> ghost=uid-c,uid-d; orphan=uid-orphan
+	//   disk:    uid-a, uid-b, uid-stale            -> stale=uid-stale;   missing=uid-c,uid-d
 
 	initial := []perigeos.PodMetadata{
 		{UID: "uid-a", Name: "pod-a", Namespace: "default"},
@@ -518,7 +521,7 @@ func TestDoctorNoPawns(t *testing.T) {
 	}
 }
 
-// ─── Fuzz / property-based test ───────────────────────────────────────────────
+// --- Fuzz / property-based test ---
 
 // TestDoctorFuzz runs 100 random scenarios and verifies the cross-reference
 // logic is consistent (no UID can appear in both ghost and orphan, counts

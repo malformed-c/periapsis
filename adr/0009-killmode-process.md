@@ -99,7 +99,7 @@ TimeoutStopSec=30s
 
 SIGTERM handler:
 1. Sends `STOPPING=1` to systemd.
-2. Marks all pawns as shutting down (node → NotReady).
+2. Marks all pawns as shutting down (node -> NotReady).
 3. Waits up to 15s for any in-progress apiserver-initiated deletions.
 4. Closes control socket and HTTPS servers.
 5. Exits - containers survive via `KillMode=process`.

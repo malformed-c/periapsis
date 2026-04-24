@@ -26,7 +26,7 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// ─── Prerequisites ───────────────────────────────────────────────────────────
+// --- Prerequisites ---
 
 func requireRoot(t *testing.T) {
 	t.Helper()
@@ -44,7 +44,7 @@ func requireSystemd(t *testing.T) {
 	conn.Close()
 }
 
-// ─── Test Infrastructure ─────────────────────────────────────────────────────
+// --- Test Infrastructure ---
 
 // testHarness holds the real systemd runtime, a real gambit, and temp disk
 // state for cross-checking all 4 sources of pod truth.
@@ -133,7 +133,7 @@ func safePawnName(t *testing.T) string {
 	return s
 }
 
-// ─── Systemd helpers ─────────────────────────────────────────────────────────
+// --- Systemd helpers ---
 
 // spawnUnit creates a transient systemd service that looks like a perigeos pod
 // machine, with embedded PERIGEOS_META_* env vars. This is the same shape
@@ -181,7 +181,7 @@ func (h *testHarness) stopUnit(podUID, container string) {
 	}
 }
 
-// ─── Disk helpers ────────────────────────────────────────────────────────────
+// --- Disk helpers ---
 
 // createPodDir creates the disk workspace for a pod UID.
 func (h *testHarness) createPodDir(podUID string) {
@@ -215,7 +215,7 @@ func (h *testHarness) diskPodUIDs() []string {
 	return uids
 }
 
-// ─── Gambit helpers ──────────────────────────────────────────────────────────
+// --- Gambit helpers ---
 
 // injectPod populates gambit in-memory state by hydrating from a running unit.
 // The unit must already exist in systemd.
@@ -226,10 +226,10 @@ func (h *testHarness) injectViaHydrate() {
 	}
 }
 
-// ─── Snapshot helpers ────────────────────────────────────────────────────────
+// --- Snapshot helpers ---
 
 type stateSnapshot struct {
-	gambitUIDs  map[string]string // uid → ns/name
+	gambitUIDs  map[string]string // uid -> ns/name
 	systemdUIDs map[string]bool
 	diskUIDs    map[string]bool
 }
@@ -355,7 +355,7 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
-// ─── Integration Tests ───────────────────────────────────────────────────────
+// --- Integration Tests ---
 
 // TestIntegration_HydrateMatchesSystemd verifies that after hydrating from
 // systemd, the gambit's in-memory state matches the running machines.
@@ -526,7 +526,7 @@ func TestIntegration_MultiPodLifecycle(t *testing.T) {
 	h.assertAllSourcesAgree(nil)
 }
 
-// ─── Fuzzer ──────────────────────────────────────────────────────────────────
+// --- Fuzzer ---
 
 // TestIntegration_DesyncFuzzer randomly creates and deletes pods via different
 // paths (proper DeletePod vs behind-the-back kills) and verifies state

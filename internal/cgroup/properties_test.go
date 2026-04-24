@@ -11,7 +11,7 @@ func TestMilliCPUToCPUMax(t *testing.T) {
 	if got := MilliCPUToCPUMax(0); got != cgroup2.NewCPUMax(nil, nil) {
 		t.Fatalf("milli=0 got %q, want unlimited", got)
 	}
-	// 500 millicores → quota 50000us, default period 100000us → "50000 100000"
+	// 500 millicores -> quota 50000us, default period 100000us -> "50000 100000"
 	if got := MilliCPUToCPUMax(500); string(got) != "50000 100000" {
 		t.Fatalf("milli=500 got %q, want \"50000 100000\"", got)
 	}
@@ -32,7 +32,7 @@ func TestBuildSystemdProperties_CPUAndMemory(t *testing.T) {
 	res := &cgroup2.Resources{
 		CPU: &cgroup2.CPU{
 			Weight: &weight,
-			Max:    MilliCPUToCPUMax(2000), // 2 cores → quota 200000, period 100000
+			Max:    MilliCPUToCPUMax(2000), // 2 cores -> quota 200000, period 100000
 		},
 		Memory: &cgroup2.Memory{Max: &memMax},
 		Pids:   &cgroup2.Pids{Max: 4096},
@@ -49,7 +49,7 @@ func TestBuildSystemdProperties_CPUAndMemory(t *testing.T) {
 	if v, ok := names["CPUWeight"]; !ok || v.Value().(uint64) != 39 {
 		t.Errorf("CPUWeight: got %+v, want 39", v)
 	}
-	// 2 cores → 2,000,000 us per wall-clock second.
+	// 2 cores -> 2,000,000 us per wall-clock second.
 	if v, ok := names["CPUQuotaPerSecUSec"]; !ok || v.Value().(uint64) != 2_000_000 {
 		t.Errorf("CPUQuotaPerSecUSec: got %+v, want 2_000_000", v)
 	}

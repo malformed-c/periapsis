@@ -284,7 +284,7 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 	})
 
 	// slave becomes stdin/stdout/stderr of the child; Ctty=0 makes it the
-	// controlling terminal (fd 0 after Go's exec dups slave → 0,1,2).
+	// controlling terminal (fd 0 after Go's exec dups slave -> 0,1,2).
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
@@ -310,7 +310,7 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 		}
 	}()
 
-	// Relay stdout: PTY master → attach.Stdout
+	// Relay stdout: PTY master -> attach.Stdout
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -324,7 +324,7 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 		}
 	}()
 
-	// Relay stdin: attach.Stdin → PTY master
+	// Relay stdin: attach.Stdin -> PTY master
 	go func() {
 		if attach.Stdin() == nil {
 			return

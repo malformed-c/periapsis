@@ -19,6 +19,7 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawnstats "github.com/malformed-c/periapsis/internal/stats"
+	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -93,6 +94,9 @@ type Gambit struct {
 
 	node *PawnNode
 }
+
+// Compile-time check that Gambit satisfies PodTracker.
+var _ PodTracker = (*Gambit)(nil)
 
 // creationHandle tracks an in-flight pod creation or a running watcher.
 // The cancel func signals the goroutine to stop; done is closed when it exits.
@@ -214,7 +218,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 	return g
 }
 
-func (g *Gambit) StartBatchWatcher() {
+func (g *Gambit) StartBatchWatcher(sendFact func(types.Fact) bool) {
 	g.batchWatcher = StartBatchWatcher(BatchWatcherDeps{
 		Store:            g.store,
 		Runtime:          g.Runtime,
@@ -227,6 +231,7 @@ func (g *Gambit) StartBatchWatcher() {
 		ParseUnitName: func(unitName string) (string, string) {
 			return ParseUnitName(g.Config.Name, unitName)
 		},
+		SendFact: sendFact,
 	})
 	g.Logger.Info("BatchWatcher started and assigned to Gambit")
 }
@@ -305,6 +310,10 @@ func (g *Gambit) EvictGhost(uid string) {
 	deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 }
 
+func (g *Gambit) GetPodCopy(uid string) *corev1.Pod {
+	return g.store.GetPodCopy(uid)
+}
+
 func (g *Gambit) BuildNode() *corev1.Node {
 	return g.node.BuildNode()
 }
@@ -351,13 +360,16 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	// Create a snapshot of the pod right now
 	podCopy := pod.DeepCopy()
 
+	uid := string(pod.UID)
 	var caller string
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
 	g.Logger.Debug("notifyPodStatus",
+		"uid", uid,
 		"pod", pod.Name,
 		"phase", pod.Status.Phase,
+		"ip", pod.Status.PodIP,
 		"reason", pod.Status.Reason,
 		"containers", summarizeContainerStatuses(pod.Status.ContainerStatuses),
 		"caller", caller,
@@ -368,7 +380,7 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 
 	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
 	// so HydrateFromRuntime knows not to resurrect them.
-	uid := string(pod.UID)
+	uid = string(pod.UID)
 	podIP := g.store.PodIP(uid)
 	counts := g.store.RestartCounts(uid)
 	backoffs := g.store.RestartBackoffs(uid)
@@ -410,6 +422,17 @@ func (g *Gambit) PersistPodState(pod *corev1.Pod) {
 	}
 }
 
+// PersistPodStateByUID persists pod state to disk using only the pod UID.
+// This is the callback wired into SyzygyDeps.PersistPodState - Syzygy
+// holds no *corev1.Pod, only the UID from the PersistPodState effect.
+func (g *Gambit) PersistPodStateByUID(uid string) {
+	pod := g.store.GetPodCopy(uid)
+	if pod == nil {
+		return
+	}
+	g.PersistPodState(pod)
+}
+
 // RestartContainerCB is the exported wrapper for restartContainer callback.
 func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1.Pod, containerName string, count int32, backoff time.Duration) {
 	g.restartContainer(ctx, uid, pod, containerName, count, backoff)
@@ -420,7 +443,7 @@ func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, stri
 	return g.buildPodStatus(pod, stateLookup)
 }
 
-// ─── Pod Lifecycle ───────────────────────────────────────────────────────────
+// --- Pod Lifecycle ---
 
 // TODO rm
 // func (g *Gambit) setKind(pod *corev1.Pod) {

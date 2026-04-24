@@ -137,7 +137,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	createHomeDir(rootfs, uid, gid, logger)
 }
 
-// ---------------------------------------------------------------------------
+// ---
 // Host-side userns shim support (ADR-0010)
 //
 // The userns-shim binary runs inside the container, calls
@@ -145,7 +145,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 // and send the target uid:gid via a FIFO. This creates the user namespace
 // AFTER nspawn has joined the CNI netns, avoiding the --private-users +
 // --network-namespace-path incompatibility.
-// ---------------------------------------------------------------------------
+// ---
 
 const (
 	// usernsShimHostPath is the install location of the static userns-shim binary.
@@ -216,7 +216,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	}
 
 	// Step 3: Write uid_map and gid_map.
-	// Map: inside 0-65535 → host UIDBASE to UIDBASE+65535.
+	// Map: inside 0-65535 -> host UIDBASE to UIDBASE+65535.
 	// The shim (host uid 0) is unmapped (65534) in the new userns until
 	// it calls setuid() to adopt the target identity.
 	uidbase := computeUIDBASE(podUID)

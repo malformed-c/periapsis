@@ -73,7 +73,7 @@ Gambit computes disk/memory/PID pressure for node conditions. VK reports these c
 
 **Changes required:**
 - Periodic eviction check in the sync loop (or as a separate controller)
-- Priority-sorted pod list with QoS-class tiebreaking (BestEffort → Burstable → Guaranteed)
+- Priority-sorted pod list with QoS-class tiebreaking (BestEffort -> Burstable -> Guaranteed)
 - Provider hook to report current per-pod resource consumption
 
 ### ConfigMap/Secret refresh - done
@@ -97,7 +97,7 @@ remain immutable after start (matching kubelet behavior).
 ### Pod creation reordering - done
 
 ADR-0002 dissolved the provider interface boundary. `createPodSync` now runs:
-CNI setup → `PopulateEnvironmentVariables` (podIP known) → image pull → RunMachine.
+CNI setup -> `PopulateEnvironmentVariables` (podIP known) -> image pull -> RunMachine.
 The ADR-0001 `status.podIP` empty-at-env-time bug is structurally eliminated.
 
 ### Unified status reporting - done

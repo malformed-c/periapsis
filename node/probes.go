@@ -180,6 +180,11 @@ func (pr *ProbeRunner) runExecProbe(ctx context.Context, pod *corev1.Pod, contai
 // isDue returns true if enough time has passed since the last probe of this type.
 // On the first invocation (no LastProbeTime entry), it respects InitialDelaySeconds
 // measured from the container's start time before allowing the probe to fire.
+// IsDue reports whether a probe of the given type is due to run.
+func IsDue(state *ContainerProbeState, probeType string, periodSeconds, initialDelaySeconds int32) bool {
+	return isDue(state, probeType, periodSeconds, initialDelaySeconds)
+}
+
 func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialDelaySeconds int32) bool {
 	if periodSeconds <= 0 {
 		periodSeconds = 10 // k8s default
@@ -193,6 +198,11 @@ func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialD
 		return true
 	}
 	return time.Since(last) >= time.Duration(periodSeconds)*time.Second
+}
+
+// MarkProbed records that a probe was just executed.
+func MarkProbed(state *ContainerProbeState, probeType string) {
+	markProbed(state, probeType)
 }
 
 // markProbed records that a probe was just executed.
@@ -259,7 +269,7 @@ func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result Probe
 	}
 }
 
-// ─── noopAttachIO ────────────────────────────────────────────────────────────
+// --- noopAttachIO ---
 
 // noopAttachIO implements api.AttachIO for exec probes.
 // Discards all output, provides no input, and reports no TTY.

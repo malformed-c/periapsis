@@ -34,10 +34,10 @@ type ServeMux interface {
 }
 
 type PodHandlerConfig struct { //nolint:golint
-	RunInContainer    ContainerExecHandlerFunc
-	AttachToContainer ContainerAttachHandlerFunc
-	PortForward       PortForwardHandlerFunc
-	GetContainerLogs  ContainerLogsHandlerFunc
+	RunInContainer   ContainerExecHandlerFunc
+	AttachContainer  ContainerAttachHandlerFunc
+	PortForward      PortForwardHandlerFunc
+	GetContainerLogs ContainerLogsHandlerFunc
 	// GetPods is meant to enumerate the pods that the provider knows about
 	GetPods PodListerFunc
 	// GetPodsFromKubernetes is meant to enumerate the pods that the node is meant to be running
@@ -72,7 +72,7 @@ func PodHandler(p PodHandlerConfig, debug bool) http.Handler {
 	r.HandleFunc(
 		"/attach/{namespace}/{pod}/{container}",
 		HandleContainerAttach(
-			p.AttachToContainer,
+			p.AttachContainer,
 			WithExecStreamCreationTimeout(p.StreamCreationTimeout),
 			WithExecStreamIdleTimeout(p.StreamIdleTimeout),
 		),

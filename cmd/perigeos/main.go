@@ -23,6 +23,7 @@ import (
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/control"
+	"github.com/malformed-c/periapsis/internal/horizon"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/join"
 	"github.com/malformed-c/periapsis/internal/network"
@@ -31,6 +32,7 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
+	"github.com/malformed-c/periapsis/internal/syzygy"
 	"github.com/malformed-c/periapsis/internal/vklogger"
 	vklog "github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/node"
@@ -130,16 +132,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	perigeoCfg, err := rawCfg.Process(*baseDirFlag)
+	perigeosCfg, err := rawCfg.Process(*baseDirFlag)
 	if err != nil {
 		logger.Error("Config process failed", "err", err)
 		os.Exit(1)
 	}
 
-	pawnCount := len(perigeoCfg.Pawns)
-	if pawnCount < 1 {
-		pawnCount = 1
-	}
+	pawnCount := max(len(perigeosCfg.Pawns), 1)
 
 	kubeConfig, err := clientcmd.BuildConfigFromFlags("", *kubeConfigPath)
 	if err != nil {
@@ -209,6 +208,7 @@ func main() {
 	var clusterDNS string
 	if svc, err := kubeClient.CoreV1().Services("kube-system").Get(ctx, "kube-dns", metav1.GetOptions{}); err != nil {
 		logger.Warn("Could not auto-detect cluster DNS from kube-dns service; DNS may not work in containers", "err", err)
+
 	} else {
 		clusterDNS = svc.Spec.ClusterIP
 		logger.Info("Auto-detected cluster DNS", "ip", clusterDNS)
@@ -224,27 +224,32 @@ func main() {
 		apiServerHost = svc.Spec.ClusterIP
 		if len(svc.Spec.Ports) > 0 {
 			apiServerPort = fmt.Sprintf("%d", svc.Spec.Ports[0].Port)
+
 		} else {
 			apiServerPort = "443"
 		}
 		logger.Info("API server address for pod injection", "host", apiServerHost, "port", apiServerPort)
+
 	} else {
 		logger.Warn("Could not auto-detect Kubernetes service ClusterIP; in-cluster auth may not work in containers", "err", err)
 	}
 
 	// --- Clean up stale pawn slices from previous config ---
 	{
-		pawnNames := make([]string, len(perigeoCfg.Pawns))
-		for i, p := range perigeoCfg.Pawns {
+		pawnNames := make([]string, len(perigeosCfg.Pawns))
+		for i, p := range perigeosCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
+
 		cleanupRT, err := systemd.NewSystemdRuntime(ctx, "_cleanup", nil, logger, execStrategy, nil)
 		if err != nil {
 			logger.Warn("Could not create cleanup runtime for stale slice check", "err", err)
+
 		} else {
 			cleaned, err := cleanupRT.CleanStalePawnSlices(ctx, pawnNames)
 			if err != nil {
 				logger.Warn("Stale pawn slice cleanup failed", "err", err)
+
 			} else if len(cleaned) > 0 {
 				logger.Info("Cleaned stale pawn slices", "count", len(cleaned), "pawns", cleaned)
 				// Also clean disk directories for stale pawns.
@@ -265,16 +270,18 @@ func main() {
 	)
 
 	// --- Control socket for apsis CLI and remote control (Varlink) ---
-	controlSrv := control.New(*controlSocketFlag, perigeoCfg, logger.With("component", "control"))
+	controlSrv := control.New(*controlSocketFlag, perigeosCfg, logger.With("component", "control"))
 
-	if *controlTCPFlag != "" && perigeoCfg.Global.ServerCAPath != "" {
-		caCert, caKey, err := pki.LoadCA(perigeoCfg.Global.ServerCAPath, perigeoCfg.Global.ServerCAKeyPath)
+	if *controlTCPFlag != "" && perigeosCfg.Global.ServerCAPath != "" {
+		caCert, caKey, err := pki.LoadCA(perigeosCfg.Global.ServerCAPath, perigeosCfg.Global.ServerCAKeyPath)
 		if err != nil {
 			logger.Warn("Could not load CA for control TCP listener - remote access disabled", "err", err)
+
 		} else {
 			cert, err := pki.GenerateCert("perigeos-control", caCert, caKey)
 			if err != nil {
 				logger.Warn("Could not generate control server cert", "err", err)
+
 			} else {
 				controlSrv.SetTCPListener(*controlTCPFlag, &cert, caCert)
 			}
@@ -290,22 +297,24 @@ func main() {
 	// The agent/operator are deployed separately (not by perigeos).
 	// Perigeos only consumes the CNI interface (ADD/DEL via libcni).
 	var sharedNM network.NetworkManager
-	if perigeoCfg.Global.CNI != nil {
+	if perigeosCfg.Global.CNI != nil {
 		cnm, err := network.NewConstellationNetworkManager(
 			ctx,
 			logger.With("component", "network"),
 			network.ConstellationConfig{
-				ConfDir: perigeoCfg.Global.CNI.ConfDir,
-				BinDir:  perigeoCfg.Global.CNI.BinDir,
-				Debug:   perigeoCfg.Global.CNI.Debug,
+				ConfDir: perigeosCfg.Global.CNI.ConfDir,
+				BinDir:  perigeosCfg.Global.CNI.BinDir,
+				Debug:   perigeosCfg.Global.CNI.Debug,
 			},
 		)
 		if err != nil {
 			logger.Error("Failed to init Constellation CNI manager", "err", err)
+
 			os.Exit(1)
 		}
 		sharedNM = cnm
 		logger.Info("Constellation CNI active")
+
 	} else {
 		logger.Warn("No [global.cni] config and constellation-agent socket not found - falling back to built-in veth networking; cross-host pod connectivity will NOT work. Add [global.cni] to perigeos.toml if Constellation is deployed (socket auto-detection fails when the agent is managed by perigeos and not yet started).")
 	}
@@ -314,34 +323,38 @@ func main() {
 	// If a real kubelet already registered a node with our hostname (e.g.
 	// k3s agent), just label it. Otherwise the config processor already
 	// added a primary virtual node that will be created like any pawn.
-	if perigeoCfg.Global.Primary {
+	if perigeosCfg.Global.Primary {
 		hostName, _ := os.Hostname()
 		if hostName != "" {
 			existingNode, err := kubeClient.CoreV1().Nodes().Get(ctx, hostName, metav1.GetOptions{})
 			isRealKubelet := err == nil && !strings.HasPrefix(existingNode.Spec.ProviderID, "perigeos://")
 			if isRealKubelet {
 				// Real kubelet node exists - label it and remove the virtual primary pawn.
-				labelPatch := []byte(`{"metadata":{"labels":{` +
-					`"periapsis.io/host":"` + hostName + `",` +
-					`"periapsis.io/primary":"true",` +
-					`"node-role.kubernetes.io/primary":""}}}`)
+				labelPatch := []byte(
+					`{"metadata":{"labels":{` +
+						`"periapsis.io/host":"` + hostName + `",` +
+						`"periapsis.io/primary":"true",` +
+						`"node-role.kubernetes.io/primary":""}}}`,
+				)
 				if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, hostName, k8stypes.StrategicMergePatchType, labelPatch, metav1.PatchOptions{}); err != nil {
 					logger.Warn("Could not label primary node", "node", hostName, "err", err)
+
 				} else {
 					logger.Info("Labeled existing primary node", "node", hostName)
 				}
 				// Drop the auto-generated primary pawn - real kubelet handles it.
-				perigeoCfg.Pawns = slices.DeleteFunc(perigeoCfg.Pawns, func(p config.PawnConfig) bool {
+				perigeosCfg.Pawns = slices.DeleteFunc(perigeosCfg.Pawns, func(p config.PawnConfig) bool {
 					return p.IsPrimary
 				})
+
 			} else {
-				logger.Info("Creating virtual primary node", "node", hostName)
+				logger.Info("Creating primary node", "node", hostName)
 			}
 		}
 	}
 
 	// Shared image manager - one manifest cache + singleflight across all pawns.
-	sharedIM := image.NewImageManager(perigeoCfg.Global.BaseDir, logger)
+	sharedIM := image.NewImageManager(perigeosCfg.Global.BaseDir, logger)
 	sharedIM.SweepStaleTmpDirs()
 
 	// P2P blob cache - peers pull layers from each other before hitting upstream.
@@ -357,8 +370,8 @@ func main() {
 
 	// --- Plugin registration: watch CSI driver sockets, create CSINode per pawn ---
 	{
-		pawnNames := make([]string, len(perigeoCfg.Pawns))
-		for i, p := range perigeoCfg.Pawns {
+		pawnNames := make([]string, len(perigeosCfg.Pawns))
+		for i, p := range perigeosCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
 		pw := plugin.NewPluginWatcher(kubeClient, pawnNames, logger.With("component", "plugin-watcher"))
@@ -376,6 +389,7 @@ func main() {
 	if err != nil {
 		logger.Warn("Could not open shared signal D-Bus connection; event subscriptions will be disabled", "err", err)
 	}
+
 	if sharedSigConn != nil {
 		defer sharedSigConn.Close()
 		// Subscribe once for the shared connection - individual pawns skip
@@ -392,7 +406,7 @@ func main() {
 		gambitsMu  sync.Mutex
 	)
 
-	for _, pawnCfg := range perigeoCfg.Pawns {
+	for _, pawnCfg := range perigeosCfg.Pawns {
 		wg.Go(func() {
 
 			pawnName := pawnCfg.Name
@@ -400,6 +414,7 @@ func main() {
 			var nm network.NetworkManager
 			if sharedNM != nil {
 				nm = sharedNM
+
 			} else {
 				nm = network.NewLinuxNetworkManager(pawnLogger.With("component", "network"))
 			}
@@ -409,12 +424,13 @@ func main() {
 			rt, err := systemd.NewSystemdRuntime(context.Background(), pawnName, sharedIM, pawnLogger, execStrategy, sharedSigConn)
 			if err != nil {
 				pawnLogger.Error("Failed to init runtime", "err", err)
+
 				return
 			}
 
 			sliceCfg := perigeos.PawnSliceConfig{
 				Name:                pawnCfg.Name,
-				BaseDir:             perigeoCfg.Global.BaseDir,
+				BaseDir:             perigeosCfg.Global.BaseDir,
 				CPU:                 pawnCfg.CPU,
 				Memory:              pawnCfg.Memory,
 				CPUWeight:           pawnCfg.CPUWeight,
@@ -470,9 +486,38 @@ func main() {
 			allGambits = append(allGambits, g)
 			gambitsMu.Unlock()
 
+			// --- Horizon: pure k8s API executor (worker pool) ---
+			h := horizon.NewHorizon(horizon.HorizonConfig{
+				Logger:      pawnLogger,
+				Client:      kubeClient,
+				RecordEvent: horizon.EventRecorderAdapter(eventRecorder, store.GetPodCopy),
+				ResetUnit: func(ctx context.Context, uid, containerName string) {
+					_ = rt.ResetUnit(ctx, uid, containerName)
+				},
+				RestartContainer: func(ctx context.Context, uid, namespace, podName, containerName string, count int32, backoff time.Duration) {
+					pod := store.GetPodCopy(uid)
+					if pod != nil {
+						g.RestartContainerCB(ctx, uid, pod, containerName, count, backoff)
+					}
+				},
+			})
+
+			// --- Syzygy: single-goroutine state machine + effect worker pool ---
+			sz := syzygy.NewSyzygy(syzygy.SyzygyConfig{
+				Logger:           pawnLogger,
+				Horizon:          h,
+				SetPodPhase:      store.SetPhase,
+				PersistPodState:  g.PersistPodStateByUID,
+				InitRestartState: store.InitRestartStateFrom,
+			})
+
+			wg.Go(func() { h.Run(ctx, 8) })
+			wg.Go(func() { sz.Run(ctx, 0) })
+
 			// Start the batch watcher - single goroutine per pawn that monitors
 			// all containers and handles restarts + probes.
-			g.StartBatchWatcher()
+			// sz.Send is the fact channel into Syzygy.
+			g.StartBatchWatcher(sz.Send)
 			wg.Go(func() { <-ctx.Done(); g.StopBatchWatcher() })
 
 			nodeController, err := node.NewNodeController(
@@ -491,6 +536,7 @@ func main() {
 			)
 			if err != nil {
 				pawnLogger.Error("Error creating NodeController", "err", err)
+
 				return
 			}
 
@@ -524,6 +570,7 @@ func main() {
 			})
 			if err != nil {
 				pawnLogger.Error("Error creating PodController", "err", err)
+
 				return
 			}
 			controlSrv.RegisterQueues(pawnName, podController)
@@ -589,14 +636,15 @@ func main() {
 			})
 
 			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{
-				CACertPath:   perigeoCfg.Global.ServerCAPath,
-				CAKeyPath:    perigeoCfg.Global.ServerCAKeyPath,
+				CACertPath:   perigeosCfg.Global.ServerCAPath,
+				CAKeyPath:    perigeosCfg.Global.ServerCAKeyPath,
 				ConfigDir:    filepath.Dir(*perigeosConfigPath),
 				KubeClient:   kubeClient,
 				ImageManager: sharedIM,
 			})
 			if err != nil {
 				pawnLogger.Error("Error creating PawnServer - port already bound or TLS failure", "port", pawnCfg.Port, "err", err)
+
 				return
 			}
 			pawnLogger.Info("Pawn API server listening", "port", pawnCfg.Port)
@@ -615,50 +663,58 @@ func main() {
 
 	// Wait briefly for at least one pawn to start, then check.
 	time.Sleep(2 * time.Second)
+
 	serversMu.Lock()
 	startedCount := len(activeServers)
 	serversMu.Unlock()
+
 	if startedCount == 0 {
 		logger.Warn("No pawns started within 2s, waiting for all to complete...")
 	}
 
-	logger.Info("Perigeos running", "pawns", len(perigeoCfg.Pawns), "base-dir", *baseDirFlag)
+	logger.Info("Perigeos running", "pawns", len(perigeosCfg.Pawns), "base-dir", *baseDirFlag)
 
 	// Notify systemd that startup is complete. With Type=notify, systemd
-	// waits for this before reporting the unit as active.
+	// waits for this before reporting the unit as active
 	if sent, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
 		logger.Warn("sd_notify READY failed", "err", err)
+
 	} else if sent {
 		logger.Debug("sd_notify READY sent")
 	}
 
 	// Start watchdog pings if WatchdogSec is configured. The interval
-	// returned by SdWatchdogEnabled is half the configured period.
+	// returned by SdWatchdogEnabled is half the configured period
 	if watchdogInterval, err := daemon.SdWatchdogEnabled(false); err == nil && watchdogInterval > 0 {
 		go func() {
 			ticker := time.NewTicker(watchdogInterval / 2)
 			defer ticker.Stop()
+
 			for {
 				select {
 				case <-ticker.C:
 					_, _ = daemon.SdNotify(false, daemon.SdNotifyWatchdog)
+
 				case <-ctx.Done():
 					return
 				}
 			}
 		}()
+
 		logger.Info("Watchdog pings enabled", "interval", watchdogInterval/2)
 	}
 
-	// Sweep stale network namespaces left by ghost pods from previous runs.
+	// Sweep stale network namespaces left by ghost pods from previous runs
 	if cnm, ok := sharedNM.(*network.ConstellationNetworkManager); ok {
 		go func() {
-			// Wait for hydration and informer sync to settle.
+			// Wait for hydration and informer sync to settle
 			select {
 			case <-time.After(15 * time.Second):
+
 			case <-ctx.Done():
 				return
 			}
+
 			activeUIDs := controlSrv.AllPodUIDs()
 			cnm.SweepStaleNetns(ctx, activeUIDs)
 		}()
@@ -673,7 +729,7 @@ func main() {
 	// survive and HydrateFromRuntime rediscovers them. Marking NotReady causes
 	// Constellation and other node-watching agents to tear down per-node state
 	// (CNI endpoints, managed-nodes cache) and not re-establish it when the
-	// node returns Ready, requiring a manual agent restart.
+	// node returns Ready, requiring a manual agent restart
 	//
 	// For intentional decommission, use: apsis drain
 	logger.Info("Exiting without marking nodes NotReady (use 'apsis drain' for decommission)")
@@ -687,6 +743,7 @@ func main() {
 	for drainCtx.Err() == nil {
 		anyDeleting := false
 		gambitsMu.Lock()
+
 		for _, g := range allGambits {
 			if g.DeletionsInProgress() {
 				anyDeleting = true
@@ -694,13 +751,17 @@ func main() {
 			}
 		}
 		gambitsMu.Unlock()
+
 		if !anyDeleting {
 			break
 		}
+
 		logger.Info("Waiting for in-progress deletions to complete...")
+
 		select {
 		case <-drainCtx.Done():
 			logger.Warn("Drain timeout - exiting with deletions still in progress")
+
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
@@ -711,6 +772,7 @@ func main() {
 	if err := controlSrv.Stop(shutdownCtx); err != nil {
 		logger.Warn("Control socket shutdown error", "err", err)
 	}
+
 	for _, srv := range activeServers {
 		if err := srv.Stop(shutdownCtx); err != nil {
 			logger.Warn("Server shutdown error", "err", err)
@@ -731,11 +793,14 @@ func runJoin(logger *slog.Logger) {
 	fs := flag.NewFlagSet("perigeos join", flag.ExitOnError)
 	opts := &join.Options{}
 	opts.RegisterFlags(fs)
+
 	_ = fs.Parse(os.Args[2:])
 
 	if err := opts.Validate(); err != nil {
 		logger.Error("Invalid join options", "err", err)
+
 		fs.Usage()
+
 		os.Exit(1)
 	}
 
@@ -745,6 +810,7 @@ func runJoin(logger *slog.Logger) {
 	runner := join.New(opts, logger)
 	if err := runner.Run(ctx); err != nil {
 		logger.Error("Join failed", "err", err)
+
 		os.Exit(1)
 	}
 }
@@ -763,6 +829,7 @@ func addNoProxy(addr string) {
 		host = addr
 	}
 
+Out:
 	for _, key := range []string{"NO_PROXY", "no_proxy"} {
 		cur := os.Getenv(key)
 		if cur == "" {
@@ -773,12 +840,10 @@ func addNoProxy(addr string) {
 
 		for entry := range strings.SplitSeq(cur, ",") {
 			if strings.TrimSpace(entry) == host {
-				goto next
+				continue Out
 			}
 		}
 
 		_ = os.Setenv(key, fmt.Sprintf("%s,%s", cur, host))
-
-	next:
 	}
 }

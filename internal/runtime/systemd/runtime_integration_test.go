@@ -109,7 +109,7 @@ func spawnSleepUnit(t *testing.T, rt *rtsd.SystemdRuntime, pawn, podUID, contain
 	})
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 func TestSystemd_MachineStatus_Running(t *testing.T) {
 	rt := newTestRuntime(t)

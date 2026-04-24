@@ -22,7 +22,7 @@ VXLAN tunnel between hosts runs over the wired link, not WiFi.
 
 engix99      30 pawns    1,660 pods    365 MiB daemon RSS
 engifire      2 pawns      112 pods     89 MiB daemon RSS
-                          ─────
+                          -----
                           1,772 pods
 ```
 
@@ -172,7 +172,7 @@ envoy-gateway-59f6cb6596-bs2zt                            1/1     engix99
 | p99 latency | 10 ms | 151.5 ms |
 | Error rate | 0.00% | 0.00% |
 
-**Note on Envoy latency:** During this test engix99 was running at a load average of 100–200. The 72 ms median latency reflects Envoy threads being starved of CPU on a heavily oversubscribed machine, not standard L7 proxy overhead. The fact that Envoy still routed 1 million requests with 0% errors under these conditions demonstrates datapath stability; the raw throughput and latency numbers are not representative of a properly-resourced deployment.
+**Note on Envoy latency:** During this test engix99 was running at a load average of 100-200. The 72 ms median latency reflects Envoy threads being starved of CPU on a heavily oversubscribed machine, not standard L7 proxy overhead. The fact that Envoy still routed 1 million requests with 0% errors under these conditions demonstrates datapath stability; the raw throughput and latency numbers are not representative of a properly-resourced deployment.
 
 ## The Numbers
 

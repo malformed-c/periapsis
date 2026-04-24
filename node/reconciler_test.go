@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// ─── Mock Runtime ─────────────────────────────────────────────────────────────
+// --- Mock Runtime ---
 
 type mockRuntime struct {
 	machines []perigeos.PodMetadata
@@ -42,7 +42,7 @@ func (m *mockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.Contain
 func (m *mockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
 	return nil
 }
-func (m *mockRuntime) AttachToContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
+func (m *mockRuntime) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
 	return nil
 }
 func (m *mockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
@@ -67,7 +67,11 @@ func (m *mockRuntime) SliceActive(ctx context.Context) bool {
 	return true
 }
 
-// ─── Mock Network ─────────────────────────────────────────────────────────────
+func (r *mockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
+	return nil
+}
+
+// --- Mock Network ---
 
 type mockNetwork struct {
 	tornDown []string
@@ -81,7 +85,7 @@ func (m *mockNetwork) Teardown(_ context.Context, podUID, _, _ string) error {
 	return nil
 }
 
-// ─── Mock Pod Lister ──────────────────────────────────────────────────────────
+// --- Mock Pod Lister ---
 
 type mockPodLister struct {
 	pods []*corev1.Pod
@@ -99,14 +103,14 @@ func (m *mockPodLister) Get(name string) (*corev1.Pod, error) {
 	return nil, nil
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ---
 
 func newTestReconciler(rt *mockRuntime, nm *mockNetwork, lister *mockPodLister) *TestReconciler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewReconcilerForTest(rt, nm, lister, logger)
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// --- Tests ---
 
 func TestReconciler_OrphanMachineIsStopped(t *testing.T) {
 	rt := &mockRuntime{

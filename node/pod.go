@@ -190,7 +190,6 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 	defer span.End()
 	ctx = addPodAttributes(ctx, span, pod)
 
-	// TODO copy into podlite
 	podCopy := pod.DeepCopy()
 
 	if err := pc.provider.DeletePod(ctx, podCopy); err != nil {

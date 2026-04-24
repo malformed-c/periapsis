@@ -23,10 +23,10 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/malformed-c/periapsis/errdefs"
-	"github.com/malformed-c/periapsis/internal/kubernetes/remotecommand"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/types"
 	remoteutils "k8s.io/client-go/tools/remotecommand"
+	"k8s.io/kubelet/pkg/cri/streaming/remotecommand"
 )
 
 // ContainerExecHandlerFunc defines the handler function used for "execing" into a
@@ -171,7 +171,19 @@ type containerExecContext struct {
 
 // ExecInContainer Implements remotecommand.Executor
 // This is called by remotecommand.ServeExec
-func (c *containerExecContext) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remoteutils.TerminalSize, timeout time.Duration) error {
+func (c *containerExecContext) ExecInContainer(
+	ctx context.Context,
+	name string,
+	uid types.UID,
+	container string,
+	cmd []string,
+	in io.Reader,
+	out,
+	err io.WriteCloser,
+	tty bool,
+	resize <-chan remoteutils.TerminalSize,
+	timeout time.Duration,
+) error {
 
 	eio := &execIO{
 		tty:    tty,

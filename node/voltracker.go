@@ -4,8 +4,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	corev1 "k8s.io/api/core/v1"
 	"log/slog"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/malformed-c/periapsis/internal/volume"
 )
@@ -22,8 +23,8 @@ type volumeMount struct {
 // O(1) live refresh when an informer fires an update event.
 type VolumeTracker struct {
 	mu           sync.RWMutex
-	volRefs      map[string][]volumeMount // "kind:ns/name" → mounts
-	volRefsByPod map[string][]string      // podUID → keys for cleanup
+	volRefs      map[string][]volumeMount // "kind:ns/name" -> mounts
+	volRefsByPod map[string][]string      // podUID -> keys for cleanup
 
 	baseDir  string
 	pawnName string

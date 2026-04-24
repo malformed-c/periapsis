@@ -46,7 +46,7 @@ func (g *Gambit) GetContainerLogs(
 	return g.Runtime.GetLogStream(ctx, uid, containerName, opts)
 }
 
-func (g *Gambit) AttachToContainer(
+func (g *Gambit) AttachContainer(
 	ctx context.Context,
 	namespace, podName, containerName string,
 	attach api.AttachIO,
@@ -55,7 +55,7 @@ func (g *Gambit) AttachToContainer(
 	if err != nil {
 		return err
 	}
-	return g.Runtime.AttachToContainer(ctx, uid, containerName, attach)
+	return g.Runtime.AttachContainer(ctx, uid, containerName, attach)
 }
 
 func (g *Gambit) RunInContainer(
@@ -76,7 +76,7 @@ func (g *Gambit) findPodUID(namespace, podName string) (string, error) {
 	return g.store.FindPodUID(namespace, podName)
 }
 
-// ─── Node Conditions ─────────────────────────────────────────────────────────
+// --- Node Conditions ---
 
 // setKind restores Pod TypeMeta stripped by client-go informers.
 // Required for the EventRecorder to construct object references correctly.

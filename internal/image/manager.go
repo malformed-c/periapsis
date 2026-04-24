@@ -43,8 +43,8 @@ type ImageManager struct {
 	peerClient *http.Client // shared transport; nil until SetPeers is called
 
 	mu            sync.Mutex
-	manifestCache map[string]v1.Image     // image name → resolved manifest
-	configCache   map[string]*imageConfig // image name → persisted config (entrypoint/cmd)
+	manifestCache map[string]v1.Image     // image name -> resolved manifest
+	configCache   map[string]*imageConfig // image name -> persisted config (entrypoint/cmd)
 	imageSF       singleflight.Group      // deduplicates manifest resolution by image name
 	layerSF       singleflight.Group      // deduplicates layer downloads by content hash
 
@@ -52,7 +52,7 @@ type ImageManager struct {
 	// Value type is chan struct{} - closed when the pull completes.
 	// Exposed via /blobs/inflight so peers can discover and wait on our pulls
 	// instead of independently downloading the same layer from upstream.
-	inflightLayers sync.Map // hash → chan struct{}
+	inflightLayers sync.Map // hash -> chan struct{}
 
 	// selfMarker is a random token registered as a permanent entry in
 	// inflightLayers. When peersWithInflight queries a peer and sees this
@@ -60,7 +60,7 @@ type ImageManager struct {
 	// perigeos process - belt-and-braces against a misconfigured host
 	// filter sending us into a wait-on-self deadlock.
 	selfMarker   string
-	knownSelfEps sync.Map // ep → true, cached after first detection
+	knownSelfEps sync.Map // ep -> true, cached after first detection
 }
 
 // imageConfig holds the subset of OCI image config we need across restarts.
@@ -138,7 +138,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 		}
 		imageName := strings.NewReplacer("_", "/").Replace(safe)
 		// Restore the tag separator: the last "_" before a tag is actually ":"
-		// e.g. "library_nginx_latest" → "library/nginx:latest" isn't fully
+		// e.g. "library_nginx_latest" -> "library/nginx:latest" isn't fully
 		// recoverable without the original, so we store the safe name as-is
 		// and show it. This is cosmetic - the actual data is in the paths.
 		if seen[imageName] {
@@ -235,7 +235,7 @@ func (im *ImageManager) ImageEntrypoint(imageName string) (entrypoint, cmd []str
 }
 
 // Pull ensures all OCI image layers are extracted to disk.
-// Returns ordered layer paths (bottom → top) ready for overlayfs lowerdir.
+// Returns ordered layer paths (bottom -> top) ready for overlayfs lowerdir.
 //
 // pullPolicy follows Kubernetes semantics:
 //   - "Always"       - always resolve the manifest from the registry (default)
@@ -893,7 +893,7 @@ func (im *ImageManager) Mount(podUID string, layerPaths []string) (string, error
 	}
 
 	// OverlayFS requires lowerdir order: top_layer:...:bottom_layer
-	// Our Pull() returns bottom→top, so reverse before joining
+	// Our Pull() returns bottom->top, so reverse before joining
 	reversed := make([]string, len(layerPaths))
 	copy(reversed, layerPaths)
 	slices.Reverse(reversed)

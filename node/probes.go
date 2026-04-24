@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"time"
@@ -193,7 +194,7 @@ func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialD
 		// First probe: seed LastProbeTime with a random jitter in [0, periodSeconds)
 		// so pods started at the same time don't all probe simultaneously.
 		// The jitter is added on top of initialDelaySeconds so manifest semantics
-		// are preserved — the first probe won't fire before initialDelaySeconds.
+		// are preserved - the first probe won't fire before initialDelaySeconds.
 		if state.LastProbeTime == nil {
 			state.LastProbeTime = make(map[string]time.Time)
 		}
@@ -204,7 +205,7 @@ func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialD
 			// Subtract one period so the normal ">= period since last" check fires at the right time.
 			state.LastProbeTime[probeType] = state.StartedAt.Add(initialDelay + jitter - time.Duration(periodSeconds)*time.Second)
 		} else {
-			// No StartedAt — fire after jitter from now.
+			// No StartedAt - fire after jitter from now.
 			state.LastProbeTime[probeType] = time.Now().Add(jitter - time.Duration(periodSeconds)*time.Second)
 		}
 	}

@@ -25,6 +25,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 	diskUIDs := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		uid := string(state.Pod.UID)
+
 		// Skip terminal pods - they completed before the restart and should
 		// not be resurrected. The PodController will see them as gone.
 		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
@@ -53,6 +54,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		}
 
 		g.store.InitRestartState(state.Pod)
+
 		// InitRestartState resets restarts - re-apply the persisted counts
 		// and backoff durations.
 		uid := string(state.Pod.UID)
@@ -93,6 +95,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 					UID:       types.UID(m.UID),
 				},
 			}
+
 			g.store.RegisterHydrated(m.UID, pod, m.PodIP)
 			g.store.InitRestartState(pod)
 		}
@@ -109,6 +112,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		hydratedUIDs := g.store.HydratedUIDs()
 		for _, e := range entries2 {
 			if !e.IsDir() {
+
 				continue
 			}
 
@@ -154,13 +158,16 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 
 	stale := make([]string, 0)
 	for uid := range hydratedUIDs {
+
 		// If CreatePod was called for this UID, it's confirmed - skip.
 		// (CreatePod replaces the hydration stub with the full pod object,
 		// which has Spec.Containers populated.)
 		pod := g.store.GetPodCopy(uid)
 		if pod != nil && len(pod.Spec.Containers) > 0 {
+
 			continue
 		}
+
 		// Check the informer cache - if k8s doesn't know about it, it's stale.
 		if podLister != nil {
 			pods, err := podLister.List(labels.Everything())

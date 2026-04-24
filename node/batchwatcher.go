@@ -269,6 +269,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	// Clear container state for any non-running/non-starting substate.
 	if ev.SubState != "running" && ev.SubState != "start" &&
 		ev.SubState != "start-pre" && ev.SubState != "start-post" {
+
 		// TODO: Fill Reason and Message
 		bw.deps.Store.SetContainerState(uid, containerName,
 			corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{}}, false)

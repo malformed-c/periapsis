@@ -8,4 +8,5 @@ kind: ConfigMap
 metadata:
   name: constellation-config
   namespace: kube-system
+
 data: {}

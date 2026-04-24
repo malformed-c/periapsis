@@ -6,33 +6,41 @@ kind: ServiceAccount
 metadata:
   name: constellation-agent
   namespace: kube-system
+
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: constellation-operator
   namespace: kube-system
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: constellation-agent
+
 rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["networkpolicies"]
   verbs: ["get", "list", "watch"]
+
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
   verbs: ["get", "list", "watch"]
+
 - apiGroups: [""]
   resources: ["namespaces", "services", "pods", "nodes", "secrets", "endpoints", "configmaps"]
   verbs: ["get", "list", "watch"]
+
 - apiGroups: [""]
   resources: ["pods", "pods/status", "pods/finalizers"]
   verbs: ["get", "list", "watch", "update", "delete"]
+
 - apiGroups: [""]
   resources: ["nodes", "nodes/status"]
   verbs: ["get", "list", "watch", "patch"]
+
 - apiGroups: ["cilium.io"]
   resources:
   - ciliumnetworkpolicies
@@ -45,43 +53,54 @@ rules:
   - ciliumcidrgroups
   - ciliumloadbalancerippools
   verbs: ["*"]
+
 - apiGroups: ["apiextensions.k8s.io"]
   resources: ["customresourcedefinitions"]
   verbs: ["get", "list", "watch"]
+
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["create", "get", "update", "list", "delete"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: constellation-agent
+
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: constellation-agent
+
 subjects:
 - kind: ServiceAccount
   name: constellation-agent
   namespace: kube-system
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: constellation-operator
+
 rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch", "delete"]
+
 - apiGroups: [""]
   resources: ["nodes", "nodes/status"]
   verbs: ["get", "list", "watch", "patch"]
+
 - apiGroups: [""]
   resources: ["services", "endpoints", "namespaces", "configmaps"]
   verbs: ["get", "list", "watch"]
+
 - apiGroups: ["discovery.k8s.io"]
   resources: ["endpointslices"]
   verbs: ["*"]
+
 - apiGroups: ["cilium.io"]
   resources:
   - ciliumnetworkpolicies
@@ -92,21 +111,26 @@ rules:
   - ciliumendpointslices
   - ciliumloadbalancerippools
   verbs: ["*"]
+
 - apiGroups: ["apiextensions.k8s.io"]
   resources: ["customresourcedefinitions"]
   verbs: ["*"]
+
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["create", "get", "update", "list", "delete"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: constellation-operator
+
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: constellation-operator
+
 subjects:
 - kind: ServiceAccount
   name: constellation-operator

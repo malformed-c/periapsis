@@ -6,11 +6,19 @@ A Kubernetes node agent that runs pods as native systemd-nspawn containers, bypa
 
 ## The Problem
 
+### High-density bare metal
+
 Running Kubernetes on bare metal at high density is harder than it should be. A standard kubelet has a hard 110-pod limit and carries containerd, runc, and their shim layer with it. When you have powerful servers in expensive, space-constrained datacenters, you want thousands of pods per host — not hundreds.
 
 The typical workaround is painful: deploy vSphere or KVM on the bare metal, provision VMs with KubeVirt or similar, then run kubelets inside those VMs. You get density, but at the cost of two extra abstraction layers, two control planes to maintain, and a debugging surface that requires specialists across Kubernetes, the hypervisor, and networking just to diagnose a single issue.
 
 Periapsis takes a different approach. A single perigeos daemon registers the host as multiple virtual nodes directly in the Kubernetes API. Pods run as systemd transient units — no hypervisor, no extra control plane, one process to debug.
+
+### Lightweight nodes
+
+On a small VPS or edge machine, the standard Kubernetes stack is heavy before you run a single workload. kubelet alone consumes significant RAM, and containerd adds ~20MB per running pod on top. On a 700MB VPS that leaves little room for actual work.
+
+Perigeos runs at ~67MB RSS idle and adds negligible per-pod overhead — no containerd shim per container, no separate daemon per runtime operation. On resource-constrained nodes it's a straightforward drop-in: same Kubernetes API, same kubectl, same pod specs, without the weight of the CRI stack.
 
 ---
 

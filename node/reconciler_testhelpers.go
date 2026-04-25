@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
 // SPDX-License-Identifier: GPL-3.0-only
 
 package node
@@ -35,7 +35,7 @@ func (m *mockTracker) PodUIDs() map[string]string {
 	}
 	return uids
 }
-func (m *mockTracker) EvictGhost(uid string)          { delete(m.hasPod, uid) }
+func (m *mockTracker) EvictGhost(uid string)           { delete(m.hasPod, uid) }
 func (m *mockTracker) GetPodCopy(_ string) *corev1.Pod { return nil }
 
 // TestReconciler wraps Reconciler with state-manipulation helpers.

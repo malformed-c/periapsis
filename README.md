@@ -76,8 +76,8 @@ apsis doctor
 $ apsis status
 Pods:    1,660          (engix99, 30 pawns)
          112            (engifire, 2 pawns)
-Memory:  365 MiB        (engix99, daemon RSS ~220 KB/pod)
-          89 MiB        (engifire, daemon RSS ~795 KB/pod)
+Memory:  365 MiB        (engix99, daemon RSS)
+          89 MiB        (engifire, daemon RSS)
 ```
 
 - **Hardware**: 28-core Xeon E5-2690 v4 (engix99) + Intel N150 (engifire)
@@ -214,5 +214,7 @@ Optional: Constellation for eBPF CNI (default: veth bridges)
 - [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - Upstream fork base
 
 ---
+
+Periapsis incorporates a fork of virtual-kubelet originally by the VK authors under Apache 2.0
 
 Kubernetes is a trademark of The Linux Foundation

@@ -1,3 +1,6 @@
+// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package volume resolves Kubernetes pod volume specs + container volume mounts
 // into concrete host->container bind mounts for systemd-nspawn.
 //

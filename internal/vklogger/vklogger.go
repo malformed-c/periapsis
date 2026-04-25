@@ -1,3 +1,6 @@
+// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package vklogger provides a periapsis log.Logger implementation
 // that writes directly to a slog.Logger.
 package vklogger

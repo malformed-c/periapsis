@@ -1,3 +1,6 @@
+// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package cgroup contains helpers for translating Kubernetes resource
 // quantities into cgroup v2 / systemd unit properties.
 package cgroup

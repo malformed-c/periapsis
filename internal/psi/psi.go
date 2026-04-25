@@ -1,3 +1,6 @@
+// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package psi reads Linux Pressure Stall Information (PSI) from /proc/pressure.
 // PSI reports the percentage of time tasks are stalled on CPU, memory, or I/O.
 // See https://docs.kernel.org/accounting/psi.html

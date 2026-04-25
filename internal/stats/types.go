@@ -1,3 +1,6 @@
+// Copyright (C) 2024-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package stats implements the kubelet /stats/summary endpoint.
 // The types here are a minimal subset of k8s.io/kubelet/pkg/apis/stats/v1alpha1,
 // containing only the fields that metrics-server reads.

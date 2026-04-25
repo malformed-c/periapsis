@@ -1,25 +1,123 @@
 # Periapsis
 
-A Kubernetes kubelet that runs pods as systemd-nspawn containers. One process, one machine, scales to thousands of pods with minimal overhead.
+A Kubernetes node agent that runs pods as native systemd-nspawn containers, bypassing CRI and containerd entirely. One physical host can register as multiple independent virtual nodes ("pawns"), each with isolated networking, pod lifecycle, and cgroup tree.
 
-**Why Periapsis?** Standard kubelets carry Docker or containerd with them. Periapsis skips all of that - it wires Kubernetes directly to `systemd-nspawn`, dropping daemon overhead to ~220 KB per pod. It is distribution-agnostic: works with k3s, vanilla Kubernetes, or anything that speaks the kubelet API. A single physical host can be sliced into many independent virtual nodes ("pawns"), each with its own TLS cert, pod lifecycle, and cgroup tree - useful for edge fleets and high-density testing environments. Host slicing into multiple pawns with proper network namespace isolation requires the Constellation CNI.
+---
 
-**What it does:** Periapsis is a fork of virtual-kubelet v1.11.0 that registers as a virtual Kubernetes node, accepts pod assignments from the control plane, manages container lifecycle (image pull, network setup, resource limits, exec, logging), and reports status back to the API server.
+## The Problem
 
-**The perigeos binary** runs as a systemd service and orchestrates pod execution through systemd-nspawn containers. No Docker, no containerd - just systemd, cgroups, and the Linux kernel.
+Running Kubernetes on bare metal at high density is harder than it should be. A standard kubelet has a hard 110-pod limit and carries containerd, runc, and their shim layer with it. When you have powerful servers in expensive, space-constrained datacenters, you want thousands of pods per host — not hundreds.
 
-The name follows the orbital theme: *periapsis* is the generic term for the closest orbital point; *perigeos* is the Earth-specific version.
+The typical workaround is painful: deploy vSphere or KVM on the bare metal, provision VMs with KubeVirt or similar, then run kubelets inside those VMs. You get density, but at the cost of two extra abstraction layers, two control planes to maintain, and a debugging surface that requires specialists across Kubernetes, the hypervisor, and networking just to diagnose a single issue.
+
+Periapsis takes a different approach. A single perigeos daemon registers the host as multiple virtual nodes directly in the Kubernetes API. Pods run as systemd transient units — no hypervisor, no extra control plane, one process to debug.
+
+---
+
+## How It Works
+
+Periapsis is a fork of virtual-kubelet that registers as a virtual Kubernetes node, accepts pod assignments from the control plane, and manages the full container lifecycle: image pull, network setup, resource limits, exec, logging, and status reporting.
+
+The runtime is systemd-nspawn. No Docker. No containerd. Just:
+
+- **systemd transient units** — pods are machines in machinectl, logs go to journald
+- **overlayfs** — OCI images extracted once, shared across pods via copy-on-write layers
+- **cgroups v2** — CPU, memory, and IO limits enforced by the kernel directly
+- **CNI** — per-pod network namespaces; Constellation (Cilium fork) for cross-host eBPF routing
+
+### Multi-pawn architecture
+
+One host registers as N virtual nodes. Each pawn has its own TLS certificate, pod CIDR, and cgroup slice. The Kubernetes scheduler treats them as independent nodes. This is how a single physical machine runs 2000 pods while the scheduler still thinks it's talking to 30 separate nodes.
+
+```
+engix99 (Xeon E5-2690 v4)
+├── compute-00  (virtual node)
+├── compute-01  (virtual node)
+├── ...
+└── compute-29  (virtual node, 30 total)
+
+engifire (Intel N150)
+├── engifire-pawn-01
+└── engifire
+```
+
+---
+
+## Performance
+
+**2000 nginx replicas across 2 physical hosts, 32 virtual nodes:**
+
+```
+10,763 RPS  ·  229µs median latency  ·  0.00% errors  ·  2.26M requests
+p95 = 12.67ms  ·  p99 < 2s  ·  1000 concurrent VUs
+```
+
+Pawn hit distribution (even spread, no hotspots):
+```
+engifire-pawn-01    4.4%  (100,113 hits)
+engifire            4.3%  ( 97,503 hits)
+compute-27          4.3%  ( 97,052 hits)
+...
+compute-22          1.8%  ( 40,923 hits)    ← N150 has fewer pawns
+```
+
+Daemon RSS: ~67–200 MiB (varies by pawn and pod count).
+
+Full results: [docs/show-off.md](docs/show-off.md)
+
+---
+
+## What Works
+
+- Pod lifecycle: create, update, delete, restart policies, crash loop backoff
+- Init containers and sidecar containers
+- OCI image pull with layer caching and peer-to-peer layer sharing
+- ConfigMap, Secret, emptyDir, projected volumes, downward API
+- exec, attach, logs, port-forward (Kubelet API)
+- Resource limits (CPU, memory, IO) via cgroups v2
+- Liveness, readiness, and startup probes
+- Environment variable injection including service discovery vars
+- Multi-pawn host registration (N virtual nodes per host)
+- Constellation CNI: eBPF datapath, VXLAN cross-host routing, per-pod netns
+- Envoy Gateway for L7 ingress via Gateway API
+- journald integration — pod logs visible in journalctl
+- machinectl integration — running pods visible as machines
+- `apsis` CLI for introspection, debugging, and reconciliation
+- KillMode=process — `systemctl restart perigeos` leaves pods running
+
+## What Does Not Work Yet
+
+- **PersistentVolumeClaims**: local-path provisioner works; distributed CSI drivers untested
+- **SecurityContext**: unprivileged pods work; full SecurityContext field coverage is incomplete — not all fields map cleanly to systemd-nspawn
+- **Windows**: not supported, not planned
+- **Non-systemd Linux**: not supported
+- **StatefulSets with stable network identity**: untested at scale
+- **VolumeSnapshot, ephemeral inline volumes**: not implemented
+- **Vertical Pod Autoscaler**: untested
 
 ---
 
 ## Naming
 
-- **Periapsis** - the monorepo (this project); the generic name for closest orbital approach
-- **Perigeos** - the kubelet binary and systemd service
-- **Pawn** - wordplay on systemd-ns**pawn**; each virtual Kubernetes node
-- **Gambit** - the PodProvider implementation (image pull, network, runtime orchestration)
-- **Constellation** - Cilium-based CNI fork for pod networking
-- **Apsis** - CLI tool for introspection and debugging (apsis status, apsis doctor, etc.)
+| Name | Role |
+|------|------|
+| **Periapsis** | The project (closest orbital approach — generic) |
+| **Perigeos** | The daemon binary (Earth-specific periapsis) |
+| **Pawn** | A virtual Kubernetes node — wordplay on systemd-ns**pawn** |
+| **Gambit** | The PodProvider implementation |
+| **Constellation** | Cilium-based CNI fork for multi-pawn networking |
+| **Apsis** | CLI for introspection and debugging |
+
+---
+
+## Requirements
+
+- Linux with systemd v250+ and cgroups v2
+- Kernel 5.15+ (eBPF features used by Constellation)
+- Kubernetes 1.34+
+- Go 1.26+ (to build)
+
+Optional: Constellation CNI for cross-host pod networking and multi-pawn isolation. Without it, pods use veth bridges on the host network namespace — single-pawn deployments only.
 
 ---
 
@@ -29,192 +127,97 @@ The name follows the orbital theme: *periapsis* is the generic term for the clos
 
 ```bash
 go build ./cmd/perigeos
+go build ./cmd/apsis
 ```
-
-The binary is statically linked; no runtime dependencies beyond systemd and CNI plugins.
 
 ### Deploy
 
 ```bash
-# Install systemd service
+# Install systemd service and binary
 ./deploy/perigeos-install.sh
 
-# Start perigeos
+# Start
 systemctl start perigeos
 
 # Verify
 kubectl get nodes
+apsis status
 ```
 
-The perigeos service reads configuration from:
-- `/etc/apsis/perigeos/perigeos.toml` (config)
-- `$KUBECONFIG` or `/etc/rancher/k3s/k3s.yaml` (API access)
+Config: `/etc/apsis/perigeos/perigeos.toml`
+State: `/var/lib/apsis/perigeos`
+Logs: `journalctl -u perigeos`
 
-State is stored in `/var/lib/apsis/perigeos`, logs go to journald.
+For CNI-backed multi-pawn deployments, apply manifests from `deploy/constellation/`.
+For L7 ingress, apply `deploy/envoy/` (GatewayClass, EnvoyProxy, Gateway, HTTPRoute).
 
 ### Verify
 
 ```bash
-# Check cluster registration
-kubectl get nodes -L container-runtime
-
-# Run a test pod
+kubectl get nodes
 kubectl run test --image=busybox --restart=Never -- sleep 3600
+kubectl exec -it test -- sh
 
-# Inspect via apsis
 apsis status
 apsis doctor
 ```
 
 ---
 
-## Scale Demo
-
-**1,772 pods across 2 physical hosts, 33 virtual nodes:**
+## Architecture
 
 ```
-$ apsis status
-Pods:    1,660          (engix99, 30 pawns)
-         112            (engifire, 2 pawns)
-Memory:  365 MiB        (engix99, daemon RSS)
-          89 MiB        (engifire, daemon RSS)
+Kubernetes API server
+        │
+        ▼
+  PodController          ← watches pod assignments
+        │
+        ▼
+     Gambit               ← PodProvider: image, network, runtime
+    ┌──┴──────────────────────────────┐
+    │                                 │
+Image Manager                   Network Manager
+(OCI pull, overlayfs, CAS)      (CNI, netns, IPAM)
+    │                                 │
+    └──────────────┬──────────────────┘
+                   ▼
+            systemd-nspawn
+            (transient unit)
+                   │
+          ┌────────┴────────┐
+        cgroups v2       journald
 ```
 
-- **Hardware**: 28-core Xeon E5-2690 v4 (engix99) + Intel N150 (engifire)
-- **Networking**: Constellation (eBPF per-pod netns, VXLAN cross-host tunnel)
-- **Runtime**: systemd-nspawn, no external container daemon
-- **Stress test**: 2.5 M requests, 11,913 rps sustained, 0% errors, 257 us median latency
-
-### Envoy Gateway
-
-L7 ingress via Envoy Gateway (hostNetwork DaemonSet on primary + control-plane nodes):
-
-- 1 M requests through Gateway API HTTPRoute, 4,869 rps, 0% errors
-- p95 = 134 ms, p99 = 151 ms - engix99 was at load average 100-200 during this test; latency reflects CPU starvation on an oversubscribed machine, not typical L7 overhead
-
-See [docs/show-off.md](docs/show-off.md) for full results and comparison tables.
-
-## How It Works
-
-### Control Flow
-
-1. **Pod Controller** watches the Kubernetes API server for pod assignments
-2. **Gambit Provider** executes pod lifecycle operations:
-   - Image pull (OCI, with auth and caching)
-   - Network setup (CNI or veth, with IPAM)
-   - Machine creation (systemd-nspawn transient unit)
-   - Status reconciliation (cgroup limits, health checks)
-3. **Kubelet API** serves exec, attach, logs, port-forward, metrics
-4. **Control Socket** exposes introspection (apsis CLI)
-
-### Components
-
-| Component | Path | Role |
-|-----------|------|------|
-| Pod Controller | `node/podcontroller.go` | Sync loop: drives create/update/delete with metrics and retry logic |
-| Gambit Provider | `node/gambit.go` | Pod lifecycle: image pull, network, runtime orchestration |
-| Image Manager | `internal/image/` | OCI pull, overlayfs extraction, layer caching |
-| Network Manager | `internal/network/` | CNI or veth setup, IPAM, per-pod netns |
-| Runtime | `internal/runtime/systemd/` | systemd-nspawn, transient units, cgroup slices, journald |
-| Kubelet API | `node/api/` | HTTP: exec, attach, logs, port-forward |
-| Control Socket | `internal/control/` | Varlink + TCP for management operations |
-| Envoy Gateway | `deploy/envoy/` | Gateway API ingress (EnvoyProxy, Gateway, HTTPRoute) |
-
-### Architecture Decisions
-
-See `adr/` for full records. Key milestones:
-
-- **ADR-0001**: Fork virtual-kubelet to fix two provider-side bugs
-- **ADR-0002**: Monorepo evolution (phases 4-8 complete)
-  - Phase 4: PodProvider interface, dispatch layer removal
-  - Phase 5: Live ConfigMap/Secret refresh
-  - Phase 6: Forward reconciler for startup pod discovery
-  - Phase 7: Work queue metrics tuning
-  - Phase 8: Provider packages dissolved into node/
-
-## Build & Test
-
-**Build:**
-```bash
-go build ./cmd/perigeos
-```
-
-**Test:**
-```bash
-go test ./...
-```
-
-**Integration tests (runtime, requires root):**
-```bash
-sudo -E go test ./internal/runtime/systemd/... -v -count=1
-```
-
-## Deployment Details
-
-The systemd service (`deploy/perigeos.service`) runs perigeos with:
-- Binary: `/usr/local/bin/perigeos`
-- Config: `/etc/apsis/perigeos/perigeos.toml`
-- Kubeconfig: auto-detected from `$KUBECONFIG` or `/etc/rancher/k3s/k3s.yaml`
-- State: `/var/lib/apsis/perigeos`
-- Control socket: `/run/apsis/perigeos.sock`
-- Logging: journald (use `journalctl -u perigeos` or `apsis logs`)
-
-Installation: `./deploy/perigeos-install.sh`
-
-For CNI-backed deployments, deploy Constellation manifests from `deploy/constellation/`.
-
-For L7 ingress, deploy Envoy Gateway with the manifests in `deploy/envoy/` (GatewayClass, EnvoyProxy, Gateway, HTTPRoute). The proxy runs as a hostNetwork DaemonSet on primary and control-plane nodes.
-
-## Key Files
-
-- `cmd/perigeos/main.go` - Entrypoint, wires controllers
-- `node/podcontroller.go` - Watch loop, create/update/delete dispatch
-- `node/gambit.go` - Pod lifecycle (image, network, runtime orchestration)
-- `node/api/` - Kubelet HTTP (exec, attach, logs, port-forward, metrics)
-- `internal/runtime/systemd/` - Machine management, cgroups
-- `internal/network/` - CNI/veth setup, IPAM
-- `internal/image/` - OCI pull, overlayfs extraction
-- `internal/control/` - Varlink control server
-- `internal/podutils/` - Environment, downward API
-- `adr/` - Architecture decisions
-- `deploy/` - Systemd unit, install script, Constellation CNI, Envoy Gateway
-
-## Requirements
-
-- Go 1.26+
-- systemd v250+ (transient units, cgroup v2)
-- Linux kernel (systemd-nspawn container host)
-- Kubernetes 1.34+
-- Container registries: docker.io, gcr.io, or any OCI-compliant source
-
-Optional: Constellation for eBPF CNI (default: veth bridges)
-
-## Known Constraints
-
-- Kubernetes API pinned to v0.34.x (perigeos compatibility)
-- Gambit is the sole production provider (PodProvider interface retained for testing)
-- Linux + systemd required (no Windows, no containerd)
-- Memory pressure based on cgroup limits (ADR-0005 tracks multi-tenancy)
-- Disk pressure thresholds: 85% (inode 95%, memory 95%)
-- **Security:** Pods run unprivileged by default. Resource isolation uses cgroups v2 (CPU, memory, and IO limits supported). Not all Kubernetes `SecurityContext` fields map 1:1 to `systemd-nspawn`; full SecurityContext coverage is incomplete.
-- **Storage:** PersistentVolumeClaims work and are tested with local-path provisioner. Distributed CSI drivers have not been tested.
-- **Host slicing:** Slicing a host into multiple pawns with isolated pod networking requires the Constellation CNI. Without it, pods use veth bridges sharing the host network namespace.
-
-## Learning More
-
-- `CLAUDE.md` - Quick-start for developers
-- `AGENTS.md` - Detailed repo guide (see `adr/` for current state)
-- `CHANGES.md` - Patches vs upstream v1.11.0
-- `adr/` - Architecture decisions with rationale
-- `docs/show-off.md` - Scale and performance results
-
-## Related Projects
-
-- [Constellation](https://github.com/malformed-c/constellation) - eBPF/Cilium CNI used with Periapsis
-- [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - Upstream fork base
+Key paths:
+- `cmd/perigeos/main.go` — entrypoint, wires all controllers
+- `node/lifecycle.go` — pod creation: CNI → init containers → app containers
+- `node/batchwatcher.go` — container state polling and status push
+- `node/podstore.go` — in-memory pod state registry
+- `internal/runtime/systemd/` — systemd-nspawn machine management
+- `internal/image/` — OCI pull, overlayfs extraction, layer cache
+- `internal/network/` — CNI setup, Constellation integration
+- `node/api/` — Kubelet HTTP API (exec, logs, port-forward)
+- `adr/` — architecture decisions with full rationale
 
 ---
 
-Periapsis incorporates a fork of virtual-kubelet originally by the VK authors under Apache 2.0
+## Architecture Decisions
 
-Kubernetes is a trademark of The Linux Foundation
+See `adr/` for full records. Notable:
+
+- **ADR-0002**: Monorepo split — gambit.go → lifecycle.go, hydration.go, status.go, exec.go, saga.go
+- **ADR-0009**: KillMode=process — perigeos restarts leave pods running; zero-downtime upgrades
+- **ADR-0010**: UID/GID mapping for unprivileged containers
+
+---
+
+## Related Projects
+
+- [Constellation](https://github.com/malformed-c/constellation) — eBPF/Cilium CNI fork
+- [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) — upstream fork base (Apache 2.0)
+
+---
+
+Periapsis is licensed under GPLv3. It incorporates a fork of virtual-kubelet by the VK authors (Apache 2.0). See [NOTICES](NOTICES) for full third-party attribution.
+
+Kubernetes is a trademark of The Linux Foundation.

@@ -166,26 +166,24 @@ apsis doctor
 
 ## Architecture
 
-```
-Kubernetes API server
-        │
-        ▼
-  PodController          ← watches pod assignments
-        │
-        ▼
-     Gambit               ← PodProvider: image, network, runtime
-    ┌──┴──────────────────────────────┐
-    │                                 │
-Image Manager                   Network Manager
-(OCI pull, overlayfs, CAS)      (CNI, netns, IPAM)
-    │                                 │
-    └──────────────┬──────────────────┘
-                   ▼
-            systemd-nspawn
-            (transient unit)
-                   │
-          ┌────────┴────────┐
-        cgroups v2       journald
+```mermaid
+flowchart TD
+    KAS[Kubernetes API Server]
+
+    KAS --> PC[PodController]
+    PC --> G[Gambit / PodProvider]
+
+    G --> IM[Image Manager\nOCI pull · overlayfs · CAS]
+    G --> NM[Network Manager\nCNI · netns · IPAM]
+
+    IM --> NSP[systemd-nspawn\ntransient unit]
+    NM --> NSP
+
+    NSP --> CG[cgroups v2\nCPU · memory · IO]
+    NSP --> JD[journald\npod logs]
+
+    BW[BatchWatcher] -->|container state| KAS
+    NSP -->|D-Bus events| BW
 ```
 
 Key paths:

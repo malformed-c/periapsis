@@ -151,12 +151,13 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
+
 	tlsListener := tls.NewListener(tcpListener, tlsCfg)
 
 	httpServer := &http.Server{
 		Handler:           mux,
 		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 0, // Must be 0 - SPDY stream negotiation for exec/attach exceeds any fixed timeout
 		WriteTimeout:      0, // Must be 0 for streaming logs
 		IdleTimeout:       60 * time.Second,
 	}

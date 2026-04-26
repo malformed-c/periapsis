@@ -153,6 +153,7 @@ func (im *ImageManager) ListCachedImages() ([]CachedImage, error) {
 
 		// Only replace the underscores that were actually slashes.
 		// Since we kept colons, we can just replace underscores with slashes.
+		// TODO: Make a helper and maybe adopt systemd's escaping
 		imageName := strings.ReplaceAll(safe, "_", "/")
 
 		// Restore the tag separator: the last "_" before a tag is actually ":"

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/malformed-c/periapsis/node/api"
 )
@@ -69,19 +70,19 @@ func (g *Gambit) RunInContainer(
 ) error {
 	uid, err := g.findPodUID(namespace, podName)
 	if err != nil {
-		g.Logger.Error("RunInContainer: pod not found",
+		slog.Error("RunInContainer: pod not found",
 			"namespace", namespace, "pod", podName, "container", containerName, "err", err)
 
 		return err
 	}
 
-	g.Logger.Debug("RunInContainer: enter",
+	slog.Debug("RunInContainer: enter",
 		"namespace", namespace, "pod", podName, "uid", uid,
 		"container", containerName, "cmd", cmd)
 
 	err = g.Runtime.RunInContainer(ctx, uid, containerName, cmd, attach)
 	if err != nil {
-		g.Logger.Error("RunInContainer: failed",
+		slog.Error("RunInContainer: failed",
 			"namespace", namespace, "pod", podName, "uid", uid,
 			"container", containerName, "cmd", cmd, "err", err)
 	}

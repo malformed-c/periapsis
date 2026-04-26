@@ -84,6 +84,22 @@ func (s *ProbeScheduler) runProbeCycle(ctx context.Context) {
 				continue
 			}
 
+			// Check isDue before spawning a goroutine. At 2000 pods with a
+			// 10s period and a 2s tick, only ~20% of containers are due per
+			// cycle. Without this check, 4000 goroutines are spawned every
+			// tick and block on the semaphore — 32MB+ of stack overhead.
+			hasAnyDue := false
+			if c.StartupProbe != nil && IsDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+			} else if c.LivenessProbe != nil && IsDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+			} else if c.ReadinessProbe != nil && IsDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+			}
+			if !hasAnyDue {
+				continue
+			}
+
 			wg.Add(1)
 			go func(uid string, pod *corev1.Pod, container *corev1.Container, podIP string) {
 				defer wg.Done()

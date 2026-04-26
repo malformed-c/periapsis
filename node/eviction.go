@@ -32,12 +32,12 @@ const (
 
 // podEvictionCandidate holds a pod and its eviction priority metadata.
 type podEvictionCandidate struct {
-	pod          *corev1.Pod
-	uid          string
-	qosClass     corev1.PodQOSClass
-	oomScore     int
-	memoryUsage  uint64 // working set bytes from cgroup
-	memoryRequest int64 // bytes from pod spec
+	pod           *corev1.Pod
+	uid           string
+	qosClass      corev1.PodQOSClass
+	oomScore      int
+	memoryUsage   uint64 // working set bytes from cgroup
+	memoryRequest int64  // bytes from pod spec
 }
 
 // RunEvictionLoop starts the eviction loop. It periodically checks node memory
@@ -51,6 +51,7 @@ func (g *Gambit) RunEvictionLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+
 		case <-ticker.C:
 			g.checkAndEvict(ctx)
 		}
@@ -67,6 +68,7 @@ func (g *Gambit) checkAndEvict(ctx context.Context) {
 	_, workingSet, err := pawnstats.ReadSliceMemory(g.Config.Name)
 	if err != nil {
 		g.Logger.Debug("eviction: failed to read slice memory", "pawn", g.Config.Name, "err", err)
+
 		return
 	}
 
@@ -95,9 +97,11 @@ func (g *Gambit) checkAndEvict(ctx context.Context) {
 		if ci.qosClass != cj.qosClass {
 			return qosOrdinal(ci.qosClass) < qosOrdinal(cj.qosClass)
 		}
+
 		if ci.oomScore != cj.oomScore {
 			return ci.oomScore > cj.oomScore // higher = evict first
 		}
+
 		return ci.memoryUsage > cj.memoryUsage
 	})
 
@@ -111,10 +115,12 @@ func (g *Gambit) checkAndEvict(ctx context.Context) {
 			if freed > 0 && freed >= uint64(evictionMinFreeBytes) {
 				break
 			}
+
 			g.evictPod(ctx, c)
 			freed += c.memoryUsage
 		}
 		_ = targetFreeBytes
+
 	} else {
 		// Soft threshold: evict just the top candidate.
 		g.evictPod(ctx, candidates[0])
@@ -129,6 +135,7 @@ func (g *Gambit) buildEvictionCandidates() []podEvictionCandidate {
 		if e.Phase != corev1.PodRunning {
 			continue
 		}
+
 		if g.store.IsDeleting(e.UID) {
 			continue
 		}
@@ -208,10 +215,13 @@ func qosOrdinal(q corev1.PodQOSClass) int {
 	switch q {
 	case corev1.PodQOSBestEffort:
 		return 0
+
 	case corev1.PodQOSBurstable:
 		return 1
+
 	case corev1.PodQOSGuaranteed:
 		return 2
+
 	default:
 		return 1
 	}

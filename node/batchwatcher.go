@@ -505,6 +505,24 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 					continue
 				}
 
+				// Check isDue before spawning to avoid 4000 goroutines
+				// blocking on sem at 2000 pods. Most containers aren't due
+				// on any given 2s tick with a 10s period.
+				hasAnyDue := false
+				if c.StartupProbe != nil && isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
+					hasAnyDue = true
+
+				} else if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
+					hasAnyDue = true
+
+				} else if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
+					hasAnyDue = true
+				}
+
+				if !hasAnyDue {
+					continue
+				}
+
 				probeWg.Go(func() {
 					sem <- struct{}{}
 					defer func() { <-sem }()
@@ -571,6 +589,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				bw.logger.Debug("Coalescer: state change",
 					"pod", e.pod.Name, "container", c.Name,
 					"prev", prev, "cur", cur)
+
 				changedPods[e.uid] = true
 			}
 

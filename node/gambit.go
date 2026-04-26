@@ -126,12 +126,15 @@ func ParseUnitName(pawnName, unitName string) (uid, containerName string) {
 	if !strings.HasPrefix(unitName, prefix) || !strings.HasSuffix(unitName, suffix) {
 		return "", ""
 	}
+
 	// Strip prefix and suffix to get "<uid>-<containerName>"
 	inner := unitName[len(prefix) : len(unitName)-len(suffix)]
+
 	// UIDs are standard 36-char UUIDs (8-4-4-4-12 with hyphens).
 	if len(inner) < 38 { // 36 (UUID) + 1 (hyphen) + at least 1 char
 		return "", ""
 	}
+
 	return inner[:36], inner[37:]
 }
 
@@ -143,9 +146,11 @@ func resolveNodeIP(cfg config.PawnConfig) string {
 	if cfg.NodeIP != "" {
 		return cfg.NodeIP
 	}
+
 	if ip := pki.GetOutboundIP(); ip != nil {
 		return ip.String()
 	}
+
 	return "127.0.0.1"
 }
 
@@ -218,6 +223,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 			},
 		})
 	}
+
 	return g
 }
 
@@ -236,6 +242,7 @@ func (g *Gambit) StartBatchWatcher(sendFact func(types.Fact) bool) {
 		},
 		SendFact: sendFact,
 	})
+
 	g.Logger.Info("BatchWatcher started and assigned to Gambit")
 }
 
@@ -309,6 +316,7 @@ func (g *Gambit) HasPod(uid string) bool {
 // no systemd unit and are no longer desired by Kubernetes.
 func (g *Gambit) EvictGhost(uid string) {
 	g.store.EvictGhost(uid)
+
 	// Clean up persisted state so the ghost doesn't rehydrate on restart.
 	deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 }
@@ -368,6 +376,7 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
+
 	g.Logger.Debug("notifyPodStatus",
 		"uid", uid,
 		"pod", pod.Name,
@@ -448,12 +457,6 @@ func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, stri
 
 // --- Pod Lifecycle ---
 
-// TODO rm
-// func (g *Gambit) setKind(pod *corev1.Pod) {
-//      pod.Kind = "Pod"
-//      pod.APIVersion = "v1"
-// }
-
 // GetStatsSummary returns kubelet-compatible resource usage for this pawn node.
 // Called by the /stats/summary HTTP endpoint consumed by metrics-server.
 func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawnstats.Summary, error) {
@@ -469,11 +472,14 @@ func writeResolvConf(rootfs, dnsIP, namespace string) error {
 	content := "nameserver " + dnsIP + "\n" +
 		"search " + namespace + ".svc.cluster.local svc.cluster.local cluster.local\n" +
 		"options ndots:5\n"
+
 	path := filepath.Join(rootfs, "etc", "resolv.conf")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	// Remove symlink (or existing file) so WriteFile creates a real file.
 	_ = os.Remove(path)
+
 	return os.WriteFile(path, []byte(content), 0o644)
 }

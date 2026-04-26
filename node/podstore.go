@@ -99,6 +99,7 @@ func podResources(pod *corev1.Pod) (cpuMillis, memBytes int64) {
 	if pod == nil {
 		return
 	}
+
 	for _, c := range pod.Spec.Containers {
 		if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
 			cpuMillis += req.MilliValue()
@@ -107,6 +108,7 @@ func podResources(pod *corev1.Pod) (cpuMillis, memBytes int64) {
 			memBytes += req.Value()
 		}
 	}
+
 	return
 }
 
@@ -126,6 +128,7 @@ func (s *PodStore) runSnapshotAggregator() {
 		select {
 		case <-s.stopCh:
 			return
+
 		case _, ok := <-s.triggerCh:
 			if !ok {
 				return
@@ -157,6 +160,7 @@ func (s *PodStore) runSnapshotAggregator() {
 func (s *PodStore) getPodState(uid string) *podState {
 	s.registryMu.RLock()
 	defer s.registryMu.RUnlock()
+
 	return s.pods[uid]
 }
 
@@ -183,6 +187,7 @@ func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.Containe
 	for _, c := range spec {
 		if _, ok := existing[c.Name]; !ok {
 			needsSync = true
+
 			break
 		}
 	}
@@ -198,6 +203,7 @@ func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.Containe
 		if idx, ok := existing[c.Name]; ok {
 			// Keep existing data (State, Ready, etc.)
 			newStatuses[i] = (*status)[idx]
+
 		} else {
 			// Create new entry
 			newStatuses[i] = corev1.ContainerStatus{
@@ -206,6 +212,7 @@ func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.Containe
 			}
 		}
 	}
+
 	*status = newStatuses
 }
 
@@ -215,8 +222,10 @@ func (s *PodStore) IsInFlight(uid string) bool {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.inFlight != nil
 	}
+
 	return false
 }
 
@@ -234,6 +243,7 @@ func (s *PodStore) PodUIDs() map[string]string {
 		uids[uid] = ps.pod.Namespace + "/" + ps.pod.Name
 		ps.mu.RUnlock()
 	}
+
 	return uids
 }
 
@@ -264,6 +274,7 @@ func (s *PodStore) EvictGhost(uid string) {
 func (s *PodStore) PodCount() int {
 	s.registryMu.RLock()
 	defer s.registryMu.RUnlock()
+
 	return len(s.pods)
 }
 
@@ -271,8 +282,10 @@ func (s *PodStore) PodIP(uid string) string {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.ip
 	}
+
 	return ""
 }
 
@@ -280,8 +293,10 @@ func (s *PodStore) PodPhase(uid string) corev1.PodPhase {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.phase
 	}
+
 	return ""
 }
 
@@ -293,8 +308,10 @@ func (s *PodStore) IsDeleting(uid string) bool {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.deleting
 	}
+
 	return false
 }
 
@@ -306,6 +323,7 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 			return probe.Ready
 		}
 	}
+
 	return true
 }
 
@@ -351,6 +369,7 @@ func (s *PodStore) AlreadyRunning(uid string, pod *corev1.Pod) (exists bool, was
 	}
 	ps.hydrated = false
 	s.triggerSnapshot()
+
 	return true, wasStub
 }
 
@@ -406,6 +425,7 @@ func (s *PodStore) Unregister(uid, namespace, name string) {
 		delete(s.pods, uid)
 		delete(s.nameIndex, namespace+"/"+name)
 	}
+
 	s.completedMu.Lock()
 	s.completed[namespace+"/"+name] = completedEntry{uid: uid, deletedAt: time.Now()}
 	s.expireCompleted()
@@ -501,9 +521,11 @@ func (s *PodStore) SetContainerState(uid string, containerName string, state cor
 				if statuses[i].Name == containerName {
 					statuses[i].State = state
 					statuses[i].Ready = ready
+
 					return true
 				}
 			}
+
 			return false
 		}(ps.pod.Status.ContainerStatuses)
 
@@ -513,9 +535,11 @@ func (s *PodStore) SetContainerState(uid string, containerName string, state cor
 					if statuses[i].Name == containerName {
 						statuses[i].State = state
 						statuses[i].Ready = ready
+
 						return true
 					}
 				}
+
 				return false
 			}(ps.pod.Status.InitContainerStatuses)
 		}
@@ -608,6 +632,7 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 		"pod", pod.Name, "uid", uid,
 		"containers", len(pod.Spec.Containers),
 		"caller", callerSite())
+
 	for _, c := range pod.Spec.Containers {
 		slog.Debug("InitRestartState: container",
 			"pod", pod.Name, "container", c.Name,
@@ -650,6 +675,7 @@ func (s *PodStore) InitRestartStateFrom(uid, namespace, name string, containers 
 		"pod", name, "uid", uid,
 		"containers", len(containers),
 		"caller", callerSite())
+
 	for _, c := range containers {
 		slog.Debug("InitRestartStateFrom: container",
 			"pod", name, "container", c.Name,
@@ -666,12 +692,15 @@ func (s *PodStore) RestartCounts(uid string) map[string]int32 {
 		if len(ps.restarts) == 0 {
 			return nil
 		}
+
 		counts := make(map[string]int32, len(ps.restarts))
 		for c, r := range ps.restarts {
 			counts[c] = r.count
 		}
+
 		return counts
 	}
+
 	return nil
 }
 
@@ -685,12 +714,15 @@ func (s *PodStore) RestartBackoffs(uid string) map[string]float64 {
 		if len(ps.restarts) == 0 {
 			return nil
 		}
+
 		backoffs := make(map[string]float64, len(ps.restarts))
 		for c, r := range ps.restarts {
 			backoffs[c] = r.backoff.Seconds()
 		}
+
 		return backoffs
 	}
+
 	return nil
 }
 
@@ -698,8 +730,10 @@ func (s *PodStore) RestartState(uid, containerName string) *containerRestartStat
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.restarts[containerName]
 	}
+
 	return nil
 }
 
@@ -713,6 +747,7 @@ func (s *PodStore) ContainerStartedAt(uid, containerName string) metav1.Time {
 			return metav1.NewTime(rs.lastStarted)
 		}
 	}
+
 	return metav1.Time{}
 }
 
@@ -720,8 +755,10 @@ func (s *PodStore) ProbeState(uid, containerName string) *ContainerProbeState {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.probes[containerName]
 	}
+
 	return nil
 }
 
@@ -846,6 +883,7 @@ func (s *PodStore) HydratedUIDs() map[string]bool {
 		}
 		ps.mu.RUnlock()
 	}
+
 	return out
 }
 
@@ -899,8 +937,10 @@ func (s *PodStore) GetPod(namespace, name string) (*corev1.Pod, error) {
 	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.RLock()
 		defer ps.mu.RUnlock()
+
 		return ps.pod, nil
 	}
+
 	return nil, errdefs.NotFoundf("pod %s/%s not found", namespace, name)
 }
 
@@ -914,6 +954,7 @@ func (s *PodStore) GetPods() []*corev1.Pod {
 		list = append(list, ps.pod)
 		ps.mu.RUnlock()
 	}
+
 	return list
 }
 
@@ -938,12 +979,14 @@ func (s *PodStore) FindPodUID(namespace, podName string) (string, error) {
 	if ok {
 		return uid, nil
 	}
+
 	return "", fmt.Errorf("pod %s/%s not found", namespace, podName)
 }
 
 func (s *PodStore) CompletedPodUID(namespace, name string) string {
 	s.completedMu.Lock()
 	defer s.completedMu.Unlock()
+
 	return s.completed[namespace+"/"+name].uid
 }
 
@@ -951,6 +994,7 @@ func (s *PodStore) LoadSnapshot() []PodSnapshot {
 	if p := s.roSnap.Load(); p != nil {
 		return *p
 	}
+
 	return nil
 }
 
@@ -980,6 +1024,7 @@ func (s *PodStore) Snapshot() []PodEntry {
 		})
 		ps.mu.RUnlock()
 	}
+
 	return entries
 }
 
@@ -991,6 +1036,7 @@ func (s *PodStore) ActiveUIDs() map[string]bool {
 	for uid := range s.pods {
 		uids[uid] = true
 	}
+
 	return uids
 }
 
@@ -1037,6 +1083,7 @@ func (s *PodStore) AdmitPod(pod *corev1.Pod, nodeCPU, nodeMem resource.Quantity)
 		return fmt.Sprintf("Insufficient memory: requested %d, used %d, capacity %d",
 			podMem, usedMem, memCap)
 	}
+
 	return ""
 }
 
@@ -1052,6 +1099,7 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 	if usedCPU > 0 {
 		if cap := capacity[corev1.ResourceCPU]; cap.MilliValue() > usedCPU {
 			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(cap.MilliValue()-usedCPU, resource.DecimalSI)
+
 		} else {
 			alloc[corev1.ResourceCPU] = *resource.NewMilliQuantity(0, resource.DecimalSI)
 		}
@@ -1059,6 +1107,7 @@ func (s *PodStore) ComputeAllocatable(capacity corev1.ResourceList) corev1.Resou
 	if usedMem > 0 {
 		if cap := capacity[corev1.ResourceMemory]; cap.Value() > usedMem {
 			alloc[corev1.ResourceMemory] = *resource.NewQuantity(cap.Value()-usedMem, resource.BinarySI)
+
 		} else {
 			alloc[corev1.ResourceMemory] = *resource.NewQuantity(0, resource.BinarySI)
 		}
@@ -1106,9 +1155,11 @@ func (s *PodStore) BumpBackoff(uid, containerName string) (count int32, backoff 
 			if rs.backoff > 5*time.Minute {
 				rs.backoff = 5 * time.Minute
 			}
+
 			return rs.count, backoff
 		}
 	}
+
 	return 0, 0
 }
 
@@ -1144,10 +1195,13 @@ func callerSite() string {
 		for i := len(file) - 1; i >= 0; i-- {
 			if file[i] == '/' {
 				file = file[i+1:]
+
 				break
 			}
 		}
+
 		return fmt.Sprintf("%s:%d", file, line)
 	}
+
 	return "unknown"
 }

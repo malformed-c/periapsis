@@ -136,15 +136,15 @@ spec:
 
       initContainers:
       - name: page-gen
-        image: docker.io/library/alpine:3.21
+        image: docker.io/library/alpine:latest
         imagePullPolicy: IfNotPresent
         resources:
           requests:
-            cpu: 10m
-            memory: 4Mi
+            cpu: 50m
+            memory: 8Mi
           limits:
-            cpu: 15m
-            memory: 6Mi
+            cpu: 50m
+            memory: 16Mi
 
         env:
         - name: POD_NAME
@@ -183,18 +183,18 @@ spec:
       - name: nginx
         # Pin minor version to avoid silent drift.
         # alpine variant keeps image small.
-        image: docker.io/library/nginx:1.27-alpine
+        image: docker.io/library/nginx:alpine
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
 
         resources:
           requests:
-            cpu: 20m
-            memory: 4Mi
+            cpu: 100m
+            memory: 64Mi
           limits:
-            cpu: 40m
-            memory: 6Mi
+            cpu: 200m
+            memory: 64Mi
 
         command:
         - /bin/sh

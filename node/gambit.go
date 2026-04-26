@@ -469,7 +469,7 @@ func (g *Gambit) GetStatsSummary(ctx context.Context) (*pawnstats.Summary, error
 // /etc/resolv.conf in many images is a symlink to systemd-resolved's stub;
 // we remove the symlink first so we write a real file, not the host's stub.
 func writeResolvConf(rootfs, dnsIP, namespace string) error {
-	content := "# Perigeos\n" + "nameserver " + dnsIP + "\n" +
+	content := "nameserver " + dnsIP + "\n" +
 		"search " + namespace + ".svc.cluster.local svc.cluster.local cluster.local\n" +
 		"options ndots:5\n"
 

@@ -7,6 +7,7 @@ import (
 	"github.com/containerd/cgroups/v3/cgroup2"
 	"github.com/malformed-c/periapsis/internal/cgroup"
 	"github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
 )
 
 // buildPodResources lifts per-container resource limits from the pod spec into
@@ -16,8 +17,8 @@ import (
 // This is the single seam where future pod-label-driven cgroup knobs should
 // be wired in (IO throttling, Pids limits, memory.high, cpuset, etc.) so that
 // both runProgram and RunMachine inherit them for free.
-func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
-	res := &cgroup2.Resources{}
+func buildPodResources(cfg runtime.PodConfig) (res *types.PodResources) {
+	res = &types.PodResources{}
 
 	// CPU
 	var cpu cgroup2.CPU
@@ -51,5 +52,9 @@ func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
 		res.Memory = &mem
 	}
 
-	return res
+	// QoS
+	// Should be always set by the caller
+	res.OOMScoreAdjust = cfg.OOMScoreAdjust
+
+	return
 }

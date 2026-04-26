@@ -6,10 +6,18 @@ package types
 import (
 	"time"
 
+	"github.com/containerd/cgroups/v3/cgroup2"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+type PodResources struct {
+	OOMScoreAdjust int
+	cgroup2.Resources
+}
+
+///
 
 // Fact is a happened event. It is a read-only snapshot of a state change.
 // Facts are immutable after creation - no one mutates a Fact after it's

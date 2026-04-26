@@ -10,6 +10,7 @@ import (
 	"github.com/containerd/cgroups/v3/cgroup2"
 	"github.com/coreos/go-systemd/v22/dbus"
 	dbusv5 "github.com/godbus/dbus/v5"
+	"github.com/malformed-c/periapsis/internal/types"
 )
 
 // MilliCPUToCPUMax converts Kubernetes millicores into a cgroup2 CPUMax value
@@ -18,7 +19,9 @@ func MilliCPUToCPUMax(milliCPU int64) cgroup2.CPUMax {
 	if milliCPU <= 0 {
 		return cgroup2.NewCPUMax(nil, nil)
 	}
+
 	quota := milliCPU * 100
+
 	return cgroup2.NewCPUMax(&quota, nil)
 }
 
@@ -28,10 +31,11 @@ func MilliCPUToCPUMax(milliCPU int64) cgroup2.CPUMax {
 // Supported today: CPU.Weight, CPU.Max, Memory.Max/High/Low/Min/Swap, Pids.Max.
 // Fields outside this set are silently ignored - add them here as pod-label
 // driven cgroup knobs grow.
-func BuildSystemdProperties(res *cgroup2.Resources) []dbus.Property {
+func BuildSystemdProperties(res *types.PodResources) []dbus.Property {
 	if res == nil {
 		return nil
 	}
+
 	var props []dbus.Property
 
 	if res.CPU != nil {
@@ -85,6 +89,10 @@ func BuildSystemdProperties(res *cgroup2.Resources) []dbus.Property {
 		})
 	}
 
+	props = append(props, dbus.Property{
+		Name: "OOMScoreAdjust", Value: dbusv5.MakeVariant(int32(res.OOMScoreAdjust)),
+	})
+
 	return props
 }
 
@@ -96,20 +104,25 @@ func cpuMaxToQuotaPerSecUS(m cgroup2.CPUMax) (uint64, bool) {
 	if len(parts) == 0 {
 		return 0, false
 	}
+
 	if strings.EqualFold(parts[0], "max") {
 		return 0, false
 	}
+
 	quota, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || quota <= 0 {
 		return 0, false
 	}
+
 	period := int64(100000)
 	if len(parts) == 2 {
 		p, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || p <= 0 {
 			return 0, false
 		}
+
 		period = p
 	}
+
 	return uint64(quota * 1_000_000 / period), true
 }

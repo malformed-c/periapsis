@@ -34,6 +34,7 @@ type containerRuntimeProfile struct {
 	CPURequestMillis int64
 	RunAsUser        *int64
 	RunAsGroup       *int64
+	OOMScoreAdjust   int
 }
 
 func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
@@ -92,7 +93,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 		defer func() { <-createSem }()
 
-		// Hoisted Pull Cache: Survives retries!
+		// Hoisted Pull Cache: Survives retries
 		pullCache := make(map[string]pullCacheEntry)
 		backoff := createBackoffInit
 		neverRestart := pod.Spec.RestartPolicy == corev1.RestartPolicyNever
@@ -430,6 +431,7 @@ func (g *Gambit) launchContainer(
 		SwapLimitBytes:                profile.SwapLimitBytes,
 		CPULimitMillis:                profile.CPULimitMillis,
 		CPURequestMillis:              profile.CPURequestMillis,
+		OOMScoreAdjust:                profile.OOMScoreAdjust,
 		ImageEntrypoint:               ep,
 		ImageCmd:                      cmd,
 		TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
@@ -684,7 +686,51 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 	return
 }
 
+func calculateOOMScore(pod *corev1.Pod) (int, corev1.PodQOSClass) {
+	// 1. Check if it's BestEffort (No limits, no requests)
+	// In K8s, a pod is BestEffort if NO containers have limits or requests.
+	isBestEffort := true
+	for _, container := range pod.Spec.Containers {
+		if container.Resources.Limits != nil || container.Resources.Requests != nil {
+			isBestEffort = false
+
+			break
+		}
+	}
+
+	if isBestEffort {
+		return 1000, corev1.PodQOSBestEffort // Max priority for the OOM killer
+	}
+
+	// 2. Check if it's Guaranteed (Request == Limit for all)
+	isGuaranteed := true
+	for _, container := range pod.Spec.Containers {
+		memReq := container.Resources.Requests.Memory()
+		memLim := container.Resources.Limits.Memory()
+		cpuReq := container.Resources.Requests.Cpu()
+		cpuLim := container.Resources.Limits.Cpu()
+
+		if memReq.IsZero() || memLim.IsZero() || cpuReq.IsZero() || cpuLim.IsZero() ||
+			memReq.Value() != memLim.Value() || cpuReq.MilliValue() != cpuLim.MilliValue() {
+			isGuaranteed = false
+
+			break
+		}
+	}
+
+	if isGuaranteed {
+		return -998, corev1.PodQOSGuaranteed // Almost impossible to kill
+	}
+
+	// 3. Otherwise, it's Burstable.
+	// We can return 0, or calculate a value based on memory usage vs request.
+	// For now, 0 is the standard baseline.
+	return 0, corev1.PodQOSBurstable
+}
+
 func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeProfile {
+	score, _ := calculateOOMScore(pod)
+
 	profiles := make(map[string]containerRuntimeProfile, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
 	for i := range pod.Spec.InitContainers {
 		c := &pod.Spec.InitContainers[i]
@@ -697,6 +743,7 @@ func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeP
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,
 			RunAsGroup:       runAsGroup,
+			OOMScoreAdjust:   score,
 		}
 	}
 	for i := range pod.Spec.Containers {
@@ -710,6 +757,7 @@ func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeP
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,
 			RunAsGroup:       runAsGroup,
+			OOMScoreAdjust:   score,
 		}
 	}
 

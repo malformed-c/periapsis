@@ -33,7 +33,7 @@ func TestExtractResourceLimits_PrefersContainerResources(t *testing.T) {
 		},
 	}
 
-	mem, cpuLimit, cpuReq := extractResourceLimits(pod, container)
+	mem, _, cpuLimit, cpuReq := extractResourceLimits(pod, container)
 
 	res := resource.MustParse("256Mi")
 	if mem != uint64(res.Value()) {
@@ -63,7 +63,7 @@ func TestExtractResourceLimits_FallsBackToPodResources(t *testing.T) {
 	}
 	container := &corev1.Container{}
 
-	mem, cpuLimit, cpuReq := extractResourceLimits(pod, container)
+	mem, _, cpuLimit, cpuReq := extractResourceLimits(pod, container)
 
 	res := resource.MustParse("768Mi")
 

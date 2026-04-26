@@ -176,6 +176,8 @@ type PodConfig struct {
 	// Converted to systemd CPUWeight to mirror Kubernetes relative CPU shares.
 	CPURequestMillis int64 // 0 = no request
 
+	OOMScoreAdjust int
+
 	// OCI image defaults, used as fallback when Container.Command/Args are unset.
 	// Follows Kubernetes command resolution: Container.Command overrides Entrypoint,
 	// Container.Args overrides Cmd; unset fields fall back to the image values.

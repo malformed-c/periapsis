@@ -28,260 +28,260 @@ package syzygy
 // Effect workers only call pure callbacks or non-blocking horizon.Send().
 
 import (
-        "context"
-        "fmt"
-        "log/slog"
-        "sync"
-        "time"
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
 
-        "github.com/malformed-c/periapsis/internal/foci"
-        "github.com/malformed-c/periapsis/internal/horizon"
-        perigeos "github.com/malformed-c/periapsis/internal/runtime"
-        "github.com/malformed-c/periapsis/internal/types"
-        corev1 "k8s.io/api/core/v1"
+	"github.com/malformed-c/periapsis/internal/foci"
+	"github.com/malformed-c/periapsis/internal/horizon"
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
-        // defaultEffectWorkers is the number of effect-dispatch goroutines.
-        // Tuned so slow callbacks (disk persistence) don't back up the pool.
-        defaultEffectWorkers = 4
+	// defaultEffectWorkers is the number of effect-dispatch goroutines.
+	// Tuned so slow callbacks (disk persistence) don't back up the pool.
+	defaultEffectWorkers = 4
 
-        // effectsBuf is the capacity of the effects channel.
-        // Sized for burst: 3000 pods × ~3 effects per Reduce call = ~9000 in-flight.
-        effectsBuf = 16384
+	// effectsBuf is the capacity of the effects channel.
+	// Sized for burst: 3000 pods × ~3 effects per Reduce call = ~9000 in-flight.
+	effectsBuf = 16384
 
-        // antiEntropyInterval is how often the anti-entropy loop reconciles
-        // state from ListManagedMachines. Replaces the old 2s BW ticker.
-        antiEntropyInterval = 5 * time.Second
+	// antiEntropyInterval is how often the anti-entropy loop reconciles
+	// state from ListManagedMachines. Replaces the old 2s BW ticker.
+	antiEntropyInterval = 5 * time.Second
 )
 
 // MachineLister is the interface for listing managed machines.
 // Injected as a callback so Syzygy doesn't import the runtime package
 // directly (avoids circular deps and keeps the anti-entropy loop testable).
 type MachineLister interface {
-        ListManagedMachines(ctx context.Context) ([]perigeos.PodMetadata, error)
+	ListManagedMachines(ctx context.Context) ([]perigeos.PodMetadata, error)
 }
 
 // Syzygy is the event loop that owns all pod state.
 type Syzygy struct {
-        inbox   chan types.Fact
-        effects chan types.Effect
+	inbox   chan types.Fact
+	effects chan types.Effect
 
-        mu     sync.RWMutex
-        closed bool
+	mu     sync.RWMutex
+	closed bool
 
-        logger *slog.Logger
+	logger *slog.Logger
 
-        // statesMu protects states. The main Loop goroutine holds a write
-        // lock during processFact. The anti-entropy goroutine and external
-        // accessors (PodState, UIDs, PodCount) hold read locks.
-        statesMu sync.RWMutex
-        states   map[string]foci.PodState
+	// statesMu protects states. The main Loop goroutine holds a write
+	// lock during processFact. The anti-entropy goroutine and external
+	// accessors (PodState, UIDs, PodCount) hold read locks.
+	statesMu sync.RWMutex
+	states   map[string]foci.PodState
 
-        // horizon executes k8s API effects.
-        horizon *horizon.Horizon
+	// horizon executes k8s API effects.
+	horizon *horizon.Horizon
 
-        // Local state callbacks - called by effect workers.
-        // These are fast, non-blocking in-memory operations.
-        // The callbacks themselves must be goroutine-safe (called concurrently).
+	// Local state callbacks - called by effect workers.
+	// These are fast, non-blocking in-memory operations.
+	// The callbacks themselves must be goroutine-safe (called concurrently).
 
-        // setPodPhase updates the PodStore's phase map.
-        setPodPhase func(uid string, phase corev1.PodPhase)
+	// setPodPhase updates the PodStore's phase map.
+	setPodPhase func(uid string, phase corev1.PodPhase)
 
-        // persistPodState persists pod state to disk.
-        persistPodState func(uid string)
+	// persistPodState persists pod state to disk.
+	persistPodState func(uid string)
 
-        // initRestartState initializes restart/probe tracking for a new pod.
-        initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
+	// initRestartState initializes restart/probe tracking for a new pod.
+	initRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 
-        // registerPod registers a pod in PodStore (creation path).
-        registerPod func(e types.RegisterPod)
+	// registerPod registers a pod in PodStore (creation path).
+	registerPod func(e types.RegisterPod)
 
-        // promotePodRunning promotes a pod to Running in PodStore.
-        promotePodRunning func(e types.PromotePodRunning)
+	// promotePodRunning promotes a pod to Running in PodStore.
+	promotePodRunning func(e types.PromotePodRunning)
 
-        // markPodDeleting marks a pod as deleting in PodStore.
-        markPodDeleting func(e types.MarkPodDeleting)
+	// markPodDeleting marks a pod as deleting in PodStore.
+	markPodDeleting func(e types.MarkPodDeleting)
 
-        // unregisterPod removes a pod from PodStore.
-        unregisterPod func(e types.UnregisterPod)
+	// unregisterPod removes a pod from PodStore.
+	unregisterPod func(e types.UnregisterPod)
 
-        // Anti-entropy: lists machines from systemd and emits ContainerStateFacts.
-        machineLister MachineLister
+	// Anti-entropy: lists machines from systemd and emits ContainerStateFacts.
+	machineLister MachineLister
 }
 
 // SyzygyConfig holds the dependencies for creating a Syzygy.
 type SyzygyConfig struct {
-        Logger  *slog.Logger
-        Horizon *horizon.Horizon
+	Logger  *slog.Logger
+	Horizon *horizon.Horizon
 
-        // Optional local state callbacks. If nil, the operation is a no-op.
-        // Callbacks are invoked from worker goroutines and must be goroutine-safe.
-        SetPodPhase      func(uid string, phase corev1.PodPhase)
-        PersistPodState  func(uid string)
-        InitRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
+	// Optional local state callbacks. If nil, the operation is a no-op.
+	// Callbacks are invoked from worker goroutines and must be goroutine-safe.
+	SetPodPhase      func(uid string, phase corev1.PodPhase)
+	PersistPodState  func(uid string)
+	InitRestartState func(uid, namespace, name string, containers []types.ContainerInitPayload)
 
-        // PodStore projection callbacks - called when Effects update PodStore.
-        RegisterPod      func(e types.RegisterPod)
-        PromotePodRunning func(e types.PromotePodRunning)
-        MarkPodDeleting   func(e types.MarkPodDeleting)
-        UnregisterPod     func(e types.UnregisterPod)
+	// PodStore projection callbacks - called when Effects update PodStore.
+	RegisterPod       func(e types.RegisterPod)
+	PromotePodRunning func(e types.PromotePodRunning)
+	MarkPodDeleting   func(e types.MarkPodDeleting)
+	UnregisterPod     func(e types.UnregisterPod)
 
-        // MachineLister provides access to ListManagedMachines for anti-entropy.
-        // If nil, anti-entropy is disabled (useful for tests).
-        MachineLister MachineLister
+	// MachineLister provides access to ListManagedMachines for anti-entropy.
+	// If nil, anti-entropy is disabled (useful for tests).
+	MachineLister MachineLister
 }
 
 // NewSyzygy creates a new Syzygy event loop.
 func NewSyzygy(deps SyzygyConfig) *Syzygy {
-        if deps.SetPodPhase == nil {
-                deps.SetPodPhase = func(string, corev1.PodPhase) {}
-        }
+	if deps.SetPodPhase == nil {
+		deps.SetPodPhase = func(string, corev1.PodPhase) {}
+	}
 
-        if deps.PersistPodState == nil {
-                deps.PersistPodState = func(string) {}
-        }
+	if deps.PersistPodState == nil {
+		deps.PersistPodState = func(string) {}
+	}
 
-        if deps.InitRestartState == nil {
-                deps.InitRestartState = func(string, string, string, []types.ContainerInitPayload) {}
-        }
+	if deps.InitRestartState == nil {
+		deps.InitRestartState = func(string, string, string, []types.ContainerInitPayload) {}
+	}
 
-        if deps.RegisterPod == nil {
-                deps.RegisterPod = func(types.RegisterPod) {}
-        }
+	if deps.RegisterPod == nil {
+		deps.RegisterPod = func(types.RegisterPod) {}
+	}
 
-        if deps.PromotePodRunning == nil {
-                deps.PromotePodRunning = func(types.PromotePodRunning) {}
-        }
+	if deps.PromotePodRunning == nil {
+		deps.PromotePodRunning = func(types.PromotePodRunning) {}
+	}
 
-        if deps.MarkPodDeleting == nil {
-                deps.MarkPodDeleting = func(types.MarkPodDeleting) {}
-        }
+	if deps.MarkPodDeleting == nil {
+		deps.MarkPodDeleting = func(types.MarkPodDeleting) {}
+	}
 
-        if deps.UnregisterPod == nil {
-                deps.UnregisterPod = func(types.UnregisterPod) {}
-        }
+	if deps.UnregisterPod == nil {
+		deps.UnregisterPod = func(types.UnregisterPod) {}
+	}
 
-        return &Syzygy{
-                inbox:            make(chan types.Fact, 2048),
-                effects:          make(chan types.Effect, effectsBuf),
-                logger:           deps.Logger.With("component", "syzygy"),
-                states:           make(map[string]foci.PodState),
-                horizon:          deps.Horizon,
-                setPodPhase:      deps.SetPodPhase,
-                persistPodState:  deps.PersistPodState,
-                initRestartState: deps.InitRestartState,
-                registerPod:      deps.RegisterPod,
-                promotePodRunning: deps.PromotePodRunning,
-                markPodDeleting:   deps.MarkPodDeleting,
-                unregisterPod:     deps.UnregisterPod,
-                machineLister:    deps.MachineLister,
-        }
+	return &Syzygy{
+		inbox:             make(chan types.Fact, 2048),
+		effects:           make(chan types.Effect, effectsBuf),
+		logger:            deps.Logger.With("component", "syzygy"),
+		states:            make(map[string]foci.PodState),
+		horizon:           deps.Horizon,
+		setPodPhase:       deps.SetPodPhase,
+		persistPodState:   deps.PersistPodState,
+		initRestartState:  deps.InitRestartState,
+		registerPod:       deps.RegisterPod,
+		promotePodRunning: deps.PromotePodRunning,
+		markPodDeleting:   deps.MarkPodDeleting,
+		unregisterPod:     deps.UnregisterPod,
+		machineLister:     deps.MachineLister,
+	}
 }
 
 // Run is the main event loop. Takes a workerCount for the effect pool.
 // Blocks until the context is cancelled.
 func (s *Syzygy) Run(ctx context.Context, workerCount uint8) {
-        if workerCount == 0 {
-                workerCount = defaultEffectWorkers
-        }
+	if workerCount == 0 {
+		workerCount = defaultEffectWorkers
+	}
 
-        // --- Effect worker pool ---
-        // Workers drain the effects channel. Started before the fact loop so
-        // there are consumers ready before any effects are produced.
-        wg := sync.WaitGroup{}
-        for i := uint8(0); i < workerCount; i++ {
-                wg.Go(func() {
-                        // Use a background-derived ctx for the worker so it can
-                        // finish draining effects after the main context is cancelled.
-                        // The channel close is what signals final exit.
-                        for eff := range s.effects {
-                                s.dispatchEffect(ctx, eff)
-                        }
-                })
-        }
+	// --- Effect worker pool ---
+	// Workers drain the effects channel. Started before the fact loop so
+	// there are consumers ready before any effects are produced.
+	wg := sync.WaitGroup{}
+	for i := uint8(0); i < workerCount; i++ {
+		wg.Go(func() {
+			// Use a background-derived ctx for the worker so it can
+			// finish draining effects after the main context is cancelled.
+			// The channel close is what signals final exit.
+			for eff := range s.effects {
+				s.dispatchEffect(ctx, eff)
+			}
+		})
+	}
 
-        // --- Anti-entropy loop ---
-        var aeWg sync.WaitGroup
-        aeCtx, aeCancel := context.WithCancel(ctx)
-        defer func() {
-                aeCancel()
-                aeWg.Wait()
-        }()
+	// --- Anti-entropy loop ---
+	var aeWg sync.WaitGroup
+	aeCtx, aeCancel := context.WithCancel(ctx)
+	defer func() {
+		aeCancel()
+		aeWg.Wait()
+	}()
 
-        aeWg.Go(func() {
-                defer aeWg.Done()
-                s.runAntiEntropyLoop(aeCtx)
-        })
+	aeWg.Go(func() {
+		defer aeWg.Done()
+		s.runAntiEntropyLoop(aeCtx)
+	})
 
-        // --- Main fact loop (single goroutine) ---
+	// --- Main fact loop (single goroutine) ---
 Loop:
-        for {
-                select {
-                case fact, ok := <-s.inbox:
-                        if !ok {
-                                break Loop
-                        }
+	for {
+		select {
+		case fact, ok := <-s.inbox:
+			if !ok {
+				break Loop
+			}
 
-                        s.processFact(fact)
+			s.processFact(fact)
 
-                case <-ctx.Done():
-                        break Loop
-                }
-        }
+		case <-ctx.Done():
+			break Loop
+		}
+	}
 
-        s.close()
+	s.close()
 
-        // Drain remaining facts during shutdown.
-        shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
-        defer cancel()
-        for fact := range s.inbox {
-                s.processFact(fact)
-        }
-        _ = shutdownCtx // used by dispatchEffect via captured ctx
+	// Drain remaining facts during shutdown.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for fact := range s.inbox {
+		s.processFact(fact)
+	}
+	_ = shutdownCtx // used by dispatchEffect via captured ctx
 
-        // All facts processed, no more effects will be produced.
-        // Close effects channel and wait for workers to drain it.
-        close(s.effects)
-        wg.Wait()
+	// All facts processed, no more effects will be produced.
+	// Close effects channel and wait for workers to drain it.
+	close(s.effects)
+	wg.Wait()
 }
 
 // Send enqueues a Fact for processing. Non-blocking; returns false if
 // the inbox is full or Syzygy is closed.
 func (s *Syzygy) Send(fact types.Fact) (ok bool) {
-        s.mu.RLock()
-        closed := s.closed
-        s.mu.RUnlock()
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
 
-        if closed {
-                return false
-        }
+	if closed {
+		return false
+	}
 
-        defer func() {
-                if recover() != nil {
-                        ok = false
-                }
-        }()
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
 
-        select {
-        case s.inbox <- fact:
-                return true
+	select {
+	case s.inbox <- fact:
+		return true
 
-        default:
-                s.logger.Warn("syzygy inbox full, dropping fact",
-                        "type", fmt.Sprintf("%T", fact))
-                return false
-        }
+	default:
+		s.logger.Warn("syzygy inbox full, dropping fact",
+			"type", fmt.Sprintf("%T", fact))
+		return false
+	}
 }
 
 func (s *Syzygy) close() {
-        s.mu.Lock()
-        defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-        if !s.closed {
-                s.closed = true
-                close(s.inbox)
-        }
+	if !s.closed {
+		s.closed = true
+		close(s.inbox)
+	}
 }
 
 // --- Core Processing ---
@@ -297,40 +297,40 @@ func (s *Syzygy) close() {
 // channel send is non-blocking - effects are dropped with a warning if
 // the pool is full (effectsBuf is sized to make this rare).
 func (s *Syzygy) processFact(fact types.Fact) {
-        uid := factUID(fact)
-        if uid == "" {
-                s.logger.Debug("fact has no UID, dropping", "type", fmt.Sprintf("%T", fact))
+	uid := factUID(fact)
+	if uid == "" {
+		s.logger.Debug("fact has no UID, dropping", "type", fmt.Sprintf("%T", fact))
 
-                return
-        }
+		return
+	}
 
-        s.statesMu.Lock()
-        currentState := s.states[uid]
-        s.statesMu.Unlock()
+	s.statesMu.Lock()
+	currentState := s.states[uid]
+	s.statesMu.Unlock()
 
-        // Pure computation - no side effects.
-        newState, effects := foci.Reduce(currentState, fact)
+	// Pure computation - no side effects.
+	newState, effects := foci.Reduce(currentState, fact)
 
-        // PodEvictFact returns zero-value PodState - remove from map.
-        s.statesMu.Lock()
-        if newState.UID == "" {
-                delete(s.states, uid)
-                s.logger.Info("pod evicted from state machine", "uid", uid)
-        } else {
-                s.states[uid] = newState
-        }
-        s.statesMu.Unlock()
+	// PodEvictFact returns zero-value PodState - remove from map.
+	s.statesMu.Lock()
+	if newState.UID == "" {
+		delete(s.states, uid)
+		s.logger.Info("pod evicted from state machine", "uid", uid)
+	} else {
+		s.states[uid] = newState
+	}
+	s.statesMu.Unlock()
 
-        // Push effects to the worker pool. Non-blocking.
-        for _, eff := range effects {
-                select {
-                case s.effects <- eff:
-                default:
-                        s.logger.Warn("syzygy effects pool full, dropping effect",
-                                "type", fmt.Sprintf("%T", eff),
-                                "uid", uid)
-                }
-        }
+	// Push effects to the worker pool. Non-blocking.
+	for _, eff := range effects {
+		select {
+		case s.effects <- eff:
+		default:
+			s.logger.Warn("syzygy effects pool full, dropping effect",
+				"type", fmt.Sprintf("%T", eff),
+				"uid", uid)
+		}
+	}
 }
 
 // dispatchEffect is called by effect workers. It routes each Effect to
@@ -339,49 +339,49 @@ func (s *Syzygy) processFact(fact types.Fact) {
 // dispatchEffect is called concurrently from multiple goroutines.
 // All callbacks must be goroutine-safe.
 func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
-        switch e := eff.(type) {
-        // --- Local state effects (callbacks, goroutine-safe) ---
+	switch e := eff.(type) {
+	// --- Local state effects (callbacks, goroutine-safe) ---
 
-        case types.SetPodPhase:
-                s.setPodPhase(e.UID, e.Phase)
+	case types.SetPodPhase:
+		s.setPodPhase(e.UID, e.Phase)
 
-        case types.PersistPodState:
-                s.persistPodState(e.UID)
+	case types.PersistPodState:
+		s.persistPodState(e.UID)
 
-        case types.InitRestartState:
-                s.initRestartState(e.UID, e.Namespace, e.Name, e.Containers)
+	case types.InitRestartState:
+		s.initRestartState(e.UID, e.Namespace, e.Name, e.Containers)
 
-        // --- PodStore projection effects (callbacks, goroutine-safe) ---
+	// --- PodStore projection effects (callbacks, goroutine-safe) ---
 
-        case types.RegisterPod:
-                s.registerPod(e)
+	case types.RegisterPod:
+		s.registerPod(e)
 
-        case types.PromotePodRunning:
-                s.promotePodRunning(e)
+	case types.PromotePodRunning:
+		s.promotePodRunning(e)
 
-        case types.MarkPodDeleting:
-                s.markPodDeleting(e)
+	case types.MarkPodDeleting:
+		s.markPodDeleting(e)
 
-        case types.UnregisterPod:
-                s.unregisterPod(e)
+	case types.UnregisterPod:
+		s.unregisterPod(e)
 
-        // --- k8s API effects (Horizon's own worker pool) ---
+	// --- k8s API effects (Horizon's own worker pool) ---
 
-        case types.UpdateStatus:
-                s.horizon.Send(e)
+	case types.UpdateStatus:
+		s.horizon.Send(e)
 
-        case types.RestartContainer:
-                s.horizon.Send(e)
+	case types.RestartContainer:
+		s.horizon.Send(e)
 
-        case types.ResetUnit:
-                s.horizon.Send(e)
+	case types.ResetUnit:
+		s.horizon.Send(e)
 
-        case types.RecordEvent:
-                s.horizon.Send(e)
+	case types.RecordEvent:
+		s.horizon.Send(e)
 
-        default:
-                s.logger.Warn("unknown effect type", "type", fmt.Sprintf("%T", eff))
-        }
+	default:
+		s.logger.Warn("unknown effect type", "type", fmt.Sprintf("%T", eff))
+	}
 }
 
 // --- Anti-Entropy ---
@@ -396,142 +396,142 @@ func (s *Syzygy) dispatchEffect(ctx context.Context, eff types.Effect) {
 // be missed (D-Bus queue overflow, perigeos restart, subscription lag).
 // Anti-entropy catches these gaps within antiEntropyInterval.
 func (s *Syzygy) runAntiEntropyLoop(ctx context.Context) {
-        ticker := time.NewTicker(antiEntropyInterval)
-        defer ticker.Stop()
+	ticker := time.NewTicker(antiEntropyInterval)
+	defer ticker.Stop()
 
-        for {
-                select {
-                case _, ok := <-ticker.C:
-                        if !ok {
-                                return
-                        }
-                        // Skip if inbox is backlogged - don't pile on.
-                        if len(s.inbox) == 0 {
-                                s.runAntiEntropy(ctx)
-                        }
-                case <-ctx.Done():
-                        return
-                }
-        }
+	for {
+		select {
+		case _, ok := <-ticker.C:
+			if !ok {
+				return
+			}
+			// Skip if inbox is backlogged - don't pile on.
+			if len(s.inbox) == 0 {
+				s.runAntiEntropy(ctx)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // runAntiEntropy calls ListManagedMachines and emits ContainerStateFacts
 // for any container whose observed state differs from the state machine.
 func (s *Syzygy) runAntiEntropy(ctx context.Context) {
-        if s.machineLister == nil {
-                return
-        }
+	if s.machineLister == nil {
+		return
+	}
 
-        machines, err := s.machineLister.ListManagedMachines(ctx)
-        if err != nil {
-                if ctx.Err() != nil {
-                        return
-                }
-                s.logger.Warn("anti-entropy: ListManagedMachines failed", "err", err)
-                return
-        }
+	machines, err := s.machineLister.ListManagedMachines(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		s.logger.Warn("anti-entropy: ListManagedMachines failed", "err", err)
+		return
+	}
 
-        // Build an index of observed states.
-        observed := make(map[string]perigeos.PodMetadata, len(machines))
-        for _, m := range machines {
-                key := m.UID + "/" + m.ContainerName
-                observed[key] = m
-        }
+	// Build an index of observed states.
+	observed := make(map[string]perigeos.PodMetadata, len(machines))
+	for _, m := range machines {
+		key := m.UID + "/" + m.ContainerName
+		observed[key] = m
+	}
 
-        // Snapshot states under read lock so the anti-entropy goroutine
-        // doesn't race with processFact writes.
-        s.statesMu.RLock()
-        snapshot := make(map[string]foci.PodState, len(s.states))
-        for k, v := range s.states {
-                snapshot[k] = v
-        }
-        s.statesMu.RUnlock()
+	// Snapshot states under read lock so the anti-entropy goroutine
+	// doesn't race with processFact writes.
+	s.statesMu.RLock()
+	snapshot := make(map[string]foci.PodState, len(s.states))
+	for k, v := range s.states {
+		snapshot[k] = v
+	}
+	s.statesMu.RUnlock()
 
-        // For each tracked pod, compare container states and emit ContainerStateFacts.
-        for uid, state := range snapshot {
-                for i := range state.Containers {
-                        cv := &state.Containers[i]
-                        key := uid + "/" + cv.Name
+	// For each tracked pod, compare container states and emit ContainerStateFacts.
+	for uid, state := range snapshot {
+		for i := range state.Containers {
+			cv := &state.Containers[i]
+			key := uid + "/" + cv.Name
 
-                        obs, exists := observed[key]
+			obs, exists := observed[key]
 
-                        // Map MachineState to foci.ContainerPhase for comparison.
-                        var observedPhase foci.ContainerPhase
-                        if exists {
-                                switch obs.State {
-                                case perigeos.StateRunning:
-                                        observedPhase = foci.PhaseRunning
-                                case perigeos.StateCreating:
-                                        observedPhase = foci.PhaseCreating
-                                case perigeos.StateFailed:
-                                        if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
-                                                observedPhase = foci.PhaseCrashLoopBackOff
-                                        } else {
-                                                observedPhase = foci.PhaseTerminated
-                                        }
-                                case perigeos.StateExited:
-                                        if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
-                                                observedPhase = foci.PhaseCrashLoopBackOff
-                                        } else {
-                                                observedPhase = foci.PhaseTerminated
-                                        }
-                                default:
-                                        // StateUnknown - container not in systemd listing.
-                                        if cv.SeenRunning {
-                                                observedPhase = foci.PhaseTerminated
-                                        } else if cv.Restarting {
-                                                observedPhase = foci.PhaseCrashLoopBackOff
-                                        } else {
-                                                observedPhase = foci.PhaseCreating
-                                        }
-                                }
-                        } else {
-                                // Container not found in ListManagedMachines.
-                                if cv.Restarting {
-                                        observedPhase = foci.PhaseCrashLoopBackOff
-                                } else if cv.SeenRunning {
-                                        observedPhase = foci.PhaseTerminated
-                                } else {
-                                        // Never seen running, not in systemd - keep Creating.
-                                        continue
-                                }
-                        }
+			// Map MachineState to foci.ContainerPhase for comparison.
+			var observedPhase foci.ContainerPhase
+			if exists {
+				switch obs.State {
+				case perigeos.StateRunning:
+					observedPhase = foci.PhaseRunning
+				case perigeos.StateCreating:
+					observedPhase = foci.PhaseCreating
+				case perigeos.StateFailed:
+					if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
+						observedPhase = foci.PhaseCrashLoopBackOff
+					} else {
+						observedPhase = foci.PhaseTerminated
+					}
+				case perigeos.StateExited:
+					if shouldRestartFromState(state.Spec.RestartPolicy, obs.ExitCode) {
+						observedPhase = foci.PhaseCrashLoopBackOff
+					} else {
+						observedPhase = foci.PhaseTerminated
+					}
+				default:
+					// StateUnknown - container not in systemd listing.
+					if cv.SeenRunning {
+						observedPhase = foci.PhaseTerminated
+					} else if cv.Restarting {
+						observedPhase = foci.PhaseCrashLoopBackOff
+					} else {
+						observedPhase = foci.PhaseCreating
+					}
+				}
+			} else {
+				// Container not found in ListManagedMachines.
+				if cv.Restarting {
+					observedPhase = foci.PhaseCrashLoopBackOff
+				} else if cv.SeenRunning {
+					observedPhase = foci.PhaseTerminated
+				} else {
+					// Never seen running, not in systemd - keep Creating.
+					continue
+				}
+			}
 
-                        // Only emit if the observed phase differs from the state machine.
-                        if cv.Phase == observedPhase {
-                                continue
-                        }
+			// Only emit if the observed phase differs from the state machine.
+			if cv.Phase == observedPhase {
+				continue
+			}
 
-                        var machineState perigeos.MachineState
-                        var exitCode int32
-                        if exists {
-                                machineState = obs.State
-                                exitCode = obs.ExitCode
-                        }
+			var machineState perigeos.MachineState
+			var exitCode int32
+			if exists {
+				machineState = obs.State
+				exitCode = obs.ExitCode
+			}
 
-                        s.logger.Debug("anti-entropy: emitting ContainerStateFact",
-                                "uid", uid, "container", cv.Name,
-                                "currentState", cv.Phase, "observedPhase", observedPhase,
-                                "machineState", machineState, "exitCode", exitCode)
+			s.logger.Debug("anti-entropy: emitting ContainerStateFact",
+				"uid", uid, "container", cv.Name,
+				"currentState", cv.Phase, "observedPhase", observedPhase,
+				"machineState", machineState, "exitCode", exitCode)
 
-                        fact := types.NewContainerStateFact(uid, cv.Name, machineState, exitCode)
-                        // Self-send through the inbox so the main loop processes it
-                        // in order with other facts.
-                        s.Send(fact)
-                }
-        }
+			fact := types.NewContainerStateFact(uid, cv.Name, machineState, exitCode)
+			// Self-send through the inbox so the main loop processes it
+			// in order with other facts.
+			s.Send(fact)
+		}
+	}
 }
 
 // shouldRestartFromState mirrors the restart policy logic from foci.Reduce.
 func shouldRestartFromState(policy corev1.RestartPolicy, exitCode int32) bool {
-        switch policy {
-        case corev1.RestartPolicyAlways:
-                return true
-        case corev1.RestartPolicyOnFailure:
-                return exitCode != 0
-        default:
-                return false
-        }
+	switch policy {
+	case corev1.RestartPolicyAlways:
+		return true
+	case corev1.RestartPolicyOnFailure:
+		return exitCode != 0
+	default:
+		return false
+	}
 }
 
 // --- Public Accessors ---
@@ -539,33 +539,33 @@ func shouldRestartFromState(policy corev1.RestartPolicy, exitCode int32) bool {
 // PodState returns the PodState for a given UID. Safe to call from any
 // goroutine, but the returned value is a snapshot - may be stale by read time.
 func (s *Syzygy) PodState(uid string) (foci.PodState, bool) {
-        s.statesMu.RLock()
-        state, ok := s.states[uid]
-        s.statesMu.RUnlock()
-        return state, ok
+	s.statesMu.RLock()
+	state, ok := s.states[uid]
+	s.statesMu.RUnlock()
+	return state, ok
 }
 
 // PodCount returns the number of tracked pods.
 func (s *Syzygy) PodCount() int {
-        s.statesMu.RLock()
-        n := len(s.states)
-        s.statesMu.RUnlock()
-        return n
+	s.statesMu.RLock()
+	n := len(s.states)
+	s.statesMu.RUnlock()
+	return n
 }
 
 // UIDs returns all tracked pod UIDs.
 func (s *Syzygy) UIDs() []string {
-        s.statesMu.RLock()
-        uids := make([]string, 0, len(s.states))
-        for uid := range s.states {
-                uids = append(uids, uid)
-        }
-        s.statesMu.RUnlock()
-        return uids
+	s.statesMu.RLock()
+	uids := make([]string, 0, len(s.states))
+	for uid := range s.states {
+		uids = append(uids, uid)
+	}
+	s.statesMu.RUnlock()
+	return uids
 }
 
 // --- Fact UID Extraction ---
 
 func factUID(fact types.Fact) string {
-        return fact.UID()
+	return fact.UID()
 }

@@ -616,9 +616,10 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 		if err != nil {
 			return pkgerrors.Wrap(err, "Cannot generate patch")
 		}
-		var patchObj interface{}
+		var patchObj any
 		if jsonErr := json.Unmarshal(patchBytes, &patchObj); jsonErr == nil {
 			log.G(ctx).WithField("patch", patchObj).Debug("Generated three way patch")
+
 		} else {
 			log.G(ctx).WithField("patch", string(patchBytes)).Debug("Generated three way patch")
 		}
@@ -629,6 +630,7 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 			log.G(ctx).WithField("patch", string(patchBytes)).WithError(err).Warn("Failed to patch node status")
 			return err
 		}
+
 		return nil
 	})
 

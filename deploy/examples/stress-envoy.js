@@ -13,11 +13,11 @@ export const options = {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "15s", target: 100  },
-        { duration: "30s", target: 500  },
-        { duration: "60s", target: 1000 },
-        { duration: "60s", target: 1000 },
-        { duration: "15s", target: 0   },
+        { duration: "15s", target: 10 },
+        { duration: "30s", target: 50 },
+        { duration: "60s", target: 100 },
+        { duration: "60s", target: 100 },
+        { duration: "15s", target: 0 },
       ],
     },
   },
@@ -31,10 +31,10 @@ export const options = {
   },
 }
 
-// VU-local sets — each VU has its own JS context in k6 OSS.
+// VU-local sets - each VU has its own JS context in k6 OSS.
 // Used only for the unique-pod lower bound in handleSummary; the real
 // per-pawn distribution comes from named checks in data.root_group.checks.
-const vuPods  = new Set()
+const vuPods = new Set()
 const vuPawns = new Set()
 
 export default function () {
@@ -42,22 +42,22 @@ export default function () {
 
   const ok = check(res, {
     "status 200": (r) => r.status === 200,
-    "has body":   (r) => r.body && r.body.length > 0,
+    "has body": (r) => r.body && r.body.length > 0,
   })
 
   errorRate.add(!ok)
 
   if (ok && res.body) {
     const pawnMatch = res.body.match(/pawn<\/span><span class="value">([^<]+)<\/span>/)
-    const podMatch  = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
+    const podMatch = res.body.match(/pod<\/span><span class="value">([^<]+)<\/span>/)
 
     if (pawnMatch && podMatch) {
       const pawn = pawnMatch[1].trim()
-      const pod  = podMatch[1].trim()
+      const pod = podMatch[1].trim()
 
       // Named check per pawn. k6 aggregates these across all VUs and exposes
       // them in data.root_group.checks in handleSummary. This is the only
-      // reliable way to get per-tag hit counts in k6 OSS — data.metrics does
+      // reliable way to get per-tag hit counts in k6 OSS - data.metrics does
       // NOT contain per-tag check sub-entries, only the root "checks" metric.
       check(res, { [`pawn: ${pawn}`]: () => true })
 
@@ -98,7 +98,7 @@ export function handleSummary(data) {
       report += `    ${name.padEnd(22)} ${bar.padEnd(50)} ${pct.padStart(5)}%  (${count} hits)\n`
     })
   } else {
-    report += `    No pawn data — body regex may not match or all requests failed.\n`
+    report += `    No pawn data - body regex may not match or all requests failed.\n`
   }
 
   return {

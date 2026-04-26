@@ -33,7 +33,7 @@ func TestExtractResourceLimits_PrefersContainerResources(t *testing.T) {
 		},
 	}
 
-	mem, cpuLimit, cpuReq := extractResourceLimits(pod, container)
+	mem, _, cpuLimit, cpuReq := extractResourceLimits(pod, container)
 
 	res := resource.MustParse("256Mi")
 	if mem != uint64(res.Value()) {
@@ -63,7 +63,7 @@ func TestExtractResourceLimits_FallsBackToPodResources(t *testing.T) {
 	}
 	container := &corev1.Container{}
 
-	mem, cpuLimit, cpuReq := extractResourceLimits(pod, container)
+	mem, _, cpuLimit, cpuReq := extractResourceLimits(pod, container)
 
 	res := resource.MustParse("768Mi")
 
@@ -129,7 +129,7 @@ func TestBuildContainerRuntimeProfiles_PerContainerMap(t *testing.T) {
 		},
 	}
 
-	profiles := buildContainerRuntimeProfiles(pod)
+	profiles := buildContainerRuntimeProfiles(pod, 0)
 	if len(profiles) != 2 {
 		t.Fatalf("expected 2 profiles, got %d", len(profiles))
 	}

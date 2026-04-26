@@ -151,6 +151,7 @@ func WithNodeEnableLeaseV1WithRenewInterval(client coordclientset.LeaseInterface
 		}
 
 		n.leaseController = leaseController
+
 		return nil
 	}
 }
@@ -161,6 +162,7 @@ func WithNodeEnableLeaseV1WithRenewInterval(client coordclientset.LeaseInterface
 func WithNodePingTimeout(timeout time.Duration) NodeControllerOpt {
 	return func(n *NodeController) error {
 		n.pingTimeout = &timeout
+
 		return nil
 	}
 }
@@ -171,6 +173,7 @@ func WithNodePingTimeout(timeout time.Duration) NodeControllerOpt {
 func WithNodePingInterval(d time.Duration) NodeControllerOpt {
 	return func(n *NodeController) error {
 		n.pingInterval = d
+
 		return nil
 	}
 }
@@ -183,6 +186,7 @@ func WithNodePingInterval(d time.Duration) NodeControllerOpt {
 func WithNodeStatusUpdateInterval(d time.Duration) NodeControllerOpt {
 	return func(n *NodeController) error {
 		n.statusInterval = d
+
 		return nil
 	}
 }
@@ -197,6 +201,7 @@ func WithNodeStatusUpdateInterval(d time.Duration) NodeControllerOpt {
 func WithNodeStatusUpdateErrorHandler(h ErrorHandler) NodeControllerOpt {
 	return func(n *NodeController) error {
 		n.nodeStatusUpdateErrorHandler = h
+
 		return nil
 	}
 }
@@ -207,6 +212,7 @@ func WithNodeStatusUpdateErrorHandler(h ErrorHandler) NodeControllerOpt {
 func WithNodeEventRecorder(r record.EventRecorder) NodeControllerOpt {
 	return func(n *NodeController) error {
 		n.recorder = r
+
 		return nil
 	}
 }
@@ -273,6 +279,7 @@ func (n *NodeController) Run(ctx context.Context) (retErr error) {
 		n.errMu.Lock()
 		n.err = retErr
 		n.errMu.Unlock()
+
 		close(n.chDone)
 	}()
 
@@ -293,6 +300,7 @@ func (n *NodeController) Run(ctx context.Context) (retErr error) {
 
 	if n.leaseController != nil {
 		log.G(ctx).WithField("leaseController", n.leaseController).Debug("Starting leasecontroller")
+
 		n.group.StartWithContext(ctx, n.leaseController.Run)
 	}
 
@@ -312,6 +320,7 @@ func (n *NodeController) Done() <-chan struct{} {
 func (n *NodeController) Err() error {
 	n.errMu.Lock()
 	defer n.errMu.Unlock()
+
 	return n.err
 }
 
@@ -330,6 +339,7 @@ func (n *NodeController) ensureNode(ctx context.Context, providerNode *corev1.No
 	n.serverNodeLock.Lock()
 	serverNode := n.serverNode
 	n.serverNodeLock.Unlock()
+
 	node, err := n.nodes.Create(ctx, serverNode, metav1.CreateOptions{})
 	if err != nil {
 		return pkgerrors.Wrap(err, "error registering node with Kubernetes")
@@ -338,6 +348,7 @@ func (n *NodeController) ensureNode(ctx context.Context, providerNode *corev1.No
 	n.serverNodeLock.Lock()
 	n.serverNode = node
 	n.serverNodeLock.Unlock()
+
 	// Bad things will happen if the node is deleted in k8s and recreated by someone else
 	// we rely on this persisting
 	providerNode.ObjectMeta.Name = node.Name
@@ -360,9 +371,12 @@ func (n *NodeController) controlLoop(ctx context.Context, providerNode *corev1.N
 	var sleepInterval time.Duration
 	if n.leaseController == nil {
 		log.G(ctx).WithField("pingInterval", n.pingInterval).Debug("lease controller is not enabled, updating node status in Kube API server at Ping Time Interval")
+
 		sleepInterval = n.pingInterval
+
 	} else {
 		log.G(ctx).WithField("statusInterval", n.statusInterval).Debug("lease controller in use, updating at statusInterval")
+
 		sleepInterval = n.statusInterval
 	}
 
@@ -378,7 +392,9 @@ func (n *NodeController) controlLoop(ctx context.Context, providerNode *corev1.N
 		select {
 		case <-ctx.Done():
 			return true
+
 		case updated := <-n.chStatusUpdate:
+
 			log.G(ctx).Debug("Received node status update")
 
 			providerNode.Status = updated.Status
@@ -386,16 +402,21 @@ func (n *NodeController) controlLoop(ctx context.Context, providerNode *corev1.N
 			providerNode.ObjectMeta.Labels = updated.Labels
 			if err := n.updateStatus(ctx, providerNode, false); err != nil {
 				log.G(ctx).WithError(err).Error("Error handling node status update")
+
 				n.nodeEvent(corev1.EventTypeWarning, "FailedNodeStatusUpdate",
 					fmt.Sprintf("Error updating node status: %v", err))
 			}
+
 		case <-timer.C:
 			if err := n.updateStatus(ctx, providerNode, false); err != nil {
+
 				log.G(ctx).WithError(err).Error("Error handling node status update")
+
 				n.nodeEvent(corev1.EventTypeWarning, "FailedNodeStatusUpdate",
 					fmt.Sprintf("Error updating node status: %v", err))
 			}
 		}
+
 		return false
 	}
 
@@ -413,9 +434,11 @@ func (n *NodeController) nodeEvent(eventType, reason, message string) {
 	if n.recorder == nil {
 		return
 	}
+
 	n.serverNodeLock.Lock()
 	node := n.serverNode
 	n.serverNodeLock.Unlock()
+
 	if node != nil {
 		n.recorder.Event(node, eventType, reason, message)
 	}
@@ -461,6 +484,7 @@ func (n *NodeController) updateStatus(ctx context.Context, providerNode *corev1.
 	n.serverNodeLock.Lock()
 	n.serverNode = node
 	n.serverNodeLock.Unlock()
+
 	return nil
 }
 
@@ -471,6 +495,7 @@ func (n *NodeController) getServerNode(ctx context.Context) (*corev1.Node, error
 	if n.serverNode == nil {
 		return nil, pkgerrors.New("Server node does not yet exist")
 	}
+
 	return n.serverNode.DeepCopy(), nil
 }
 
@@ -529,6 +554,7 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 		     |VK|                                                        |K8s|          |ExternalUpdater|
 		     `--'                                                        `---'          `---'
 	*/
+
 	// In order to calculate that last patch to delete B, and upsert C, we need to know that C was added by
 	// "someone else". So, we keep track of our last applied value, and our current value. We then generate
 	// our patch based on the diff of these and *not* server side state.
@@ -536,6 +562,7 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 	oldVKObjectMeta, ok2 := apiServerNode.Annotations[virtualKubeletLastNodeAppliedObjectMeta]
 
 	oldNode := corev1.Node{}
+
 	// Check if there were no labels, which means someone else probably created the node, or this is an upgrade. Either way, we will consider
 	// ourselves as never having written the node object before, so oldNode will be left empty. We will overwrite values if
 	// our new node conditions / status / objectmeta have them
@@ -544,6 +571,7 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 		if err != nil {
 			return nil, pkgerrors.Wrapf(err, "Cannot unmarshal old node object metadata (key: %q): %q", virtualKubeletLastNodeAppliedObjectMeta, oldVKObjectMeta)
 		}
+
 		err = json.Unmarshal([]byte(oldVKStatus), &oldNode.Status)
 		if err != nil {
 			return nil, pkgerrors.Wrapf(err, "Cannot unmarshal old node status (key: %q): %q", virtualKubeletLastNodeAppliedNodeStatus, oldVKStatus)
@@ -562,31 +590,38 @@ func prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode *cor
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot marshal object meta from provider")
 	}
+
 	newNode.Annotations[virtualKubeletLastNodeAppliedObjectMeta] = string(virtualKubeletLastNodeAppliedObjectMetaBytes)
 
 	virtualKubeletLastNodeAppliedNodeStatusBytes, err := json.Marshal(newNode.Status)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot marshal node status from provider")
 	}
+
 	newNode.Annotations[virtualKubeletLastNodeAppliedNodeStatus] = string(virtualKubeletLastNodeAppliedNodeStatusBytes)
+
 	// Generate three way patch from oldNode -> newNode, without deleting the changes in api server
 	// Should we use the Kubernetes serialization / deserialization libraries here?
 	oldNodeBytes, err := json.Marshal(oldNode)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot marshal old node bytes")
 	}
+
 	newNodeBytes, err := json.Marshal(newNode)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot marshal new node bytes")
 	}
+
 	apiServerNodeBytes, err := json.Marshal(apiServerNode)
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot marshal api server node")
 	}
+
 	schema, err := strategicpatch.NewPatchMetaFromStruct(&corev1.Node{})
 	if err != nil {
 		return nil, pkgerrors.Wrap(err, "Cannot get patch schema from node")
 	}
+
 	return strategicpatch.CreateThreeWayMergePatch(oldNodeBytes, newNodeBytes, apiServerNodeBytes, schema, true)
 }
 
@@ -610,12 +645,14 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 			return err
 		}
 		ctx = addNodeAttributes(ctx, span, apiServerNode)
+
 		log.G(ctx).Debug("got node from api server")
 
 		patchBytes, err := prepareThreewayPatchBytesForNodeStatus(nodeFromProvider, apiServerNode)
 		if err != nil {
 			return pkgerrors.Wrap(err, "Cannot generate patch")
 		}
+
 		var patchObj any
 		if jsonErr := json.Unmarshal(patchBytes, &patchObj); jsonErr == nil {
 			log.G(ctx).WithField("patch", patchObj).Debug("Generated three way patch")
@@ -628,6 +665,7 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 		if err != nil {
 			// We cannot wrap this error because the kubernetes error module doesn't understand wrapping
 			log.G(ctx).WithField("patch", string(patchBytes)).WithError(err).Warn("Failed to patch node status")
+
 			return err
 		}
 
@@ -637,9 +675,11 @@ func updateNodeStatus(ctx context.Context, nodes v1.NodeInterface, nodeFromProvi
 	if err != nil {
 		return nil, err
 	}
+
 	log.G(ctx).WithField("node.resourceVersion", updatedNode.ResourceVersion).
 		WithField("node.Status.Conditions", updatedNode.Status.Conditions).
 		Debug("updated node status in api server")
+
 	return updatedNode, nil
 }
 
@@ -696,10 +736,12 @@ func (n *NaiveNodeProviderV2) UpdateStatus(ctx context.Context, node *corev1.Nod
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+
 	case <-n.updateReady:
 	}
 
 	n.notify(node)
+
 	return nil
 }
 
@@ -719,10 +761,12 @@ func (t taintsStringer) String() string {
 	for _, taint := range t {
 		if s == "" {
 			s = taint.Key + "=" + taint.Value + ":" + string(taint.Effect)
+
 		} else {
 			s += ", " + taint.Key + "=" + taint.Value + ":" + string(taint.Effect)
 		}
 	}
+
 	return s
 }
 
@@ -743,21 +787,26 @@ func simplestObjectMetadata(baseObjectMeta, objectMetaWithLabelsAndAnnotations *
 		UID:         baseObjectMeta.UID,
 		Annotations: make(map[string]string),
 	}
+
 	if objectMetaWithLabelsAndAnnotations != nil {
 		if objectMetaWithLabelsAndAnnotations.Labels != nil {
 			ret.Labels = objectMetaWithLabelsAndAnnotations.Labels
+
 		} else {
 			ret.Labels = make(map[string]string)
 		}
+
 		if objectMetaWithLabelsAndAnnotations.Annotations != nil {
 			// We want to copy over all annotations except the special embedded ones.
 			for key := range objectMetaWithLabelsAndAnnotations.Annotations {
 				if key == virtualKubeletLastNodeAppliedNodeStatus || key == virtualKubeletLastNodeAppliedObjectMeta {
 					continue
 				}
+
 				ret.Annotations[key] = objectMetaWithLabelsAndAnnotations.Annotations[key]
 			}
 		}
 	}
+
 	return ret
 }

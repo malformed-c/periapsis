@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package main
 
 import (
@@ -676,6 +679,11 @@ func main() {
 
 			wg.Go(func() {
 				reconciler.Run(ctx)
+			})
+
+			wg.Go(func() {
+				pawnLogger.Info("Starting eviction loop")
+				g.RunEvictionLoop(ctx)
 			})
 
 			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{

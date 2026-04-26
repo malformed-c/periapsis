@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package systemd
 
 import (
@@ -167,6 +170,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if netNSPath == "" {
 			netNSPath = "/proc/1/ns/net"
 		}
+
 	} else if netNSPath == "" {
 		return fmt.Errorf("NetNSPath is required for machine %s", podUID)
 	}
@@ -238,9 +242,11 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if useUserNS {
 		var err error
 		usernsFIFODir, err = setupUserNSFIFOs(podUID, containerName)
+
 		if err != nil {
 			s.logger.Error("Failed to setup userns FIFOs, falling back to --user=", "error", err)
 			useUserNS = false
+
 		} else {
 			// Bind-mount the shim binary and FIFO directory into the container.
 			execStart = append(execStart,
@@ -249,6 +255,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			)
 		}
 	}
+
 	if !useUserNS && cfg.RunAsUser != nil {
 		// Fallback: use nspawn's --user= (no userns isolation).
 		if *cfg.RunAsUser != 0 {
@@ -278,6 +285,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		arg := bm.HostPath + ":" + bm.ContainerPath
 		if bm.ReadOnly {
 			execStart = append(execStart, "--bind-ro="+arg)
+
 		} else {
 			execStart = append(execStart, "--bind="+arg)
 		}
@@ -300,27 +308,33 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if len(effectiveEntrypoint) == 0 {
 		effectiveEntrypoint = cfg.ImageEntrypoint
 	}
+
 	var effectiveCmd []string
 	if len(cfg.Container.Args) > 0 {
 		effectiveCmd = cfg.Container.Args
+
 	} else if len(cfg.Container.Command) == 0 {
 		// Only use image CMD when neither command nor args are overridden.
 		effectiveCmd = cfg.ImageCmd
 	}
+
 	var fullCmd []string
 	for _, part := range append(effectiveEntrypoint, effectiveCmd...) {
 		fullCmd = append(fullCmd, substituteEnvVars(part, envMap))
 	}
+
 	if len(fullCmd) == 0 {
 		// Last resort for images with no entrypoint (e.g. scratch).
 		fullCmd = []string{"/bin/sleep", "infinity"}
 	}
+
 	if useUserNS {
 		// Prepend the userns shim - it calls unshare(CLONE_NEWUSER), waits
 		// for perigeos to write uid_map/gid_map, adopts the target identity,
 		// then exec()s the real workload.
 		fullCmd = append([]string{usernsShimContainerPath}, fullCmd...)
 	}
+
 	execStart = append(execStart, fullCmd...)
 
 	// Embed pod metadata as PERIGEOS_META_* environment variables.
@@ -370,6 +384,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if err != nil {
 			return fmt.Errorf("create stdio PTY for %s: %w", machineName, err)
 		}
+
 		slavePath := slave.Name()
 		slave.Close() // systemd reopens the slave by path
 
@@ -384,11 +399,13 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			termios.Cflag |= unix.CS8
 			_ = unix.IoctlSetTermios(int(master.Fd()), unix.TCSETS, termios)
 		}
+
 		properties = append(properties,
 			dbus.Property{Name: "StandardInputFile", Value: dbusv5.MakeVariant(slavePath)},
 			dbus.Property{Name: "StandardOutputFile", Value: dbusv5.MakeVariant(slavePath)},
 			dbus.Property{Name: "StandardErrorFile", Value: dbusv5.MakeVariant(slavePath)},
 		)
+
 		s.logger.Info("Created attach PTY", "machine", machineName, "slave", slavePath)
 	}
 
@@ -431,6 +448,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if masterVal, ok := s.attachPTYs.LoadAndDelete(machineName); ok {
 			masterVal.(*os.File).Close()
 		}
+
 		if useUserNS {
 			cleanupUserNSFIFOs(podUID, containerName)
 		}
@@ -440,7 +458,9 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if strings.Contains(err.Error(), "already loaded") || strings.Contains(err.Error(), "fragment file") {
 			_, _ = s.conn.StopUnitContext(ctx, serviceName, "replace", nil)
 			_ = s.conn.ResetFailedUnitContext(ctx, serviceName)
+
 			time.Sleep(200 * time.Millisecond)
+
 			if _, retryErr := s.conn.StartTransientUnitContext(ctx, serviceName, "replace", properties, nil); retryErr != nil {
 				return fmt.Errorf("failed to create machine unit (after reset retry): %w", retryErr)
 			}
@@ -459,6 +479,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if cfg.RunAsGroup != nil {
 			targetGID = *cfg.RunAsGroup
 		}
+
 		go func() {
 			s.completeUserNSSetup(usernsFIFODir, machineName, podUID, targetUID, targetGID)
 			cleanupUserNSFIFOs(podUID, containerName)
@@ -575,6 +596,7 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		// by default). This fixes the EINVAL error from setns(CLONE_NEWNS).
 		if err := unix.Unshare(unix.CLONE_FS); err != nil {
 			ch <- result{fmt.Errorf("unshare CLONE_FS: %w", err)}
+
 			return
 		}
 
@@ -583,6 +605,7 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		containerNS, err := os.Open(nsPath)
 		if err != nil {
 			ch <- result{fmt.Errorf("open container mnt ns %s: %w", nsPath, err)}
+
 			return
 		}
 		defer containerNS.Close()
@@ -592,6 +615,7 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		rootDir, err := os.Open(rootPath)
 		if err != nil {
 			ch <- result{fmt.Errorf("open container root %s: %w", rootPath, err)}
+
 			return
 		}
 		defer rootDir.Close()
@@ -599,6 +623,7 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		// Enter the container's mount namespace.
 		if err := unix.Setns(int(containerNS.Fd()), unix.CLONE_NEWNS); err != nil {
 			ch <- result{fmt.Errorf("setns into container mnt ns: %w", err)}
+
 			return
 		}
 
@@ -608,10 +633,12 @@ func makeContainerMountShared(pid int, containerPath string) error {
 		// containerPath relative to the host's root.
 		if err := unix.Fchdir(int(rootDir.Fd())); err != nil {
 			ch <- result{fmt.Errorf("fchdir to container root: %w", err)}
+
 			return
 		}
 		if err := unix.Chroot("."); err != nil {
 			ch <- result{fmt.Errorf("chroot to container root: %w", err)}
+
 			return
 		}
 
@@ -620,12 +647,15 @@ func makeContainerMountShared(pid int, containerPath string) error {
 
 		if mountErr != nil && !errors.Is(mountErr, unix.EINVAL) {
 			ch <- result{fmt.Errorf("mount --make-shared %s: %w", containerPath, mountErr)}
+
 			return
 		}
+
 		ch <- result{}
 	}()
 
 	r := <-ch
+
 	return r.err
 }
 
@@ -655,7 +685,9 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	if _, file, line, ok := goruntime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
+
 	s.logger.Info("Stopping Machine", "pod", podUID, "container", containerName, "caller", caller)
+
 	wrapperUnit := wrapperUnitName(s.pawnName, podUID, containerName)
 
 	// Clean up any attach PTY for this container.
@@ -668,8 +700,10 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	_, err := s.conn.StopUnitContext(ctx, wrapperUnit, "replace", ch)
 	if err != nil {
 		if strings.Contains(err.Error(), "not loaded") {
+
 			return nil
 		}
+
 		return fmt.Errorf("stop unit: %w", err)
 	}
 
@@ -684,6 +718,7 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 		}
 		// Clean up stale unix-export mount that survives SIGKILL.
 		cleanNspawnUnixExport(machineName)
+
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -701,6 +736,7 @@ func (s *SystemdRuntime) CheckMachined(ctx context.Context) error {
 	if call.Err != nil {
 		return fmt.Errorf("systemd-machined health check failed: %w (is LimitNOFILE too low?)", call.Err)
 	}
+
 	return nil
 }
 
@@ -722,16 +758,20 @@ func (s *SystemdRuntime) MachineStatus(ctx context.Context, podUID, containerNam
 	switch state {
 	case "active", "reloading":
 		return runtime.StateRunning, nil
+
 	case "activating":
 		return runtime.StateCreating, nil
+
 	case "failed":
 		return runtime.StateFailed, nil
+
 	default:
 		// Check ExecMainStatus for non-zero exit code. Systemd may briefly
 		// report ActiveState=inactive before transitioning to failed.
 		if exitCode := s.readExitCode(ctx, serviceName); exitCode != 0 {
 			return runtime.StateFailed, nil
 		}
+
 		return runtime.StateExited, nil
 	}
 }
@@ -807,6 +847,7 @@ func (s *SystemdRuntime) readUnitEnv(ctx context.Context, unitName string) map[s
 			result[k] = v
 		}
 	}
+
 	return result
 }
 
@@ -817,10 +858,12 @@ func (s *SystemdRuntime) readExitCode(ctx context.Context, unitName string) int3
 	if err != nil {
 		return 0
 	}
+
 	code, ok := prop.Value.Value().(int32)
 	if !ok {
 		return 0
 	}
+
 	return code
 }
 
@@ -832,10 +875,12 @@ func (s *SystemdRuntime) readUnitStartTime(ctx context.Context, unitName string)
 	if err != nil {
 		return time.Time{}
 	}
+
 	usec, ok := prop.Value.Value().(uint64)
 	if !ok || usec == 0 {
 		return time.Time{}
 	}
+
 	return time.Unix(0, int64(usec)*int64(time.Microsecond))
 }
 
@@ -862,7 +907,9 @@ func (s *SystemdRuntime) GetLogStream(
 			j.Close()
 			return nil, fmt.Errorf("no previous logs available for pod %s container %s", podUID, containerName)
 		}
+
 		targetID = ids[len(ids)-2]
+
 	} else if len(ids) > 0 {
 		targetID = ids[len(ids)-1]
 	}
@@ -872,15 +919,19 @@ func (s *SystemdRuntime) GetLogStream(
 			j.Close()
 			return nil, fmt.Errorf("journal match invocation: %w", err)
 		}
+
 	} else {
 		// No invocation IDs found - fall back to unit name match.
 		if err := j.AddMatch("_SYSTEMD_UNIT" + "=" + unitName); err != nil {
 			j.Close()
+
 			return nil, fmt.Errorf("journal match unit: %w", err)
 		}
 	}
+
 	if err := j.AddMatch("SYSLOG_IDENTIFIER" + "=" + containerName); err != nil {
 		j.Close()
+
 		return nil, fmt.Errorf("journal match syslog id: %w", err)
 	}
 
@@ -888,21 +939,28 @@ func (s *SystemdRuntime) GetLogStream(
 		cutoff := uint64(time.Now().Add(-time.Duration(opts.SinceSeconds) * time.Second).UnixMicro())
 		if err := j.SeekRealtimeUsec(cutoff); err != nil {
 			j.Close()
+
 			return nil, fmt.Errorf("journal seek: %w", err)
 		}
+
 	} else if opts.Tail > 0 {
 		// Seek to tail then step back opts.Tail entries.
 		if err := j.SeekTail(); err != nil {
 			j.Close()
+
 			return nil, fmt.Errorf("journal seek tail: %w", err)
 		}
+
 		if _, err := j.PreviousSkip(uint64(opts.Tail)); err != nil {
 			j.Close()
+
 			return nil, fmt.Errorf("journal seek back: %w", err)
 		}
+
 	} else {
 		if err := j.SeekHead(); err != nil {
 			j.Close()
+
 			return nil, fmt.Errorf("journal seek head: %w", err)
 		}
 	}
@@ -926,35 +984,44 @@ func (r *journalReader) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("journal next: %w", err)
 		}
+
 		if n == 0 {
 			if !r.follow {
 				return 0, io.EOF
 			}
+
 			// Block until new entries arrive or context is cancelled.
 			for {
 				select {
 				case <-r.ctx.Done():
 					return 0, r.ctx.Err()
+
 				default:
 				}
+
 				status := r.j.Wait(250 * time.Millisecond)
 				if status == sdjournal.SD_JOURNAL_APPEND {
 					break
 				}
+
 				if status < 0 {
 					return 0, fmt.Errorf("journal wait error: %d", status)
 				}
 			}
+
 			continue
 		}
 		entry, err := r.j.GetEntry()
 		if err != nil {
 			return 0, fmt.Errorf("journal entry: %w", err)
 		}
+
 		r.buf = append([]byte(entry.Fields["MESSAGE"]), '\n')
 	}
+
 	n := copy(p, r.buf)
 	r.buf = r.buf[n:]
+
 	return n, nil
 }
 
@@ -972,6 +1039,7 @@ func (s *SystemdRuntime) RunInContainer(
 	switch s.execStrategy {
 	case runtime.ExecMachinectl:
 		return s.runInContainerMachinectl(ctx, podUID, containerName, cmd, attach)
+
 	default:
 		return s.runInContainerNsenter(ctx, podUID, containerName, cmd, attach)
 	}
@@ -1012,12 +1080,15 @@ func (s *SystemdRuntime) AttachContainer(
 
 	cmd := exec.CommandContext(ctx, "nsenter", args...)
 	var runErr error
+
 	if attach.TTY() {
 		runErr = runWithPTY(ctx, cmd, attach)
+
 	} else {
 		wireAttach(cmd, attach)
 		runErr = cmd.Run()
 	}
+
 	return suppressSignalExit(runErr)
 }
 
@@ -1028,6 +1099,7 @@ func (s *SystemdRuntime) AttachContainer(
 func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, attach api.AttachIO) error {
 	// Relay stdout: PTY master -> attach.Stdout
 	done := make(chan error, 1)
+
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -1035,8 +1107,10 @@ func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, at
 			if n > 0 && attach.Stdout() != nil {
 				_, _ = attach.Stdout().Write(buf[:n])
 			}
+
 			if err != nil {
 				done <- err
+
 				return
 			}
 		}
@@ -1051,6 +1125,7 @@ func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, at
 				if n > 0 {
 					_, _ = master.Write(buf[:n])
 				}
+
 				if err != nil {
 					return
 				}
@@ -1074,6 +1149,7 @@ func (s *SystemdRuntime) relayAttachPTY(ctx context.Context, master *os.File, at
 	case <-done:
 	case <-ctx.Done():
 	}
+
 	return nil
 }
 
@@ -1084,6 +1160,7 @@ func suppressSignalExit(err error) error {
 	if err == nil {
 		return nil
 	}
+
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ProcessState != nil {
 		if status, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus); ok {
@@ -1091,6 +1168,7 @@ func suppressSignalExit(err error) error {
 				return nil
 			}
 		}
+
 		// Shells exit with 128+N when killed by signal N.
 		// 130 = SIGINT, 131 = SIGQUIT - treat as clean detach.
 		code := exitErr.ExitCode()
@@ -1098,6 +1176,7 @@ func suppressSignalExit(err error) error {
 			return nil
 		}
 	}
+
 	return err
 }
 
@@ -1108,6 +1187,7 @@ func (s *SystemdRuntime) registerWaiter(unitName string) (<-chan string, func())
 	s.unitWaitersMu.Lock()
 	s.unitWaiters[unitName] = ch
 	s.unitWaitersMu.Unlock()
+
 	return ch, func() {
 		s.unitWaitersMu.Lock()
 		delete(s.unitWaiters, unitName)
@@ -1121,6 +1201,7 @@ func (s *SystemdRuntime) notifyWaiters(unitName, subState string) {
 	s.unitWaitersMu.Lock()
 	ch, ok := s.unitWaiters[unitName]
 	s.unitWaitersMu.Unlock()
+
 	if ok {
 		select {
 		case ch <- subState:
@@ -1156,11 +1237,14 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 		if err != nil {
 			return runtime.StateFailed, err
 		}
+
 		switch state {
 		case runtime.StateRunning, runtime.StateCreating:
 			started = true
+
 		case runtime.StateFailed:
 			return runtime.StateFailed, nil
+
 		case runtime.StateExited:
 			if started || time.Now().After(startDeadline) {
 				return runtime.StateExited, nil
@@ -1169,6 +1253,7 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 		case runtime.StateUnknown:
 			// D-Bus error - keep waiting.
 		}
+
 		return "", nil
 	}
 
@@ -1185,25 +1270,31 @@ func (s *SystemdRuntime) WaitForMachineExit(ctx context.Context, podUID, contain
 		select {
 		case <-ctx.Done():
 			return runtime.StateUnknown, ctx.Err()
+
 		case subState := <-waiterCh:
 			// D-Bus event received - check if terminal.
 			switch subState {
 			case "running", "start-pre", "start", "start-post":
 				started = true
+
 				continue
+
 			case "failed":
 				return runtime.StateFailed, nil
 			}
+
 			// For "dead" and other states, do a full status check to
 			// get the authoritative exit code.
 			if state, err := checkState(); state != "" || err != nil {
 				return state, err
 			}
+
 		case <-ticker.C:
 			if state, err := checkState(); state != "" || err != nil {
 				return state, err
 			}
 		}
+
 		if time.Now().After(deadline) {
 			return runtime.StateUnknown, fmt.Errorf("timeout waiting for container %s/%s to exit", podUID, containerName)
 		}
@@ -1232,14 +1323,17 @@ func (s *SystemdRuntime) loadInvocationIDs(j *sdjournal.Journal, podUID, contain
 		if err != nil || n == 0 {
 			break
 		}
+
 		entry, err := j.GetEntry()
 		if err != nil {
 			continue
 		}
+
 		id := entry.Fields["_SYSTEMD_INVOCATION_ID"]
 		if id == "" {
 			continue
 		}
+
 		if _, exists := seen[id]; !exists {
 			seen[id] = struct{}{}
 			ids = append(ids, id)
@@ -1254,10 +1348,13 @@ func mapActiveState(s string) runtime.MachineState {
 	switch s {
 	case "active", "reloading":
 		return runtime.StateRunning
+
 	case "activating":
 		return runtime.StateCreating
+
 	case "failed":
 		return runtime.StateFailed
+
 	default:
 		return runtime.StateExited
 	}
@@ -1274,10 +1371,12 @@ func dbusUnitEscape(name string) string {
 		isDigit := c >= '0' && c <= '9'
 		if isAlpha || (isDigit && i > 0) {
 			b.WriteByte(c)
+
 		} else {
 			fmt.Fprintf(&b, "_%02x", c)
 		}
 	}
+
 	return b.String()
 }
 
@@ -1287,6 +1386,7 @@ func dbusUnitUnescape(escaped string) string {
 	if escaped == "_" {
 		return ""
 	}
+
 	var b strings.Builder
 	for i := 0; i < len(escaped); i++ {
 		if escaped[i] == '_' && i+2 < len(escaped) {
@@ -1295,11 +1395,14 @@ func dbusUnitUnescape(escaped string) string {
 			if hi >= 0 && lo >= 0 {
 				b.WriteByte(byte(hi<<4 | lo))
 				i += 2
+
 				continue
 			}
 		}
+
 		b.WriteByte(escaped[i])
 	}
+
 	return b.String()
 }
 
@@ -1307,10 +1410,13 @@ func unhex(c byte) int {
 	switch {
 	case c >= '0' && c <= '9':
 		return int(c - '0')
+
 	case c >= 'a' && c <= 'f':
 		return int(c - 'a' + 10)
+
 	case c >= 'A' && c <= 'F':
 		return int(c - 'A' + 10)
+
 	default:
 		return -1
 	}
@@ -1328,6 +1434,7 @@ func substituteEnvVars(s string, env map[string]string) string {
 	if !strings.Contains(s, "$(") {
 		return s
 	}
+
 	var buf strings.Builder
 	for i := 0; i < len(s); {
 		if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
@@ -1336,16 +1443,20 @@ func substituteEnvVars(s string, env map[string]string) string {
 				varName := s[i+2 : i+2+end]
 				if val, ok := env[varName]; ok {
 					buf.WriteString(val)
+
 				} else {
 					buf.WriteString(s[i : i+2+end+1])
 				}
+
 				i += 2 + end + 1
+
 				continue
 			}
 		}
 		buf.WriteByte(s[i])
 		i++
 	}
+
 	return buf.String()
 }
 
@@ -1378,22 +1489,28 @@ func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[s
 		if unit.ActiveState == "active" || unit.ActiveState == "activating" {
 			continue
 		}
+
 		// Parse UID from unit name.
 		env := s.readUnitEnv(ctx, unit.Name)
 		uid := env["PERIGEOS_META_UID"]
 		if uid == "" {
 			continue
 		}
+
 		if activeUIDs[uid] {
 			continue
 		}
+
 		if err := s.conn.ResetFailedUnitContext(ctx, unit.Name); err != nil {
 			s.logger.Debug("CleanupStaleUnits: reset failed", "unit", unit.Name, "err", err)
 			continue
 		}
+
 		s.logger.Info("Cleaned up stale unit", "unit", unit.Name, "uid", uid)
+
 		cleaned++
 	}
+
 	return cleaned, nil
 }
 
@@ -1411,6 +1528,7 @@ func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[s
 func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.UnitEvent {
 	if s.sigConn == nil {
 		s.logger.Warn("No signal D-Bus connection, falling back to poll-only")
+
 		return nil
 	}
 
@@ -1423,6 +1541,7 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 		sysObj := s.sigConn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 		if call := sysObj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
 			s.logger.Warn("Failed to subscribe to systemd signals, falling back to poll-only", "err", call.Err)
+
 			return nil
 		}
 	}
@@ -1442,6 +1561,7 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 	)
 	if err != nil {
 		s.logger.Warn("Failed to add D-Bus match rule, falling back to poll-only", "err", err)
+
 		return nil
 	}
 
@@ -1459,14 +1579,17 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 			select {
 			case <-ctx.Done():
 				return
+
 			case sig, ok := <-sigCh:
 				if !ok {
 					return
 				}
+
 				// Filter to this pawn's units by object path prefix.
 				if !strings.HasPrefix(string(sig.Path), pathPrefix) {
 					continue
 				}
+
 				// PropertiesChanged signal body:
 				//   [0] string - interface name
 				//   [1] map[string]dbus.Variant - changed properties
@@ -1474,18 +1597,22 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 				if len(sig.Body) < 2 {
 					continue
 				}
+
 				iface, _ := sig.Body[0].(string)
 				if iface != "org.freedesktop.systemd1.Unit" {
 					continue
 				}
+
 				changed, _ := sig.Body[1].(map[string]dbusv5.Variant)
 				if changed == nil {
 					continue
 				}
+
 				subStateVar, ok := changed["SubState"]
 				if !ok {
 					continue
 				}
+
 				subState, ok := subStateVar.Value().(string)
 				if !ok {
 					continue
@@ -1515,7 +1642,9 @@ func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.Uni
 // pathBase returns the last component of a slash-separated path.
 func pathBase(p string) string {
 	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+
 		return p[i+1:]
 	}
+
 	return p
 }

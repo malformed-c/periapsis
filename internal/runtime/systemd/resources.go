@@ -1,9 +1,13 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package systemd
 
 import (
 	"github.com/containerd/cgroups/v3/cgroup2"
 	"github.com/malformed-c/periapsis/internal/cgroup"
 	"github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/types"
 )
 
 // buildPodResources lifts per-container resource limits from the pod spec into
@@ -13,9 +17,10 @@ import (
 // This is the single seam where future pod-label-driven cgroup knobs should
 // be wired in (IO throttling, Pids limits, memory.high, cpuset, etc.) so that
 // both runProgram and RunMachine inherit them for free.
-func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
-	res := &cgroup2.Resources{}
+func buildPodResources(cfg runtime.PodConfig) (res *types.PodResources) {
+	res = &types.PodResources{}
 
+	// CPU
 	var cpu cgroup2.CPU
 	hasCPU := false
 	if w := cgroup.MilliCPUToCPUWeight(cfg.CPURequestMillis); w > 0 {
@@ -30,10 +35,26 @@ func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
 		res.CPU = &cpu
 	}
 
+	// Memory and Swap
+	var mem cgroup2.Memory
+	hasMem := false
 	if cfg.MemoryLimitBytes > 0 {
 		memMax := int64(cfg.MemoryLimitBytes)
-		res.Memory = &cgroup2.Memory{Max: &memMax}
+		mem.Max = &memMax
+		hasMem = true
+	}
+	if cfg.SwapLimitBytes > 0 {
+		swapMax := int64(cfg.SwapLimitBytes)
+		mem.Swap = &swapMax
+		hasMem = true
+	}
+	if hasMem {
+		res.Memory = &mem
 	}
 
-	return res
+	// QoS
+	// Should be always set by the caller
+	res.OOMScoreAdjust = cfg.OOMScoreAdjust
+
+	return
 }

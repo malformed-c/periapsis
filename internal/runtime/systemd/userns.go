@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package systemd
 
 import (
@@ -49,10 +52,13 @@ func injectPasswdEntry(rootfs string, uid, gid int64, logger *slog.Logger) error
 		return fmt.Errorf("open %s: %w", passwdPath, err)
 	}
 	defer f.Close()
+
 	if _, err := f.WriteString(line); err != nil {
 		return fmt.Errorf("write passwd entry: %w", err)
 	}
+
 	logger.Info("Injected /etc/passwd entry", "uid", uid, "gid", gid, "username", username)
+
 	return nil
 }
 
@@ -112,7 +118,9 @@ func entryExists(path, value string, fieldIdx int) bool {
 		if len(fields) > fieldIdx && fields[fieldIdx] == value {
 			return true
 		}
+
 	}
+
 	return false
 }
 
@@ -122,6 +130,7 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	if runAsUser == nil {
 		return
 	}
+
 	uid := *runAsUser
 	gid := int64(0)
 	if runAsGroup != nil {
@@ -131,9 +140,11 @@ func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *sl
 	if err := injectPasswdEntry(rootfs, uid, gid, logger); err != nil {
 		logger.Error("Failed to inject passwd entry", "error", err)
 	}
+
 	if err := injectGroupEntry(rootfs, gid, logger); err != nil {
 		logger.Error("Failed to inject group entry", "error", err)
 	}
+
 	createHomeDir(rootfs, uid, gid, logger)
 }
 
@@ -169,6 +180,7 @@ func setupUserNSFIFOs(podUID, containerName string) (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dir, err)
 	}
+
 	for _, name := range []string{"ready", "gate"} {
 		p := filepath.Join(dir, name)
 		os.Remove(p) // remove stale FIFO from previous attempt
@@ -176,6 +188,7 @@ func setupUserNSFIFOs(podUID, containerName string) (string, error) {
 			return "", fmt.Errorf("mkfifo %s: %w", p, err)
 		}
 	}
+
 	return dir, nil
 }
 
@@ -197,14 +210,18 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	rf, err := os.Open(readyPath)
 	if err != nil {
 		logger.Error("Failed to open ready FIFO", "error", err)
+
 		return
 	}
+
 	buf := make([]byte, 4)
 	if _, err := rf.Read(buf); err != nil {
 		rf.Close()
 		logger.Error("Failed to read ready FIFO", "error", err)
+
 		return
 	}
+
 	rf.Close()
 	logger.Info("Shim signaled ready, writing uid_map/gid_map")
 
@@ -212,6 +229,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	pid, err := s.getMachineLeaderPID(machineName)
 	if err != nil {
 		logger.Error("Failed to get shim PID", "error", err)
+
 		return
 	}
 
@@ -225,6 +243,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	uidMapPath := fmt.Sprintf("/proc/%d/uid_map", pid)
 	if err := os.WriteFile(uidMapPath, []byte(mapLine), 0); err != nil {
 		logger.Error("Failed to write uid_map", "path", uidMapPath, "error", err)
+
 		return
 	}
 
@@ -234,12 +253,14 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	setgroupsPath := fmt.Sprintf("/proc/%d/setgroups", pid)
 	if err := os.WriteFile(setgroupsPath, []byte("deny"), 0); err != nil {
 		logger.Error("Failed to write setgroups deny", "path", setgroupsPath, "error", err)
+
 		return
 	}
 
 	gidMapPath := fmt.Sprintf("/proc/%d/gid_map", pid)
 	if err := os.WriteFile(gidMapPath, []byte(mapLine), 0); err != nil {
 		logger.Error("Failed to write gid_map", "path", gidMapPath, "error", err)
+
 		return
 	}
 
@@ -250,6 +271,7 @@ func (s *SystemdRuntime) completeUserNSSetup(fifoDir, machineName, podUID string
 	gf, err := os.OpenFile(gatePath, os.O_WRONLY, 0)
 	if err != nil {
 		logger.Error("Failed to open gate FIFO", "error", err)
+
 		return
 	}
 	defer gf.Close()

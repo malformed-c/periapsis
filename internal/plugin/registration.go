@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package plugin
 
 import (
@@ -83,11 +86,14 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 	if entries, err := os.ReadDir(pluginRegistryDir); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sock") {
+
 				continue
 			}
+
 			socketPath := filepath.Join(pluginRegistryDir, entry.Name())
 			go pw.handleSocketWithRetry(ctx, socketPath)
 		}
+
 	} else {
 		pw.logger.Warn("Could not scan plugin registry directory", "dir", pluginRegistryDir, "err", err)
 	}
@@ -108,23 +114,30 @@ func (pw *PluginWatcher) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return fmt.Errorf("fsnotify watcher closed")
 			}
+
 			if event.Op != fsnotify.Create {
 				continue
 			}
+
 			if !strings.HasSuffix(event.Name, ".sock") {
 				continue
 			}
+
 			pw.logger.Debug("New plugin socket detected", "socket", event.Name)
+
 			// Handle in a goroutine - retry loop must not block the watcher.
 			go pw.handleSocketWithRetry(ctx, event.Name)
+
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return fmt.Errorf("fsnotify watcher error channel closed")
 			}
+
 			pw.logger.Error("fsnotify watcher error", "err", err)
 		}
 	}
@@ -143,13 +156,16 @@ func (pw *PluginWatcher) handleSocketWithRetry(ctx context.Context, socketPath s
 		if err == nil {
 			return
 		}
+
 		pw.logger.Debug("Plugin registration attempt failed, will retry",
 			"socket", socketPath, "err", err)
 
 		select {
 		case <-retryCtx.Done():
 			pw.logger.Warn("Plugin registration timed out", "socket", socketPath, "err", err)
+
 			return
+
 		case <-time.After(handleRetryInterval):
 		}
 	}
@@ -166,6 +182,7 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 		"unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
+
 	if err != nil {
 		return fmt.Errorf("dial registration socket: %w", err)
 	}
@@ -183,6 +200,7 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 		_, _ = regClient.NotifyRegistrationStatus(ctx, &registerapi.RegistrationStatus{
 			PluginRegistered: true,
 		})
+
 		return nil
 	}
 
@@ -241,6 +259,7 @@ func (pw *PluginWatcher) handleSocket(ctx context.Context, socketPath string) er
 	}
 
 	pw.logger.Info("CSI plugin registered", "driver", info.Name)
+
 	return nil
 }
 
@@ -275,6 +294,7 @@ func (pw *PluginWatcher) resolveCSIEndpoint(driverName, containerPath string) st
 
 	pw.logger.Debug("Could not resolve CSI endpoint to host path, using as-is",
 		"driver", driverName, "path", containerPath)
+
 	return containerPath
 }
 
@@ -321,12 +341,16 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 				Drivers: []storagev1.CSINodeDriver{driverEntry},
 			},
 		}
+
 		if _, err := pw.kubeClient.StorageV1().CSINodes().Create(ctx, newCSINode, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("create CSINode %s: %w", pawnName, err)
 		}
+
 		pw.logger.Info("Created CSINode", "node", pawnName, "driver", driverName)
+
 	} else if err != nil {
 		return fmt.Errorf("get CSINode %s: %w", pawnName, err)
+
 	} else {
 		// Update existing: add driver if not already present, or patch nodeID if changed.
 		updated := false
@@ -336,9 +360,11 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 					csiNode.Spec.Drivers[i] = driverEntry
 					updated = true
 				}
+
 				goto patchAnnotation
 			}
 		}
+
 		csiNode.Spec.Drivers = append(csiNode.Spec.Drivers, driverEntry)
 		updated = true
 
@@ -347,6 +373,7 @@ func (pw *PluginWatcher) ensureCSINode(ctx context.Context, pawnName, driverName
 			if _, err := pw.kubeClient.StorageV1().CSINodes().Update(ctx, csiNode, metav1.UpdateOptions{}); err != nil {
 				return fmt.Errorf("update CSINode %s: %w", pawnName, err)
 			}
+
 			pw.logger.Info("Updated CSINode", "node", pawnName, "driver", driverName)
 		}
 	}

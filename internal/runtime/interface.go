@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package runtime
 
 import (
@@ -170,10 +173,15 @@ type PodConfig struct {
 	// Resource limits from container.Resources.Limits.
 	// Applied as systemd cgroup properties (MemoryMax, CPUQuotaPerSecUSec).
 	MemoryLimitBytes uint64 // 0 = no limit
-	CPULimitMillis   int64  // 0 = no limit (millicores, e.g. 500 = 0.5 CPU)
+	SwapLimitBytes   uint64 // 0 = no limit
+
+	CPULimitMillis int64 // 0 = no limit (millicores, e.g. 500 = 0.5 CPU)
+
 	// Resource request from container.Resources.Requests.
 	// Converted to systemd CPUWeight to mirror Kubernetes relative CPU shares.
 	CPURequestMillis int64 // 0 = no request
+
+	OOMScoreAdjust int
 
 	// OCI image defaults, used as fallback when Container.Command/Args are unset.
 	// Follows Kubernetes command resolution: Container.Command overrides Entrypoint,

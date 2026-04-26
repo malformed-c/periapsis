@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package node
 
 import (
@@ -5,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"time"
@@ -27,8 +31,10 @@ func probeResultString(r ProbeResult) string {
 	switch r {
 	case ProbeSuccess:
 		return "success"
+
 	case ProbeFailure:
 		return "failure"
+
 	default:
 		return "unknown"
 	}
@@ -88,13 +94,17 @@ func (pr *ProbeRunner) RunProbe(ctx context.Context, pod *corev1.Pod, containerN
 	switch {
 	case probe.HTTPGet != nil:
 		result = pr.runHTTPGetProbe(probeCtx, podIP, probe.HTTPGet)
+
 	case probe.TCPSocket != nil:
 		result = pr.runTCPSocketProbe(probeCtx, podIP, probe.TCPSocket)
+
 	case probe.Exec != nil:
 		result = pr.runExecProbe(probeCtx, pod, containerName, probe.Exec)
+
 	default:
 		return ProbeUnknown
 	}
+
 	return result
 }
 
@@ -105,11 +115,13 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	if action.Scheme == corev1.URISchemeHTTPS {
 		scheme = "https"
 	}
+
 	port := action.Port.String()
 	path := action.Path
 	if path == "" {
 		path = "/"
 	}
+
 	// When httpGet.host is set, connect to that address (kubelet behaviour).
 	// This is required for hostNetwork pods that bind only on 127.0.0.1.
 	target := podIP
@@ -121,8 +133,10 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		pr.logger.Debug("HTTP probe request creation failed", "url", url, "err", err)
+
 		return ProbeFailure
 	}
+
 	for _, h := range action.HTTPHeaders {
 		req.Header.Set(h.Name, h.Value)
 	}
@@ -130,17 +144,20 @@ func (pr *ProbeRunner) runHTTPGetProbe(ctx context.Context, podIP string, action
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		pr.logger.Debug("HTTP probe failed", "url", url, "err", err)
+
 		return ProbeFailure
 	}
 	defer resp.Body.Close()
+
 	// Drain body to allow connection reuse.
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		pr.logger.Debug("HTTP probe succeeded", "url", url, "status", resp.StatusCode)
 		return ProbeSuccess
 	}
+
 	pr.logger.Debug("HTTP probe failed (bad status)", "url", url, "status", resp.StatusCode)
+
 	return ProbeFailure
 }
 
@@ -158,10 +175,13 @@ func (pr *ProbeRunner) runTCPSocketProbe(ctx context.Context, podIP string, acti
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		pr.logger.Debug("TCP probe failed", "addr", addr, "err", err)
+
 		return ProbeFailure
 	}
 	conn.Close()
+
 	pr.logger.Debug("TCP probe succeeded", "addr", addr)
+
 	return ProbeSuccess
 }
 
@@ -175,8 +195,10 @@ func (pr *ProbeRunner) runExecProbe(ctx context.Context, pod *corev1.Pod, contai
 			"cmd", action.Command,
 			"err", err,
 		)
+
 		return ProbeFailure
 	}
+
 	return ProbeSuccess
 }
 
@@ -192,14 +214,36 @@ func isDue(state *ContainerProbeState, probeType string, periodSeconds, initialD
 	if periodSeconds <= 0 {
 		periodSeconds = 10 // k8s default
 	}
-	last, ok := state.LastProbeTime[probeType]
+	_, ok := state.LastProbeTime[probeType]
 	if !ok {
-		// First probe: respect initial delay from container start.
-		if initialDelaySeconds > 0 && !state.StartedAt.IsZero() {
-			return time.Since(state.StartedAt) >= time.Duration(initialDelaySeconds)*time.Second
+		// First probe: seed LastProbeTime with a random jitter in [0, periodSeconds)
+		// so pods started at the same time don't all probe simultaneously.
+		// The jitter is added on top of initialDelaySeconds so manifest semantics
+		// are preserved - the first probe won't fire before initialDelaySeconds.
+		if state.LastProbeTime == nil {
+			state.LastProbeTime = make(map[string]time.Time)
 		}
-		return true
+
+		jitter := time.Duration(rand.Int63n(int64(periodSeconds))) * time.Second
+		initialDelay := time.Duration(initialDelaySeconds) * time.Second
+		if !state.StartedAt.IsZero() {
+			// Schedule first fire at: startedAt + initialDelay + jitter.
+			// Subtract one period so the normal ">= period since last" check fires at the right time.
+			state.LastProbeTime[probeType] = state.StartedAt.Add(initialDelay + jitter - time.Duration(periodSeconds)*time.Second)
+
+		} else {
+			// No StartedAt - fire after jitter from now.
+			state.LastProbeTime[probeType] = time.Now().Add(jitter - time.Duration(periodSeconds)*time.Second)
+		}
 	}
+
+	last := state.LastProbeTime[probeType]
+	if initialDelaySeconds > 0 && !state.StartedAt.IsZero() {
+		if time.Since(state.StartedAt) < time.Duration(initialDelaySeconds)*time.Second {
+			return false
+		}
+	}
+
 	return time.Since(last) >= time.Duration(periodSeconds)*time.Second
 }
 
@@ -213,6 +257,7 @@ func markProbed(state *ContainerProbeState, probeType string) {
 	if state.LastProbeTime == nil {
 		state.LastProbeTime = make(map[string]time.Time)
 	}
+
 	state.LastProbeTime[probeType] = time.Now()
 }
 
@@ -223,12 +268,15 @@ func EvalStartup(state *ContainerProbeState, probe *corev1.Probe, result ProbeRe
 		state.StartupPassed = true
 		state.StartupFailCount = 0
 		return false
+
 	}
+
 	state.StartupFailCount++
 	threshold := probe.FailureThreshold
 	if threshold <= 0 {
 		threshold = 3
 	}
+
 	return state.StartupFailCount >= threshold
 }
 
@@ -237,13 +285,16 @@ func EvalStartup(state *ContainerProbeState, probe *corev1.Probe, result ProbeRe
 func EvalLiveness(state *ContainerProbeState, probe *corev1.Probe, result ProbeResult) (restart bool) {
 	if result == ProbeSuccess {
 		state.LiveFailCount = 0
+
 		return false
 	}
+
 	state.LiveFailCount++
 	threshold := probe.FailureThreshold
 	if threshold <= 0 {
 		threshold = 3
 	}
+
 	return state.LiveFailCount >= threshold
 }
 
@@ -259,6 +310,7 @@ func EvalReadiness(state *ContainerProbeState, probe *corev1.Probe, result Probe
 		if state.ReadySuccessCount >= successThreshold {
 			state.Ready = true
 		}
+
 		return
 	}
 	state.ReadySuccessCount = 0

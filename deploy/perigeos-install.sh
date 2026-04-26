@@ -26,9 +26,16 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-# Install binary
+# Install binaries
 install -m 0755 "$BINARY" "$INSTALL_DIR/perigeos"
 echo "Installed $INSTALL_DIR/perigeos"
+
+sudo mkdir -p /usr/local/lib/perigeos
+install -m 0755 cmd/userns-shim/userns-shim-amd64 /usr/local/lib/perigeos/userns-shim
+echo "Installed /usr/local/lib/perigeos/userns-shim"
+
+install -m 0755 apsis "$INSTALL_DIR/apsis"
+echo "Installed $INSTALL_DIR/apsis"
 
 # Create config dir if needed
 mkdir -p "$CONFIG_DIR"
@@ -43,6 +50,7 @@ install -m 0644 "$SERVICE_FILE" /etc/systemd/system/perigeos.service
 systemctl daemon-reload
 echo "Installed perigeos.service"
 echo ""
+
 echo "Usage:"
 echo "  systemctl enable --now perigeos    # start and enable on boot"
 echo "  journalctl -u perigeos -f          # follow logs"

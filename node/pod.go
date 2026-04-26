@@ -87,25 +87,33 @@ func (pc *PodController) createOrUpdatePod(ctx context.Context, pod *corev1.Pod)
 	if podFromProvider, _ := pc.provider.GetPod(ctx, pod.Namespace, pod.Name); podFromProvider != nil {
 		if !podsEqual(podFromProvider, podForProvider) {
 			log.G(ctx).Debugf("Pod %s exists, updating pod in perigeos", podFromProvider.Name)
+
 			if origErr := pc.provider.UpdatePod(ctx, podForProvider); origErr != nil {
 				pc.handleProviderError(ctx, span, origErr, pod)
 				pc.recorder.Event(pod, corev1.EventTypeWarning, podEventUpdateFailed, origErr.Error())
 
 				return origErr
 			}
+
 			log.G(ctx).Info("Updated pod in perigeos")
+
 			pc.recorder.Event(pod, corev1.EventTypeNormal, podEventUpdateSuccess, "Update pod in perigeos successfully")
 
 		}
+
 	} else {
 		if origErr := pc.provider.CreatePod(ctx, podForProvider); origErr != nil {
 			pc.handleProviderError(ctx, span, origErr, pod)
 			pc.recorder.Event(pod, corev1.EventTypeWarning, podEventCreateFailed, origErr.Error())
+
 			return origErr
 		}
+
 		log.G(ctx).Info("Created pod in perigeos")
+
 		pc.recorder.Event(pod, corev1.EventTypeNormal, podEventCreateSuccess, "Create pod in perigeos successfully")
 	}
+
 	return nil
 }
 
@@ -138,6 +146,7 @@ func deleteGraceTimeEqual(old, new *int64) bool {
 	if old != nil && new != nil {
 		return *old == *new
 	}
+
 	return false
 }
 
@@ -152,6 +161,7 @@ func podShouldEnqueue(oldPod, newPod *corev1.Pod) bool {
 	if !oldPod.DeletionTimestamp.Equal(newPod.DeletionTimestamp) {
 		return true
 	}
+
 	return false
 }
 
@@ -165,6 +175,7 @@ func (pc *PodController) handleProviderError(ctx context.Context, span trace.Spa
 		fmt.Sprintf("Provider operation failed: %v", origErr))
 
 	pod.ResourceVersion = "" // Blank out resource version to prevent object has been modified error
+
 	pod.Status.Phase = podPhase
 	pod.Status.Reason = podStatusReasonProviderFailed
 	pod.Status.Message = origErr.Error()
@@ -177,11 +188,14 @@ func (pc *PodController) handleProviderError(ctx context.Context, span trace.Spa
 	_, err := pc.client.Pods(pod.Namespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
 	if err != nil {
 		logger.WithError(err).Warn("Failed to update pod status")
+
 		pc.recorder.Event(pod, corev1.EventTypeWarning, podEventStatusUpdateFailed,
 			fmt.Sprintf("Failed to update pod status after provider error: %v", err))
+
 	} else {
 		logger.Info("Updated k8s pod status")
 	}
+
 	span.SetStatus(origErr)
 }
 
@@ -223,6 +237,7 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	pc.recorder.Event(pod, corev1.EventTypeNormal, podEventDeleteSuccess, "Delete pod in perigeos successfully")
+
 	log.G(ctx).Debug("Deleted pod from provider")
 
 	return nil
@@ -247,10 +262,12 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		// This means there was a race and the pod has been deleted from K8s
 		return nil
 	}
+
 	kPod := obj.(*knownPod)
 	kPod.Lock()
 	podFromProvider := kPod.lastPodStatusReceivedFromProvider.DeepCopy()
 	kPod.Unlock()
+
 	if podFromProvider == nil {
 		// there is a small period of time between when we have a known pod initialized but it hasn't
 		// been fully hydrated from the provider.
@@ -277,15 +294,18 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		deleteOptions := metav1.DeleteOptions{
 			GracePeriodSeconds: podFromProvider.DeletionGracePeriodSeconds,
 		}
+
 		current := metav1.NewTime(time.Now())
 		if podFromProvider.DeletionTimestamp.Before(&current) {
 			deleteOptions.GracePeriodSeconds = new(int64)
 		}
+
 		// check status here to avoid pod re-created deleted incorrectly. e.g. delete a pod from K8s and re-create it(statefulSet and so on),
 		// pod in perigeos may not delete immediately. so deletionTimestamp is not nil. Then the re-created one would be deleted if we do not check pod status.
 		if cmp.Equal(podFromKubernetes.Status, podFromProvider.Status) {
 			if err := pc.client.Pods(podFromKubernetes.Namespace).Delete(ctx, podFromKubernetes.Name, deleteOptions); err != nil && !errors.IsNotFound(err) {
 				span.SetStatus(err)
+
 				return pkgerrors.Wrap(err, "error while delete pod in Kubernetes")
 			}
 		}
@@ -299,6 +319,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 		span.SetStatus(err)
 		pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
 			fmt.Sprintf("Failed to update pod status: %v", err))
+
 		return pkgerrors.Wrap(err, "error while updating pod status in Kubernetes")
 	}
 
@@ -306,6 +327,7 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
 	}
+
 	log.G(ctx).WithFields(log.Fields{
 		"pod":        podFromProvider.Name,
 		"namespace":  podFromProvider.Namespace,
@@ -331,8 +353,10 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 		if !ok {
 			break
 		}
+
 		callers = append(callers, fmt.Sprintf("%s:%d", filepath.Base(file), line))
 	}
+
 	log.G(ctx).WithFields(log.Fields{
 		"pod":     pod.Name,
 		"phase":   string(pod.Status.Phase),
@@ -353,7 +377,9 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	key, err := cache.MetaNamespaceKeyFunc(pod)
 	if err != nil {
 		log.G(ctx).WithError(err).Error("Error getting pod meta namespace key")
+
 		span.SetStatus(err)
+
 		return
 	}
 	ctx = span.WithField(ctx, "key", key)
@@ -393,6 +419,7 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 	if err != nil {
 		if errors.IsNotFound(err) {
 			err = fmt.Errorf("pod %q not found in pod lister: %w", key, err)
+
 			log.G(ctx).WithError(err).Debug("Not enqueuing pod status update")
 
 		} else {
@@ -400,28 +427,32 @@ func (pc *PodController) enqueuePodStatusUpdate(ctx context.Context, pod *corev1
 		}
 
 		span.SetStatus(err)
+
 		return
 	}
 
 	kpod := obj.(*knownPod)
 	kpod.Lock()
+	defer kpod.Unlock()
+
 	if cmp.Equal(kpod.lastPodStatusReceivedFromProvider, pod) {
 		kpod.lastPodStatusUpdateSkipped = true
-		kpod.Unlock()
+
 		return
 	}
+
 	kpod.lastPodStatusUpdateSkipped = false
 	kpod.lastPodStatusReceivedFromProvider = pod
-	kpod.Unlock()
 	pc.syncPodStatusFromProvider.Enqueue(ctx, key)
 }
 
 func (pc *PodController) syncPodStatusFromProviderHandler(ctx context.Context, key string) (retErr error) {
 	ctx, span := trace.StartSpan(ctx, "syncPodStatusFromProviderHandler")
 	defer span.End()
-
 	ctx = span.WithField(ctx, "key", key)
+
 	log.G(ctx).Debug("processing pod status update")
+
 	defer func() {
 		span.SetStatus(retErr)
 		if retErr != nil {
@@ -437,9 +468,11 @@ func (pc *PodController) syncPodStatusFromProviderHandler(ctx context.Context, k
 	pod, err := pc.podsLister.Pods(namespace).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
+
 			log.G(ctx).WithError(err).Debug("Skipping pod status update for pod missing in Kubernetes")
 			return nil
 		}
+
 		return pkgerrors.Wrap(err, "error looking up pod")
 	}
 
@@ -460,7 +493,9 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	if err != nil {
 		// Log the error as a warning, but do not requeue the key as it is invalid.
 		log.G(ctx).Warn(pkgerrors.Wrapf(err, "invalid resource key: %q", key))
+
 		span.SetStatus(err)
+
 		return nil
 	}
 
@@ -475,6 +510,7 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	}
 	if string(k8sPod.UID) != uid {
 		log.G(ctx).WithField("k8sPodUID", k8sPod.UID).WithField("uid", uid).Warn("Not deleting pod because remote pod has different UID")
+
 		return nil
 	}
 	if running(&k8sPod.Status) {
@@ -488,18 +524,22 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	err = pc.client.Pods(namespace).Delete(ctx, name, *deleteOptions)
 	if errors.IsNotFound(err) {
 		log.G(ctx).Warnf("Not deleting pod because %v", err)
+
 		return nil
 	}
 	if errors.IsConflict(err) {
 		log.G(ctx).Warnf("There was a conflict, maybe trying to delete a Pod that has been recreated: %v", err)
+
 		return nil
 	}
 	if err != nil {
 		span.SetStatus(err)
 		pc.recorder.Event(k8sPod, corev1.EventTypeWarning, podEventForceDeleteFailed,
 			fmt.Sprintf("Failed to force-delete pod from API server: %v", err))
+
 		return err
 	}
+
 	return nil
 }
 
@@ -507,5 +547,6 @@ func getUIDAndMetaNamespaceKey(key string) (string, string) {
 	idx := strings.LastIndex(key, "/")
 	uid := key[idx+1:]
 	metaKey := key[:idx]
+
 	return uid, metaKey
 }

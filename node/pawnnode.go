@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package node
 
 import (
@@ -143,7 +146,7 @@ func (pn *PawnNode) BuildNode() *corev1.Node {
 			Capacity: corev1.ResourceList{
 				corev1.ResourceCPU:              pn.cfg.CPU,
 				corev1.ResourceMemory:           pn.cfg.Memory,
-				corev1.ResourcePods:             resource.MustParse("110"),
+				corev1.ResourcePods:             resource.MustParse("256"),
 				corev1.ResourceStorage:          ephemeralStorage,
 				corev1.ResourceEphemeralStorage: ephemeralStorage,
 			},
@@ -215,6 +218,7 @@ func (pn *PawnNode) collectVolumeStatus() ([]corev1.AttachedVolume, []corev1.Uni
 func (pn *PawnNode) Shutdown() {
 	if pn.shuttingDown.CompareAndSwap(false, true) {
 		close(pn.shutdownCh)
+
 		pn.logger.Info("Shutdown initiated", "pawn", pn.cfg.Name)
 	}
 }
@@ -225,6 +229,7 @@ func (pn *PawnNode) DrainPods(ctx context.Context) {
 
 	for _, pod := range pods {
 		pn.logger.Info("Draining pod", "pawn", pn.cfg.Name, "pod", pod.Name)
+
 		if err := pn.deletePod(ctx, pod); err != nil {
 			pn.logger.Error("Failed to drain pod", "pod", pod.Name, "err", err)
 		}
@@ -236,14 +241,17 @@ func (pn *PawnNode) Ping(context.Context) error {
 	if pn.shuttingDown.Load() {
 		return fmt.Errorf("pawn %s is shutting down", pn.cfg.Name)
 	}
+
 	return nil
 }
 
 // NotifyNodeStatus sends node status updates at regular intervals.
 func (pn *PawnNode) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 	pn.logger.Info("Starting pawn status notifier", "pawn", pn.cfg.Name)
+
 	go func() {
 		pn.logger.Info("Sending initial pawn registration", "pawn", pn.cfg.Name)
+
 		cb(pn.BuildNode())
 
 		ticker := time.NewTicker(nodeStatusUpdateInterval)
@@ -253,9 +261,12 @@ func (pn *PawnNode) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node))
 			select {
 			case <-ctx.Done():
 				pn.logger.Info("Stopping pawn status notifier")
+
 				return
+
 			case <-pn.shutdownCh:
 				pn.logger.Info("Shutdown signal received, marking node NotReady+Unschedulable", "pawn", pn.cfg.Name)
+
 				node := pn.BuildNode()
 				node.Spec.Unschedulable = true
 				for i := range node.Status.Conditions {
@@ -265,10 +276,13 @@ func (pn *PawnNode) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node))
 						node.Status.Conditions[i].Message = "perigeos shutting down"
 					}
 				}
+
 				cb(node)
 				return
+
 			case <-ticker.C:
 				pn.logger.Info("Updating node status", "pawn", pn.cfg.Name)
+
 				cb(pn.BuildNode())
 			}
 		}
@@ -278,6 +292,7 @@ func (pn *PawnNode) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node))
 // nodeConditions returns the set of node conditions for this pawn.
 func (pn *PawnNode) nodeConditions() []corev1.NodeCondition {
 	now := metav1.Now()
+
 	return []corev1.NodeCondition{
 		{
 			Type:               corev1.NodeReady,
@@ -285,7 +300,7 @@ func (pn *PawnNode) nodeConditions() []corev1.NodeCondition {
 			LastHeartbeatTime:  now,
 			LastTransitionTime: now,
 			Reason:             "PawnReady",
-			Message:            "pawn is ready",
+			Message:            "Pawn is ready",
 		},
 		pn.getMemoryPressureCondition(now),
 		pn.getDiskPressureCondition(now, pn.imageManager.GetLayerCachePath()),
@@ -295,8 +310,8 @@ func (pn *PawnNode) nodeConditions() []corev1.NodeCondition {
 			Status:             corev1.ConditionFalse,
 			LastHeartbeatTime:  now,
 			LastTransitionTime: now,
-			Reason:             "RouteCreated",
-			Message:            "RouteController created a route",
+			Reason:             "PawnNetworkAvailable",
+			Message:            "Pawn network is available",
 		},
 	}
 }
@@ -314,6 +329,7 @@ func (pn *PawnNode) getMemoryPressureCondition(now metav1.Time) corev1.NodeCondi
 		cond.Status = corev1.ConditionUnknown
 		cond.Reason = "ProcMeminfoUnavailable"
 		cond.Message = "Could not read /proc/meminfo"
+
 		return cond
 	}
 	defer file.Close()
@@ -325,10 +341,12 @@ func (pn *PawnNode) getMemoryPressureCondition(now metav1.Time) corev1.NodeCondi
 		if len(fields) < 2 {
 			continue
 		}
+
 		val, _ := strconv.ParseUint(fields[1], 10, 64)
 		switch fields[0] {
 		case "MemTotal:":
 			memTotal = val
+
 		case "MemAvailable:":
 			memAvailable = val
 		}
@@ -338,6 +356,7 @@ func (pn *PawnNode) getMemoryPressureCondition(now metav1.Time) corev1.NodeCondi
 		cond.Status = corev1.ConditionUnknown
 		cond.Reason = "MeminfoParsingFailed"
 		cond.Message = "Could not parse MemTotal from /proc/meminfo"
+
 		return cond
 	}
 
@@ -346,11 +365,13 @@ func (pn *PawnNode) getMemoryPressureCondition(now metav1.Time) corev1.NodeCondi
 		cond.Status = corev1.ConditionTrue
 		cond.Reason = "PawnHasHighMemoryUsage"
 		cond.Message = fmt.Sprintf("Memory usage %.2f%% exceeds threshold %.2f%%", usagePercent, memoryPressureThreshold)
+
 	} else {
 		cond.Status = corev1.ConditionFalse
 		cond.Reason = "PawnHasSufficientMemory"
-		cond.Message = "pawn has sufficient memory available"
+		cond.Message = "Pawn has sufficient memory available"
 	}
+
 	return cond
 }
 
@@ -367,6 +388,7 @@ func (pn *PawnNode) getDiskPressureCondition(now metav1.Time, path string) corev
 		cond.Status = corev1.ConditionUnknown
 		cond.Reason = "StatfsFailed"
 		cond.Message = fmt.Sprintf("Could not stat filesystem at %s: %v", path, err)
+
 		return cond
 	}
 
@@ -376,6 +398,7 @@ func (pn *PawnNode) getDiskPressureCondition(now metav1.Time, path string) corev
 			cond.Status = corev1.ConditionTrue
 			cond.Reason = "PawnHasHighInodeUsage"
 			cond.Message = fmt.Sprintf("Inode usage %.2f%% exceeds threshold", inodeUsage)
+
 			return cond
 		}
 
@@ -384,13 +407,15 @@ func (pn *PawnNode) getDiskPressureCondition(now metav1.Time, path string) corev
 			cond.Status = corev1.ConditionTrue
 			cond.Reason = "PawnHasHighDiskUsage"
 			cond.Message = fmt.Sprintf("Disk usage %.2f%% exceeds threshold", blockUsage)
+
 			return cond
 		}
 	}
 
 	cond.Status = corev1.ConditionFalse
 	cond.Reason = "PawnHasNoDiskPressure"
-	cond.Message = "pawn has no disk pressure"
+	cond.Message = "Pawn has no disk pressure"
+
 	return cond
 }
 
@@ -407,6 +432,7 @@ func (pn *PawnNode) getPIDPressureCondition(now metav1.Time) corev1.NodeConditio
 		cond.Status = corev1.ConditionUnknown
 		cond.Reason = "PidMaxUnavailable"
 		cond.Message = "Could not read /proc/sys/kernel/pid_max"
+
 		return cond
 	}
 	pidMax, _ := strconv.ParseFloat(strings.TrimSpace(string(pidMaxBytes)), 64)
@@ -416,6 +442,7 @@ func (pn *PawnNode) getPIDPressureCondition(now metav1.Time) corev1.NodeConditio
 		cond.Status = corev1.ConditionUnknown
 		cond.Reason = "ProcUnavailable"
 		cond.Message = "Could not read /proc"
+
 		return cond
 	}
 
@@ -431,11 +458,13 @@ func (pn *PawnNode) getPIDPressureCondition(now metav1.Time) corev1.NodeConditio
 		cond.Status = corev1.ConditionTrue
 		cond.Reason = "PawnHasHighPIDUsage"
 		cond.Message = fmt.Sprintf("PID usage %.2f%% exceeds threshold", pidUsage)
+
 	} else {
 		cond.Status = corev1.ConditionFalse
 		cond.Reason = "PawnHasSufficientPID"
 		cond.Message = "Pawn has sufficient PIDs available"
 	}
+
 	return cond
 }
 
@@ -524,6 +553,7 @@ func systemdVersion() string {
 	if err != nil {
 		return "systemd://"
 	}
+
 	// First line: "systemd 259 (259.3-1-arch)" - extract the parenthesized version.
 	line := strings.SplitN(string(out), "\n", 2)[0]
 	if start := strings.IndexByte(line, '('); start >= 0 {
@@ -531,11 +561,13 @@ func systemdVersion() string {
 			return "systemd://" + line[start+1:start+end]
 		}
 	}
+
 	// Fallback: use the bare version number.
 	fields := strings.Fields(line)
 	if len(fields) >= 2 {
 		return "systemd://" + fields[1]
 	}
+
 	return "systemd://"
 }
 
@@ -545,13 +577,16 @@ func kernelVersion() string {
 	if err := syscall.Uname(&buf); err != nil {
 		return ""
 	}
+
 	b := make([]byte, 0, len(buf.Release))
 	for _, c := range buf.Release {
 		if c == 0 {
 			break
 		}
+
 		b = append(b, byte(c))
 	}
+
 	return string(b)
 }
 
@@ -562,11 +597,13 @@ func osImage() string {
 		return ""
 	}
 	defer f.Close()
+
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		if after, ok := strings.CutPrefix(s.Text(), "PRETTY_NAME="); ok {
 			return strings.Trim(after, "\"")
 		}
 	}
+
 	return ""
 }

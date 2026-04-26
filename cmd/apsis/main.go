@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package main
 
 import (
@@ -490,7 +493,7 @@ func cmdImages(ctx context.Context, c *control.Client, asJSON bool) error {
 	for _, img := range resp.Images {
 		digest := img.Digest
 		if len(digest) > 19 {
-			digest = digest[:19] + "…"
+			digest = digest[:19] + "..."
 		}
 		if digest == "" {
 			digest = "<unknown>"

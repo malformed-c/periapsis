@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package probescheduler
 
 import (
@@ -67,6 +70,7 @@ func (s *ProbeScheduler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+
 		case <-ticker.C:
 			s.runProbeCycle(ctx)
 		}
@@ -124,6 +128,25 @@ func (s *ProbeScheduler) runProbeCycle(ctx context.Context) {
 				isDue = func(probeType string, periodSeconds, initialDelaySeconds int32) bool {
 					return node.IsDue(ps, probeType, periodSeconds, initialDelaySeconds)
 				}
+			}
+
+			// Check isDue before spawning a goroutine. At 2000 pods with a
+			// 10s period and a 2s tick, only ~20% of containers are due per
+			// cycle. Without this check, 4000 goroutines are spawned every
+			// tick and block on the semaphore - 32MB+ of stack overhead.
+			hasAnyDue := false
+			if c.StartupProbe != nil && node.IsDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+
+			} else if c.LivenessProbe != nil && node.IsDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+
+			} else if c.ReadinessProbe != nil && node.IsDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
+				hasAnyDue = true
+			}
+
+			if !hasAnyDue {
+				continue
 			}
 
 			wg.Add(1)
@@ -229,6 +252,7 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 					"pod", pod.Name, "container", c.Name)
 			}
 		}
+
 		return
 	}
 
@@ -303,6 +327,7 @@ func (s *ProbeScheduler) probeContainer(ctx context.Context, uid string, pod *co
 		if restart {
 			s.logger.Warn("liveness probe failed past threshold, needs restart",
 				"pod", pod.Name, "container", c.Name)
+
 			return
 		}
 	}
@@ -386,5 +411,6 @@ func safeThreshold(val, defaultVal int32) int32 {
 	if val <= 0 {
 		return defaultVal
 	}
+
 	return val
 }

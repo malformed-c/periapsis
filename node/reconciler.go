@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package node
 
 import (
@@ -87,7 +90,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			r.logger.Info("Reconciler stopped")
+
 			return
+
 		case <-ticker.C:
 			r.cleanOrphans(ctx)
 			r.cleanGhosts(ctx)
@@ -112,6 +117,7 @@ func (r *Reconciler) cleanOrphans(ctx context.Context) {
 	machines, err := r.runtime.ListManagedMachines(ctx)
 	if err != nil {
 		r.logger.Error("Reconciler: failed to list machines", "err", err)
+
 		return
 	}
 
@@ -119,6 +125,7 @@ func (r *Reconciler) cleanOrphans(ctx context.Context) {
 		// 1. Skip machines currently being created by Gambit (in-process guard).
 		if r.tracker.IsInFlight(m.UID) {
 			r.logger.Debug("Reconciler: skipping in-flight machine", "uid", m.UID)
+
 			continue
 		}
 
@@ -143,14 +150,18 @@ func (r *Reconciler) cleanOrphans(ctx context.Context) {
 				for _, pod := range pods {
 					if string(pod.UID) == m.UID {
 						found = true
+
 						r.logger.Info("Reconciler: machine exists in K8s but not in Gambit, requesting re-sync",
 							"uid", m.UID, "namespace", m.Namespace, "name", m.Name)
+
 						if r.syncRequester != nil {
 							r.syncRequester(m.Namespace, m.Name)
 						}
+
 						break
 					}
 				}
+
 				if found {
 					continue
 				}
@@ -187,8 +198,10 @@ func (r *Reconciler) cleanGhosts(ctx context.Context) {
 	pods, err := r.podLister.List(labels.Everything())
 	if err != nil {
 		r.logger.Error("Reconciler: failed to list k8s pods for ghost check", "err", err)
+
 		return
 	}
+
 	for _, pod := range pods {
 		k8sUIDs[string(pod.UID)] = struct{}{}
 	}
@@ -201,6 +214,7 @@ func (r *Reconciler) cleanGhosts(ctx context.Context) {
 		if _, ok := k8sUIDs[uid]; ok {
 			continue
 		}
+
 		r.logger.Warn("Reconciler: evicting ghost pod (in gambit but not in k8s)",
 			"uid", uid, "name", nsName)
 
@@ -226,6 +240,7 @@ func splitNsName(nsName string) (string, string) {
 	if before0, after, ok := strings.Cut(nsName, "/"); ok {
 		return before0, after
 	}
+
 	return "", nsName
 }
 
@@ -241,12 +256,14 @@ func (r *Reconciler) cleanStaleDirs() {
 	}
 
 	gambitUIDs := r.tracker.PodUIDs()
+
 	var cleaned int
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		uid := e.Name()
+
 		// Normalize: some dirs may have uid-suffix
 		if len(uid) > 36 && uid[36] == '-' {
 			uid = uid[:36]
@@ -257,13 +274,17 @@ func (r *Reconciler) cleanStaleDirs() {
 		if r.tracker.IsInFlight(uid) {
 			continue
 		}
+
 		dir := filepath.Join(podsDir, e.Name())
+
 		r.logger.Warn("Reconciler: removing stale pod dir", "uid", uid, "dir", dir)
+
 		if err := os.RemoveAll(dir); err != nil {
 			r.logger.Error("Reconciler: failed to remove stale dir", "dir", dir, "err", err)
 		}
 		cleaned++
 	}
+
 	if cleaned > 0 {
 		r.logger.Info("Reconciler: cleaned stale pod dirs", "count", cleaned)
 	}
@@ -297,11 +318,13 @@ func (r *Reconciler) teardown(ctx context.Context, m perigeos.PodMetadata) {
 	if err := r.image.Unmount(m.UID + "-" + m.ContainerName); err != nil {
 		r.logger.Error("Reconciler: failed to unmount", "uid", m.UID, "container", m.ContainerName, "err", err)
 	}
+
 	// Clean up volumes and pod workspace directory.
 	volResolver := volume.NewResolver(r.baseDir, r.pawnName, m.UID, r.hostNodeName, nil, nil, nil)
 	if err := volResolver.Cleanup(); err != nil {
 		r.logger.Warn("Reconciler: volume cleanup failed", "uid", m.UID, "err", err)
 	}
+
 	podDir := filepath.Join(r.baseDir, "pawns", r.pawnName, "pods", m.UID)
 	if err := os.RemoveAll(podDir); err != nil {
 		r.logger.Warn("Reconciler: failed to remove pod dir", "uid", m.UID, "err", err)

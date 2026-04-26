@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
   if (ret == 0) {
     fprintf(stderr, "userns-shim: timed out waiting for uid_map\n");
 
-    die("poll");
+    die("poll timeout");
   }
 
   if (ret < 0)
@@ -83,6 +83,7 @@ int main(int argc, char *argv[]) {
   char buf[32];
   ssize_t n = read(gfd, buf, sizeof(buf) - 1);
   close(gfd);
+
   if (n <= 0)
     die("read gate");
 
@@ -93,7 +94,7 @@ int main(int argc, char *argv[]) {
   if (sscanf(buf, "%u:%u", &target_uid, &target_gid) != 2) {
     fprintf(stderr, "userns-shim: bad gate payload: %s\n", buf);
 
-    die("read gate");
+    die("gate payload");
   }
 
   /*

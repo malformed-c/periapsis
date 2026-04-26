@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package node
 
 import (
@@ -25,6 +28,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 	diskUIDs := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		uid := string(state.Pod.UID)
+
 		// Skip terminal pods - they completed before the restart and should
 		// not be resurrected. The PodController will see them as gone.
 		if state.State.Phase == corev1.PodSucceeded || state.State.Phase == corev1.PodFailed {
@@ -32,11 +36,13 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 				"pod", state.Pod.Name, "phase", state.State.Phase)
 			continue
 		}
+
 		entries = append(entries, hydratedEntry{
 			uid: uid,
 			pod: state.Pod,
 			ip:  state.State.PodIP,
 		})
+
 		diskUIDs[uid] = struct{}{}
 	}
 
@@ -48,7 +54,9 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if state.State.Phase == corev1.PodSucceeded || state.State.Phase == corev1.PodFailed {
 			continue
 		}
+
 		g.store.InitRestartState(state.Pod)
+
 		// InitRestartState resets restarts - re-apply the persisted counts
 		// and backoff durations.
 		uid := string(state.Pod.UID)
@@ -69,9 +77,11 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		if m.UID == "" {
 			continue
 		}
+
 		if _, onDisk := diskUIDs[m.UID]; onDisk {
 			continue // already restored from disk
 		}
+
 		// Construct a minimal stub pod for fallback registration.
 		if m.Name != "" && m.Namespace != "" {
 			pod := &corev1.Pod{
@@ -81,6 +91,7 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 					UID:       types.UID(m.UID),
 				},
 			}
+
 			g.store.RegisterHydrated(m.UID, pod, m.PodIP)
 			g.store.InitRestartState(pod)
 		}
@@ -97,24 +108,31 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 		hydratedUIDs := g.store.HydratedUIDs()
 		for _, e := range entries2 {
 			if !e.IsDir() {
+
 				continue
 			}
+
 			name := e.Name()
 			uid := name
 			if len(name) > 36 && name[36] == '-' {
 				uid = name[:36]
 			}
+
 			if _, ok := hydratedUIDs[uid]; !ok {
 				dirPath := filepath.Join(podsDir, name)
+
 				// Unmount overlayfs if it's an overlay dir (uid-container).
 				var cleanErr error
 				if len(name) > 36 && name[36] == '-' {
 					cleanErr = g.ImageManager.Unmount(name)
+
 				} else {
 					cleanErr = os.RemoveAll(dirPath)
 				}
+
 				if cleanErr != nil {
 					g.Logger.Warn("Failed to clean orphan disk dir at startup", "dir", name, "err", cleanErr)
+
 				} else {
 					g.Logger.Info("Cleaned orphan disk dir at startup", "dir", name)
 				}
@@ -136,13 +154,16 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 
 	stale := make([]string, 0)
 	for uid := range hydratedUIDs {
+
 		// If CreatePod was called for this UID, it's confirmed - skip.
 		// (CreatePod replaces the hydration stub with the full pod object,
 		// which has Spec.Containers populated.)
 		pod := g.store.GetPodCopy(uid)
 		if pod != nil && len(pod.Spec.Containers) > 0 {
+
 			continue
 		}
+
 		// Check the informer cache - if k8s doesn't know about it, it's stale.
 		if podLister != nil {
 			pods, err := podLister.List(labels.Everything())
@@ -151,9 +172,11 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 				for _, p := range pods {
 					if string(p.UID) == uid {
 						found = true
+
 						break
 					}
 				}
+
 				if found {
 					continue
 				}
@@ -174,6 +197,7 @@ func (g *Gambit) PurgeStaleHydrated(podLister listersv1.PodNamespaceLister) {
 		if err := os.RemoveAll(podDir); err != nil {
 			g.Logger.Warn("PurgeStaleHydrated: failed to remove pod dir", "uid", uid, "err", err)
 		}
+
 		// Clean up any per-container overlay dirs (<uid>-<container>/).
 		podsDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods")
 		if entries, err := os.ReadDir(podsDir); err == nil {

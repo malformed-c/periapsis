@@ -19,9 +19,7 @@ data:
     pid /tmp/nginx.pid;
 
     events {
-      # 64 is far too low for load testing. At 1000 VUs spread across N pods
-      # each pod handles ~1000/N concurrent connections. 1024 gives headroom.
-      worker_connections 1024;
+      worker_connections 64;
       multi_accept on;
     }
 
@@ -36,7 +34,6 @@ data:
       tcp_nodelay on;
 
       server {
-        # reuseport is meaningful only with multiple worker processes.
         listen 8080;
         root /www;
         location / {
@@ -112,7 +109,7 @@ spec:
   # Starting point for manual testing. For stress tests scale via:
   #   kubectl scale deployment nginx-whoami -n nginx-demo --replicas=200
   # The topologySpreadConstraints below will spread replicas evenly across nodes.
-  replicas: 20
+  replicas: 1
   selector:
     matchLabels:
       app: nginx-whoami
@@ -136,14 +133,16 @@ spec:
 
       initContainers:
       - name: page-gen
-        image: docker.io/library/alpine:3.21
+        image: docker.io/library/busybox:uclibc
+        imagePullPolicy: IfNotPresent
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 50m
+            memory: 8Mi
           limits:
-            cpu: 100m
-            memory: 32Mi
+            cpu: 50m
+            memory: 16Mi
+
         env:
         - name: POD_NAME
           valueFrom:
@@ -163,7 +162,7 @@ spec:
         # NOTE: status.podIP is empty in standard Kubernetes during init
         # container execution (IP is assigned after init containers finish).
         # This works in perigeos because CNI runs and PromoteRunning sets the
-        # IP before init containers are launched (lifecycle.go step1 → step3).
+        # IP before init containers are launched (lifecycle.go step1 -> step3).
         - name: POD_IP
           valueFrom:
             fieldRef:
@@ -179,18 +178,22 @@ spec:
 
       containers:
       - name: nginx
-        # Pin minor version to avoid silent drift. alpine variant keeps image small.
-        image: docker.io/library/nginx:1.27-alpine
+        # Pin minor version to avoid silent drift.
+        # alpine variant keeps image small.
+        image: docker.io/library/nginx:alpine
+        imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
         ports:
         - containerPort: 8080
 
         resources:
           requests:
-            cpu: 50m
-            memory: 32Mi
+            cpu: 100m
+            memory: 64Mi
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: 200m
+            memory: 64Mi
 
         command:
         - /bin/sh

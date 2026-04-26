@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package server
 
 import (
@@ -63,24 +66,31 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		mux.HandleFunc("/blobs/", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
 				return
 			}
+
 			digest := strings.TrimPrefix(r.URL.Path, "/blobs/")
 			if digest == "" || strings.ContainsAny(digest, "/\\") {
 				http.Error(w, "invalid digest", http.StatusBadRequest)
+
 				return
 			}
+
 			blobFile := im.BlobPath(digest)
 			f, err := os.Open(blobFile)
 			if err != nil {
 				if os.IsNotExist(err) {
 					http.Error(w, "not found", http.StatusNotFound)
+
 				} else {
 					http.Error(w, "internal error", http.StatusInternalServerError)
 				}
+
 				return
 			}
 			defer f.Close()
+
 			stat, _ := f.Stat()
 
 			// TODO zstd?
@@ -88,8 +98,10 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 			if r.Method == http.MethodHead {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
 				w.WriteHeader(http.StatusOK)
+
 				return
 			}
+
 			http.ServeContent(w, r, digest+".tar.gz", stat.ModTime(), f)
 		})
 
@@ -99,12 +111,15 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		mux.HandleFunc("/blobs/inflight", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+
 				return
 			}
+
 			hashes := im.InflightHashes()
 			if hashes == nil {
 				hashes = []string{} // always return an array, never null
 			}
+
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(hashes)
 		})
@@ -115,8 +130,10 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 		summary, err := g.GetStatsSummary(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+
 			return
 		}
+
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(summary); err != nil {
 			slog.Default().Error("stats/summary encode", "err", err)
@@ -148,12 +165,13 @@ func NewPawnServer(g *node.Gambit, cfg PawnServerConfig) (*PawnServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
+
 	tlsListener := tls.NewListener(tcpListener, tlsCfg)
 
 	httpServer := &http.Server{
 		Handler:           mux,
 		TLSConfig:         tlsCfg,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 0, // Must be 0 - SPDY stream negotiation for exec/attach exceeds any fixed timeout
 		WriteTimeout:      0, // Must be 0 for streaming logs
 		IdleTimeout:       60 * time.Second,
 	}
@@ -192,6 +210,7 @@ func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) 
 		if err == nil {
 			return cert, nil
 		}
+
 		logger.Warn("CSR flow failed, trying CA signing", "pawn", pawnName, "err", err)
 	}
 
@@ -200,13 +219,16 @@ func obtainCert(pawnName string, cfg PawnServerConfig) (tls.Certificate, error) 
 		caCert, caKey, err := pki.LoadCA(cfg.CACertPath, cfg.CAKeyPath)
 		if err == nil {
 			logger.Info("Signing pawn certificate with local CA", "pawn", pawnName, "ca", cfg.CACertPath)
+
 			return pki.GenerateCert(pawnName, caCert, caKey)
 		}
+
 		logger.Warn("Local CA not loaded", "ca", cfg.CACertPath, "err", err)
 	}
 
 	// Strategy 3: Self-signed fallback.
 	logger.Warn("Using self-signed certificate", "pawn", pawnName)
+
 	return pki.GenerateCert(pawnName, nil, nil)
 }
 
@@ -220,6 +242,7 @@ func obtainCertFresh(pawnName string, cfg PawnServerConfig) (tls.Certificate, er
 		pkiDir := cfg.ConfigDir + "/pki"
 		_ = os.Remove(pkiDir + "/" + pawnName + ".crt")
 		_ = os.Remove(pkiDir + "/" + pawnName + ".key")
+
 		logger.Info("Cleared cached cert for renewal", "pawn", pawnName)
 	}
 

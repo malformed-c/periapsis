@@ -18,6 +18,8 @@ Restart=on-failure
 RestartSec=5s
 WatchdogSec=120s
 
+OOMScoreAdjust=-999
+
 # State directory
 StateDirectory=apsis
 RuntimeDirectory=apsis

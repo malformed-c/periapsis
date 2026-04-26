@@ -5,6 +5,7 @@ import (
 
 	"github.com/containerd/cgroups/v3/cgroup2"
 	dbusv5 "github.com/godbus/dbus/v5"
+	"github.com/malformed-c/periapsis/internal/types"
 )
 
 func TestMilliCPUToCPUMax(t *testing.T) {
@@ -21,7 +22,7 @@ func TestBuildSystemdProperties_Empty(t *testing.T) {
 	if got := BuildSystemdProperties(nil); len(got) != 0 {
 		t.Fatalf("nil resources: got %d props, want 0", len(got))
 	}
-	if got := BuildSystemdProperties(&cgroup2.Resources{}); len(got) != 0 {
+	if got := BuildSystemdProperties(&types.PodResources{}); len(got) != 0 {
 		t.Fatalf("empty resources: got %d props, want 0", len(got))
 	}
 }
@@ -29,13 +30,18 @@ func TestBuildSystemdProperties_Empty(t *testing.T) {
 func TestBuildSystemdProperties_CPUAndMemory(t *testing.T) {
 	weight := uint64(39)
 	memMax := int64(128 << 20)
-	res := &cgroup2.Resources{
+	cRes := &cgroup2.Resources{
 		CPU: &cgroup2.CPU{
 			Weight: &weight,
 			Max:    MilliCPUToCPUMax(2000), // 2 cores -> quota 200000, period 100000
 		},
 		Memory: &cgroup2.Memory{Max: &memMax},
 		Pids:   &cgroup2.Pids{Max: 4096},
+	}
+
+	res := &types.PodResources{
+		OOMScoreAdjust: 0,
+		Resources:      *cRes,
 	}
 
 	props := BuildSystemdProperties(res)

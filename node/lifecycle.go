@@ -1,3 +1,6 @@
+// Copyright (C) 2025-2026 Malformed C. All rights reserved.
+// SPDX-License-Identifier: BUSL-1.1
+
 package node
 
 import (
@@ -27,10 +30,12 @@ type pullCacheEntry struct {
 
 type containerRuntimeProfile struct {
 	MemoryLimitBytes uint64
+	SwapLimitBytes   uint64
 	CPULimitMillis   int64
 	CPURequestMillis int64
 	RunAsUser        *int64
 	RunAsGroup       *int64
+	OOMScoreAdjust   int
 }
 
 func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
@@ -43,10 +48,12 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// 1. Admission Check
 	if reason := g.admitPod(pod); reason != "" {
 		g.Logger.Warn("Pod admission rejected", "pod", pod.Name, "reason", reason)
+
 		if g.EventRecorder != nil {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "AdmissionFailed", reason)
 		}
-		return fmt.Errorf("pod admission: %s", reason)
+
+		return fmt.Errorf("Pod admission: %s", reason)
 	}
 
 	uid := string(pod.UID)
@@ -55,6 +62,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// 2. Concurrency & Hydration Guard
 	if g.store.AlreadyInFlight(uid) {
 		g.Logger.Info("CreatePod: already in-flight, skipping", "pod", pod.Name)
+
 		return nil
 	}
 
@@ -66,7 +74,9 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				g.sendFact(types.NewPodRegisterFact(uid, pod.Namespace, pod.Name, "", pod))
 			}
 		}
+
 		g.Logger.Info("CreatePod: already running (hydrated), skipping", "pod", pod.Name)
+
 		return nil
 	}
 
@@ -109,7 +119,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 		defer func() { <-createSem }()
 
-		// Hoisted Pull Cache: Survives retries!
+		// Hoisted Pull Cache: Survives retries
 		pullCache := make(map[string]pullCacheEntry)
 		backoff := createBackoffInit
 		neverRestart := pod.Spec.RestartPolicy == corev1.RestartPolicyNever
@@ -126,7 +136,9 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 			if neverRestart {
 				g.Logger.Error("CreatePod failed (restartPolicy=Never)", "pod", pod.Name, "err", err)
+
 				g.markPodFailed(uid, pod, err)
+
 				return
 			}
 
@@ -167,10 +179,12 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	if pod.Spec.HostNetwork {
 		netPath = "/proc/1/ns/net"
 		podIP = resolveNodeIP(g.Config)
+
 		g.Logger.Debug("sync: step1 hostNetwork", "uid", uid, "pod", pod.Name, "ip", podIP)
 
 	} else if podIP == "" {
 		g.Logger.Debug("sync: step1 CNI setup", "uid", uid, "pod", pod.Name)
+
 		var err error
 		netPath, podIP, err = g.NetworkManager.Setup(ctx, uid, pod.Namespace, pod.Name, pod.Spec.NodeName)
 
@@ -192,6 +206,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
+
 		g.Logger.Debug("sync: step1 resuming, network already exists", "uid", uid, "pod", pod.Name, "ip", podIP, "netPath", netPath)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Reconciling", "Resuming creation: network sandbox already exists")
 	}
@@ -212,6 +227,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 	// Step 2: Environment Resolution
 	g.Logger.Debug("sync: step2 env resolution", "uid", uid, "pod", pod.Name)
+
 	pod.Status.PodIP = podIP
 	pod.Status.PodIPs = []corev1.PodIP{{IP: podIP}}
 	pod.Status.HostIP = resolveNodeIP(g.Config)
@@ -226,7 +242,8 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 	// Step 3: Init Containers (Strictly Sequential)
 	g.Logger.Debug("sync: step3 init containers", "uid", uid, "pod", pod.Name, "count", len(pod.Spec.InitContainers))
-	runtimeProfiles := buildContainerRuntimeProfiles(pod)
+
+	runtimeProfiles := buildContainerRuntimeProfiles(pod, g.Config.Memory.Value())
 
 	for i := range pod.Spec.InitContainers {
 		ic := &pod.Spec.InitContainers[i]
@@ -337,8 +354,13 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 		// Clear failed fragment files from systemd
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
-		// Unmount the container filesystem
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		// Unmount the container filesystem and remove the overlay dir.
+		overlayName := uid + "-" + c.Name
+		_ = g.ImageManager.Unmount(overlayName)
+		overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
+		if err := os.RemoveAll(overlayDir); err != nil {
+			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
+		}
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", c.Name)
 	}
@@ -355,7 +377,9 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 	_ = volResolver.Cleanup()
 
 	podDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid)
-	_ = os.RemoveAll(podDir)
+	if err := os.RemoveAll(podDir); err != nil {
+		g.Logger.Warn("teardown: failed to remove pod workspace dir", "uid", uid, "err", err)
+	}
 }
 
 // launchContainer handles pulling, mounting, starting, and waiting for a container.
@@ -373,23 +397,30 @@ func (g *Gambit) launchContainer(
 	var layers []string
 	if entry, hit := pullCache[c.Image]; hit {
 		layers = entry.layers
+
 	} else {
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling", "Pulling image %s for container %s", c.Image, c.Name)
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Resolving", "Ensuring image %s for container %s", c.Image, c.Name)
+
 		var err error
 		var cached bool
 		layers, cached, err = g.ImageManager.PullWithOptions(c.Image, string(c.ImagePullPolicy), image.PullOptions{
 			Progress: pullProgressFunc(g, pod, c.Image, c.Name),
 			Event:    podEventFn(g, pod),
 		})
+
 		if err != nil {
 			return fmt.Errorf("pull: %w", err)
 		}
+
 		pullCache[c.Image] = pullCacheEntry{layers: layers, cached: cached}
-		if cached {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Cached", "Image %s already present", c.Image)
-		} else {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulled", "Pulled image %s", c.Image)
-		}
+
+		// Should be already reported by Image Manager
+		// if cached {
+		// 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImageCached", "Image %s already present", c.Image)
+
+		// } else {
+		// 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImagePulled", "Pulled image %s", c.Image)
+		// }
 	}
 
 	// 2. Mount Overlay
@@ -397,6 +428,7 @@ func (g *Gambit) launchContainer(
 	if err != nil {
 		return fmt.Errorf("mount: %w", err)
 	}
+
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted overlay for container %s", c.Name)
 
 	// 3. Resolve Environment and Volumes
@@ -433,8 +465,10 @@ func (g *Gambit) launchContainer(
 		Environment:                   resolvedEnv,
 		PodIP:                         podIP,
 		MemoryLimitBytes:              profile.MemoryLimitBytes,
+		SwapLimitBytes:                profile.SwapLimitBytes,
 		CPULimitMillis:                profile.CPULimitMillis,
 		CPURequestMillis:              profile.CPURequestMillis,
+		OOMScoreAdjust:                profile.OOMScoreAdjust,
 		ImageEntrypoint:               ep,
 		ImageCmd:                      cmd,
 		TerminationGracePeriodSeconds: podTerminationGracePeriod(pod),
@@ -512,6 +546,7 @@ func (g *Gambit) launchContainer(
 			if err := g.runLifecycleHook(ctx, pod, c, uid, c.Lifecycle.PostStart, "PostStart"); err != nil {
 				g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "PostStartHookFailed",
 					"PostStart hook failed for container %s: %v", c.Name, err)
+
 				return fmt.Errorf("PostStart hook: %w", err)
 			}
 		}
@@ -524,10 +559,18 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	uid := string(pod.UID)
 	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
 
-	// Mark deleting immediately — this needs to happen synchronously
+	// Mark deleting immediately - this needs to happen synchronously
 	// for concurrency control (prevents new CreatePod from starting).
 	g.store.MarkDeleting(uid)
 	g.cancelInFlight(uid) // Stops any currently running CreatePod reconcile loop
+
+	// Delete the state file first, before any D-Bus operations.
+	// teardownPodIdempotent may block on StopMachine, and if the process is
+	// killed mid-teardown the file would survive. On restart, hydration would
+	// re-load the pod and attempt a second teardown - hitting Cilium 404s and
+	// leaving stale dirs. Deleting early makes orphan detection safe: a pod
+	// without a state file is simply not hydrated on restart.
+	_ = deletePodState(g.Config.BaseDir, g.Config.Name, uid)
 
 	gracePeriod := podTerminationGracePeriod(pod)
 	if gracePeriod > 0 {
@@ -585,6 +628,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 	if err := g.Runtime.CheckMachined(ctx); err != nil {
 		g.Logger.Error("Restart: machined unhealthy, skipping", "container", containerName, "err", err)
+
 		return
 	}
 
@@ -592,9 +636,11 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	for i := range pod.Spec.Containers {
 		if pod.Spec.Containers[i].Name == containerName {
 			container = &pod.Spec.Containers[i]
+
 			break
 		}
 	}
+
 	if container == nil {
 		return
 	}
@@ -608,10 +654,11 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// Dummy cache for individual container restart
 	dummyCache := make(map[string]pullCacheEntry)
 
-	profiles := buildContainerRuntimeProfiles(pod)
+	profiles := buildContainerRuntimeProfiles(pod, g.Config.Memory.Value())
 	err := g.launchContainer(ctx, pod, container, uid, netPath, podIP, dummyCache, profiles, false)
 	if err != nil {
 		g.Logger.Error("Restart: launch failed", "container", containerName, "err", err)
+
 		return
 	}
 
@@ -628,25 +675,34 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 			if err != nil {
 				return perigeos.StateUnknown
 			}
+
 			return state
 		})
+
 		updated := restartedPod.DeepCopy()
 		status.DeepCopyInto(&updated.Status)
 		g.notifyPodStatus(updated)
 	}
 }
 
-// Helpers ---
+// --- Helpers ---
 
-func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
+// TODO: Return x2 of memory for now
+func calculateSwap(memBytes uint64) (swapBytes uint64) {
+	return memBytes * 2
+}
+
+func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swapBytes uint64, cpuLimitMillis, cpuRequestMillis int64) {
 	if c.Resources.Limits != nil {
 		if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
 			memBytes = uint64(mem.Value())
+			swapBytes = calculateSwap(memBytes)
 		}
 		if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
 			cpuLimitMillis = cpu.MilliValue()
 		}
 	}
+
 	if c.Resources.Requests != nil {
 		if cpu, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
 			cpuRequestMillis = cpu.MilliValue()
@@ -660,6 +716,7 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint6
 		if memBytes == 0 {
 			if mem, ok := pod.Spec.Resources.Limits[corev1.ResourceMemory]; ok {
 				memBytes = uint64(mem.Value())
+				swapBytes = calculateSwap(memBytes)
 			}
 		}
 		if cpuLimitMillis == 0 {
@@ -667,41 +724,106 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint6
 				cpuLimitMillis = cpu.MilliValue()
 			}
 		}
+
 		if cpuRequestMillis == 0 {
 			if cpu, ok := pod.Spec.Resources.Requests[corev1.ResourceCPU]; ok {
 				cpuRequestMillis = cpu.MilliValue()
 			}
 		}
 	}
+
 	return
 }
 
-func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeProfile {
+func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQOSClass) {
+	// 1. Check if it's BestEffort (No limits, no requests)
+	// In K8s, a pod is BestEffort if NO containers have limits or requests.
+	isBestEffort := true
+	for _, container := range pod.Spec.Containers {
+		if container.Resources.Limits != nil || container.Resources.Requests != nil {
+			isBestEffort = false
+
+			break
+		}
+	}
+
+	if isBestEffort {
+		return 1000, corev1.PodQOSBestEffort // Max priority for the OOM killer
+	}
+
+	// 2. Check if it's Guaranteed (Request == Limit for all)
+	isGuaranteed := true
+	for _, container := range pod.Spec.Containers {
+		memReq := container.Resources.Requests.Memory()
+		memLim := container.Resources.Limits.Memory()
+		cpuReq := container.Resources.Requests.Cpu()
+		cpuLim := container.Resources.Limits.Cpu()
+
+		if memReq.IsZero() || memLim.IsZero() || cpuReq.IsZero() || cpuLim.IsZero() ||
+			memReq.Value() != memLim.Value() || cpuReq.MilliValue() != cpuLim.MilliValue() {
+			isGuaranteed = false
+
+			break
+		}
+	}
+
+	if isGuaranteed {
+		return -998, corev1.PodQOSGuaranteed // Almost impossible to kill
+	}
+
+	// 3. Burstable: score proportional to memory request vs node capacity.
+	// Matches kubelet: score = 2 + 1000 * (memRequest / nodeCapacity),
+	// clamped to [2, 999]. Lower memory request -> lower score -> killed last.
+	if nodeMemoryBytes > 0 {
+		var totalMemRequest int64
+		for _, c := range pod.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				totalMemRequest += req.Value()
+			}
+		}
+		if totalMemRequest > 0 {
+			score := min(max(2+int(1000*float64(totalMemRequest)/float64(nodeMemoryBytes)), 2), 999)
+
+			return score, corev1.PodQOSBurstable
+		}
+	}
+
+	return 2, corev1.PodQOSBurstable
+}
+
+func buildContainerRuntimeProfiles(pod *corev1.Pod, nodeMemoryBytes int64) map[string]containerRuntimeProfile {
+	score, _ := calculateOOMScore(pod, nodeMemoryBytes)
+
 	profiles := make(map[string]containerRuntimeProfile, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
 	for i := range pod.Spec.InitContainers {
 		c := &pod.Spec.InitContainers[i]
-		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		memLimit, swapLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
 		runAsUser, runAsGroup := effectiveRunAs(pod, c)
 		profiles[c.Name] = containerRuntimeProfile{
 			MemoryLimitBytes: memLimit,
+			SwapLimitBytes:   swapLimit,
 			CPULimitMillis:   cpuLimit,
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,
 			RunAsGroup:       runAsGroup,
+			OOMScoreAdjust:   score,
 		}
 	}
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
-		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		memLimit, swapLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
 		runAsUser, runAsGroup := effectiveRunAs(pod, c)
 		profiles[c.Name] = containerRuntimeProfile{
 			MemoryLimitBytes: memLimit,
+			SwapLimitBytes:   swapLimit,
 			CPULimitMillis:   cpuLimit,
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,
 			RunAsGroup:       runAsGroup,
+			OOMScoreAdjust:   score,
 		}
 	}
+
 	return profiles
 }
 
@@ -718,6 +840,7 @@ func effectiveRunAs(pod *corev1.Pod, c *corev1.Container) (runAsUser, runAsGroup
 			runAsGroup = c.SecurityContext.RunAsGroup
 		}
 	}
+
 	return runAsUser, runAsGroup
 }
 
@@ -790,6 +913,7 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 		select {
 		case <-ctx.Done():
 			g.Logger.Debug("waitForContainer: context cancelled", "uid", uid, "container", containerName)
+
 			return ctx.Err()
 
 		case <-time.After(500 * time.Millisecond):
@@ -823,11 +947,13 @@ func pullProgressFunc(g *Gambit, pod *corev1.Pod, imageName, containerName strin
 		if total == 0 {
 			return
 		}
+
 		pct := done * 100 / total
 		step := pct / 10 * 10
 		if step > lastPct || pct == 100 {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Pulling",
 				"Pulling image %s: %d%% (%d/%d layers) for %s", imageName, pct, done, total, containerName)
+
 			lastPct = step
 		}
 	}
@@ -837,6 +963,7 @@ func podTerminationGracePeriod(pod *corev1.Pod) int64 {
 	if pod.Spec.TerminationGracePeriodSeconds != nil {
 		return *pod.Spec.TerminationGracePeriodSeconds
 	}
+
 	return 30
 }
 
@@ -844,15 +971,18 @@ func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev
 	switch {
 	case handler.Exec != nil:
 		return g.Runtime.RunInContainer(ctx, uid, c.Name, handler.Exec.Command, &noopAttachIO{})
+
 	case handler.HTTPGet != nil:
 		podIP := g.store.PodIP(uid)
 		host := handler.HTTPGet.Host
 		if host == "" {
 			host = podIP
 		}
+
 		if host == "" {
 			return fmt.Errorf("no host/podIP available")
 		}
+
 		port := handler.HTTPGet.Port.String()
 		scheme := string(handler.HTTPGet.Scheme)
 		if scheme == "" {
@@ -862,22 +992,28 @@ func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return fmt.Errorf("bad request: %w", err)
+
 		}
 		for _, h := range handler.HTTPGet.HTTPHeaders {
 			req.Header.Set(h.Name, h.Value)
 		}
+
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("HTTP request failed: %w", err)
 		}
+
 		resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			return fmt.Errorf("HTTP status %d", resp.StatusCode)
 		}
+
 		return nil
+
 	case handler.Sleep != nil:
 		time.Sleep(time.Duration(handler.Sleep.Seconds) * time.Second)
 		return nil
+
 	default:
 		return nil
 	}
@@ -889,6 +1025,7 @@ func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid strin
 		if c.Lifecycle == nil || c.Lifecycle.PreStop == nil {
 			continue
 		}
+
 		if err := g.runLifecycleHook(ctx, pod, c, uid, c.Lifecycle.PreStop, "PreStop"); err != nil {
 			g.Logger.Warn("PreStop hook failed", "container", c.Name, "err", err)
 		}

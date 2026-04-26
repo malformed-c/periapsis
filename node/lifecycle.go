@@ -724,7 +724,7 @@ func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQ
 
 	// 3. Burstable: score proportional to memory request vs node capacity.
 	// Matches kubelet: score = 2 + 1000 * (memRequest / nodeCapacity),
-	// clamped to [2, 999]. Lower memory request → lower score → killed last.
+	// clamped to [2, 999]. Lower memory request -> lower score -> killed last.
 	if nodeMemoryBytes > 0 {
 		var totalMemRequest int64
 		for _, c := range pod.Spec.Containers {

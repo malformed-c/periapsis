@@ -19,9 +19,7 @@ data:
     pid /tmp/nginx.pid;
 
     events {
-      # 64 is far too low for load testing. At 1000 VUs spread across N pods
-      # each pod handles ~1000/N concurrent connections. 1024 gives headroom.
-      worker_connections 1024;
+      worker_connections 64;
       multi_accept on;
     }
 
@@ -36,7 +34,6 @@ data:
       tcp_nodelay on;
 
       server {
-        # reuseport is meaningful only with multiple worker processes.
         listen 8080;
         root /www;
         location / {
@@ -136,7 +133,7 @@ spec:
 
       initContainers:
       - name: page-gen
-        image: docker.io/library/alpine:latest
+        image: docker.io/library/busybox:uclibc
         imagePullPolicy: IfNotPresent
         resources:
           requests:
@@ -165,7 +162,7 @@ spec:
         # NOTE: status.podIP is empty in standard Kubernetes during init
         # container execution (IP is assigned after init containers finish).
         # This works in perigeos because CNI runs and PromoteRunning sets the
-        # IP before init containers are launched (lifecycle.go step1 → step3).
+        # IP before init containers are launched (lifecycle.go step1 -> step3).
         - name: POD_IP
           valueFrom:
             fieldRef:

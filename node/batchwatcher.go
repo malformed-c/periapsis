@@ -284,8 +284,8 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	// fires BEFORE systemd updates ExecMainStatus. If we react to it, we
 	// see exit code 0 and incorrectly mark the pod as Succeeded. Systemd
 	// always follows "dead" with either:
-	//   - "failed" (non-zero exit) → we react to this immediately
-	//   - unit collection (exit 0, CollectMode=inactive) → the ticker
+	//   - "failed" (non-zero exit) -> we react to this immediately
+	//   - unit collection (exit 0, CollectMode=inactive) -> the ticker
 	//     poll detects the unit is gone within 2s
 	// Emit informational events for container stop substates.
 	// These fire while the container is shutting down and let operators

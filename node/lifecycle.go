@@ -375,12 +375,14 @@ func (g *Gambit) launchContainer(
 		}
 
 		pullCache[c.Image] = pullCacheEntry{layers: layers, cached: cached}
-		if cached {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImageCached", "Image %s already present", c.Image)
 
-		} else {
-			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImagePulled", "Pulled image %s", c.Image)
-		}
+		// Should be already reported by Image Manager
+		// if cached {
+		// 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImageCached", "Image %s already present", c.Image)
+
+		// } else {
+		// 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "ImagePulled", "Pulled image %s", c.Image)
+		// }
 	}
 
 	// 2. Mount Overlay

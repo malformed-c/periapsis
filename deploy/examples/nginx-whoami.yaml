@@ -182,6 +182,8 @@ spec:
         # alpine variant keeps image small.
         image: docker.io/library/nginx:alpine
         imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
         ports:
         - containerPort: 8080
 

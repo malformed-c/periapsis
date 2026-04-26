@@ -1,18 +1,51 @@
 # Periapsis
+A Kubernetes' Pawn
+---
 
-A Kubernetes node agent that runs pods as native systemd-ns**pawn** containers, bypassing CRI and containerd entirely. One physical host can register as multiple independent virtual nodes (Pawns), each with isolated networking, pod lifecycle, and cgroup tree.
+**High-density Kubernetes execution layer via `systemd-nspawn` machines.**
+
+Periapsis is a Kubernetes node agent that bypasses the CRI and containerd entirely. It allows a single physical host to register as multiple independent virtual nodes (**Pawns**), each with its own isolated networking, pod lifecycle, and cgroup tree.
+
+### Periapsis in Action
+
+```bash
+[engi@engix99 ~]$ sudo apsis status
+Hostname:    engix99
+Pawns:       30
+Pods:        287
+RSS:         177 MiB
+Machines:    287
+Netns:       298
+
+[engi@engix99 ~]$ kubectl get nodes
+NAME               STATUS   ROLES                   AGE   VERSION
+compute-00         Ready    pawn                    42d   perigeos://dev
+compute-01         Ready    pawn                    42d   perigeos://dev
+...
+compute-29         Ready    pawn                    42d   perigeos://dev
+engix99            Ready    control-plane,primary   44d   v1.35.2+k3s1
+
+[engi@engix99 ~]$ machinectl | head -2
+MACHINE                                        CLASS     SERVICE        OS     VERSION
+pod-01922ac2-44fe-4dcc-b0fc-53db356524bb-nginx container systemd-nspawn alpine 3.21.3
+pod-021aa7a8-4ca8-44b3-8995-4b20b939f762-nginx container systemd-nspawn alpine 3.21.3
+```
+
+## Use Cases
+- High-throughput CI/CD runners
+- Edge/IoT resource-constrained devices
+- local development clusters
+- high-density internal microservices
 
 ---
 
-## The Problem
+## The Bottleneck
 
 ### High-density bare metal
 
-Running Kubernetes on bare metal at high density is harder than it should be. A standard kubelet has a hard 110-pod limit and carries containerd, runc, and their shim layer with it. When you have powerful servers in expensive, space-constrained datacenters, you want thousands of pods per host - not hundreds.
+Standard Kubernetes on bare metal faces a "density wall." A single `kubelet` has a hard limit of 110 pods and carries the heavy overhead of containerd, runc, and their shim layers. On powerful hardware, this forces a painful choice: either underutilize your servers or introduce complex hypervisor layers (KVM/vSphere/KubeVirt) that add latency and operational toil.
 
-The typical workaround is painful: deploy vSphere or KVM on the bare metal, provision VMs with KubeVirt or similar, then run kubelets inside those VMs. You get density, but at the cost of two extra abstraction layers, two control planes to maintain, and a debugging surface that requires specialists across Kubernetes, the hypervisor, and networking just to diagnose a single issue.
-
-Periapsis takes a different approach. A single perigeos daemon registers the host as multiple virtual nodes directly in the Kubernetes API. Pods run as systemd transient units - no hypervisor, no extra control plane, one process to debug.
+**Periapsis provides a "Serverless Bare Metal" architecture.** It delivers the developer experience of AWS Fargate - where the infrastructure is abstracted and pods are provisioned instantly - but optimized for trusted, internal infrastructure. By replacing the CRI stack with `systemd-nspawn` transient units, Periapsis removes the hypervisor tax and the pod-limit bottleneck.
 
 ### Lightweight nodes
 
@@ -20,45 +53,21 @@ On a small VPS or edge machine, the standard Kubernetes stack is heavy before yo
 
 Perigeos runs at ~67MB RSS idle and adds negligible per-pod overhead - no containerd shim per container, no separate daemon per runtime operation. On resource-constrained nodes it's a straightforward drop-in: same Kubernetes API, same kubectl, same pod specs, without the weight of the CRI stack.
 
-### The "Private Fargate" Use Case (Serverless Bare Metal)
-
-Public cloud providers (like AWS Fargate or Google Cloud Run) popularized the "serverless container" model: developers submit a Pod spec, and the infrastructure magically provisions the exact compute required in the background. You don't manage worker nodes, you just pay for what the container uses.
-
-Under the hood, these platforms intercept pod assignments using the exact same virtual node concepts Periapsis uses. But because public clouds host hostile, untrusted code from strangers, they take a massive performance penalty by booting a dedicated microVM (like Firecracker) for every single pod.
-
-**Periapsis provides that same "serverless" developer experience, but optimized for trusted, internal infrastructure.**
-
-Because you aren't running code for hostile strangers, you don't need microVMs. When a Pod is scheduled to a Periapsis Pawn, the could daemon intercepts it and instantly carves out the exact requested CPU and memory using a `systemd-nspawn` transient unit and a `cgroups v2` slice.
-
-The result is a **Fargate-in-a-box** architecture:
-*   **For developers:** The UX is identical to Fargate. They just write Pod specs and deploy. The control plane abstracts the physical hardware away.
-*   **For infrastructure:** You get zero hypervisor tax. You pack thousands of dynamically-sized pods onto bare metal at maximum density, with the exact resource enforcement of a serverless cloud, without paying the per-second cloud premium.
-
----
-
-### Why not Kata Containers or KubeVirt?
-
-If standard Kubernetes density is a problem, the industry default answer is usually microVMs (Kata Containers) or running VMs inside Kubernetes (KubeVirt). 
-
-Those projects use **hardware-level virtualization** (KVM, QEMU, Firecracker). They boot a tiny, isolated Linux kernel for every single pod. This is the correct architecture if you are building a public cloud with hostile multi-tenancy (where a malicious user might try a kernel exploit to access another user's data). 
-
-But hardware virtualization carries a massive tax: memory overhead per pod, boot-time latency, and CPU context-switching jitter. 
-
-Periapsis chooses **OS-level isolation**. By relying strictly on Linux namespaces and `systemd-nspawn`, workloads share the host kernel. You trade hostile multi-tenant isolation for extreme compute density. For internal company infrastructure, CI/CD pipelines, or edge compute-where you trust the code but want to maximize hardware ROI-paying the microVM tax is a waste of resources. Periapsis gives you the density of raw bare-metal processes with the operational UX of Kubernetes.
-
 ---
 
 ## How It Works
 
-Periapsis is a fork of virtual-kubelet that registers as a virtual Kubernetes node (Pawn), accepts pod assignments from the control plane, and manages the full container lifecycle: image pull (with p2p layer sharing), network setup (only Constellation CNI), resource limits, exec, logging, and status reporting.
+Periapsis is a fork of `virtual-kubelet` that manages the full container lifecycle natively on the host:
+- image pull (with p2p layer sharing)
+- network setup (only Constellation CNI)
+- resource limits, exec, logging, and status reporting
 
-The runtime is `systemd-nspawn`:
-
-- **systemd transient units** - pods are machines in `machinectl`, logs go to journald
-- **overlayfs** - OCI images extracted once into CAS, shared across pods via copy-on-write layers
-- **cgroups v2** - CPU, memory, and IO limits enforced by the kernel directly
-- **CNI** - per-pod network namespaces; Constellation (Cilium fork) for cross-host eBPF routing
-- **userns mapping**
+### The Stack
+- **Runtime:** systemd-ns**pawn** transient units registered with `systemd-machined`.
+- **Storage:** OCI images extracted into a Content Addressable Store (CAS) and shared via **OverlayFS** copy-on-write layers.
+- **Resources:** **cgroups v2** for strict CPU, memory, and IO enforcement.
+- **Networking:** **Constellation CNI** (Cilium fork) providing eBPF datapath and VXLAN cross-host routing.
+- **Security:** **User Namespace mapping** maps container root (UID 0) to an unprivileged high-number UID on the host, neutralizing container breakouts.
 
 ### Multi-pawn architecture
 
@@ -78,31 +87,24 @@ engifire (Intel N150)
 
 ---
 
-## Performance
+## Performance Comparison
 
-**2000 nginx replicas across 2 physical hosts, 32 virtual nodes:**
+**Benchmark:** 2000 nginx replicas across 2 physical hosts, 32 virtual nodes.
 
-### Standard Kubelet vs. Periapsis
+| Metric | Standard K8s (Kubelet + containerd) | Periapsis (Perigeos + systemd) |
+| :--- | :--- | :--- |
+| **Idle Daemon Footprint** | ~350 MB | **~67 MB** |
+| **Per-Pod Memory Tax** | ~15–20 MB (shim process) | **< 1 MB** (native unit) |
+| **Max Pods per Host** | 110 (hard limit) | **Thousands** |
+| **Isolation** | OS-level (runc) or HW-level (Kata) | OS-level (`nspawn`) |
+| **Logging** | Text files (CRI logs) | **Native `journald`** |
+| **Visibility** | Opaque (`crictl` / `ctr`) | **Transparent (`machinectl`)** |
+| **Upgrades** | Disruptive (Drain node) | **Zero-downtime** node daemon upgrades |
+| **P2P Layer Sharing** | No | **Yes** |
 
-| Metric                          | Standard Kubernetes (Kubelet + containerd)                | Periapsis (Perigeos + systemd)                         |
-|:--------------------------------|:----------------------------------------------------------|:-------------------------------------------------------|
-| **Idle Daemon Footprint**       | ~350 MB (kubelet + containerd + shims)                    | ~67 MB (perigeos daemon)                               |
-| **Per-Pod Memory Tax**          | ~15–20 MB (`containerd-shim` process per pod)             | < 1 MB (native `systemd` transient unit)               |
-| **Max Pods per Physical Host**  | 110 (hard limit without heavy tuning hacks)               | Thousands (limited only by physics and subnet size)    |
-| **Virtualization/Isolation**    | OS-level (runc) or HW-level (Kata/Firecracker)            | OS-level natively tied to systemd (`nspawn`)        |
-| **Logging Backend**             | Text files (`json-file` / CRI logs)                       | Native `journald` (queryable via `journalctl`)         |
-| **Process Visibility**          | Opaque (requires `crictl` or `ctr`)                       | Transparent (visible in `machinectl` and `systemctl`)  |
-| **Daemon Upgrades**             | Disruptive (requires draining node or risking state loss) | Zero-downtime (`KillMode=process` leaves pods running) |
-| **cgroups v2 support**          | Limited, only CPU and RAM                                 | Full                                                   |
-| **P2P layer sharing**           | No                                                        | Yes                                                    |
-| **More events in the describe** | Standard                                                  | Events about image pulling %, etc                      |
+**Throughput:** `10,763 RPS` · `229µs median latency` · `0.00% errors`
 
-```
-10,763 RPS  ·  229µs median latency  ·  0.00% errors  ·  2.26M requests
-p95 = 12.67ms  ·  p99 < 2s  ·  1000 concurrent VUs
-```
-
-Pawn hit distribution (even spread, no hotspots):
+Pawn hit distribution:
 ```
 engifire-pawn-01    4.4%  (100,113 hits)
 engifire            4.3%  ( 97,503 hits)
@@ -118,62 +120,77 @@ Full results: [docs/show-off.md](docs/show-off.md)
 
 ---
 
-## What Works
+## Feature Matrix
 
-- Pod lifecycle: create, update, delete, restart policies, crash loop backoff
-- Init containers and sidecar containers
-- OCI image pull with layer caching and peer-to-peer layer sharing
-- ConfigMap, Secret, emptyDir, projected volumes, downward API (Tidal)
-- exec, attach, logs, port-forward (Kubelet API)
-- Resource limits (CPU, memory, IO) via cgroups v2
+- **Pod Lifecycle:** Create, update, delete, restart policies, crash loop backoff.
+- **Advanced Pods:** Init containers, sidecars, and liveness/readiness/startup probes.
+- **OCI image pull** with layer caching and peer-to-peer layer sharing
+- **Storage:** ConfigMap, Secret, emptyDir, projected volumes, downward API (Tidal) and SeaweedFS CSI.
+- **Kubelet API:** `exec`, `attach`, `logs`, and `port-forward`.
+- **Resource limits** (CPU, memory, IO) via cgroups v2
+ eBPF datapath, VXLAN cross-host routing, and Envoy Gateway (L7).
+
 - Liveness, readiness, and startup probes
 - Environment variable injection including service discovery vars
 - Multi-pawn host registration (N virtual nodes per host)
-- Constellation CNI: eBPF datapath, VXLAN cross-host routing (with local bypass), per-pod netns
-- Envoy Gateway for L7 ingress via Gateway API
-- SeaweedFS CSI
+- **Networking:**
+  - Constellation CNI: eBPF datapath, VXLAN cross-host routing (with local bypass), per-pod netns
+  - Envoy Gateway for L7 ingress via Gateway API
 - journald integration - pod logs visible in journalctl
-- machinectl integration - running pods visible as machines
-- `apsis` CLI for introspection, debugging, and reconciliation
-- KillMode=process - `systemctl restart perigeos` leaves pods running while restaring the daemon
+- machinectl integration - running pods visible as machines.
+- **Management:** `apsis` CLI for introspection.
 
-## What Does Not Work Yet
-
-- **PersistentVolumeClaims**: local-path provisioner works; SeaweedFS CSI works; Other distributed CSI drivers untested
-- **SecurityContext**: unprivileged pods work; full SecurityContext field coverage is incomplete - not all fields map cleanly to systemd-nspawn
+### ⚠️ What is in Progress/Unsupported
+- **Dynamic Node Sizing**: Not implemented. Currently, Periapsis supports only **Static Pawn Provisioning**, where Pawn capacity and limits are manually defined in the daemon configuration by the admin.
+- **OOM Eviction** Not yet implemented
+- **PersistentVolumeClaims:** Local-path and SeaweedFS work; others untested.
+- **SecurityContext**: unprivileged pods work; Partial coverage; not all fields map to `nspawn`
 - **Windows**: not supported, not planned
 - **Non-systemd Linux**: not supported
-- **StatefulSets with stable network identity**: untested at scale
+- **StatefulSets:** Stable network identity untested at scale.
 - **VolumeSnapshot, ephemeral inline volumes**: not implemented
 - **Vertical Pod Autoscaler**: untested
 
 That being said, Periapsis supports **coexistance** with standard kubelet (or k3s node), given you're willing to deploy Constellation CNI.
 
+Periapsis supports standard CNIs (Calico, Flannel, standard Cilium) out of the box for 1:1 node-to-host deployments. However, if you want to multiplex a single physical host into multiple virtual nodes (Pawn Slicing), you must use Constellation.
+
+---
+
+## Why not Kata Containers or KubeVirt?
+
+If standard Kubernetes density is a problem, the industry default answer is usually microVMs (Kata Containers) or running VMs inside Kubernetes (KubeVirt). 
+
+Those projects use **hardware-level virtualization** (KVM, QEMU, Firecracker). They boot a tiny, isolated Linux kernel for every single pod. This is the correct architecture if you are building a public cloud with hostile multi-tenancy (where a malicious user might try a kernel exploit to access another user's data). 
+
+But hardware virtualization carries a massive tax: memory overhead per pod, boot-time latency, and CPU context-switching jitter. 
+
+Periapsis chooses **OS-level isolation**. By relying strictly on Linux namespaces and `systemd-nspawn`, workloads share the host kernel. You trade hostile multi-tenant isolation for extreme compute density. For internal company infrastructure, CI/CD pipelines, or edge compute-where you trust the code but want to maximize hardware ROI-paying the microVM tax is a waste of resources. Periapsis gives you the density of raw bare-metal processes with the operational UX of Kubernetes.
+
 ---
 
 ## Naming
 
-| Name              | Role                                                                         |
-|-------------------|------------------------------------------------------------------------------|
-| **Periapsis**     | The project (closest orbital approach - generic)                             |
-| **Perigeos**      | The daemon binary (Earth-specific periapsis)                                 |
-| **Pawn**          | A virtual Kubernetes node - wordplay on systemd-ns**pawn** - new concept IMO |
-| **Gambit**        | The PodProvider implementation                                               |
-| **Constellation** | Cilium-based CNI fork for multi-pawn networking                              |
-| **Apsis**         | CLI for introspection and debugging                                          |
-| **Tidal**         | Downward API                                                                 |
+| Name | Role |
+| :--- | :--- |
+| **Periapsis** | The project name (closest orbital approach - generic) |
+| **Perigeos** | The daemon binary (Earth-specific periapsis) |
+| **Pawn** | A virtual Kubernetes node - wordplay on systemd-ns**pawn** - new concept IMO |
+| **Gambit** | The PodProvider implementation |
+| **Constellation** | Cilium-based CNI fork for multi-pawn networking |
+| **Apsis** | CLI for introspection and debugging |
 
 ---
 
 ## Requirements
 
-- Linux with systemd v250+ (later v260+) and cgroups v2
+- systemd v250+ (later v260+) and cgroups v2 (should be already default)
 - Kernel 5.15+ (eBPF features used by Constellation)
 - Kubernetes 1.34+
 - Go 1.26+ (to build)
 
-Optional: Constellation CNI for cross-host pod networking and multi-pawn isolation. Without it, pods use veth bridges on the host network namespace - single-pawn deployments only.
-Optional: Kernel arg `swapaccount=1` for swap enforcement
+- Optional: Constellation CNI for cross-host pod networking and multi-pawn isolation. Without it, pods use veth bridges on the host network namespace - single-pawn deployments only.
+- Optional: Kernel arg `swapaccount=1` for swap enforcement
 
 ---
 
@@ -183,27 +200,22 @@ Optional: Kernel arg `swapaccount=1` for swap enforcement
 - Running k8s or k3s control plane
 - kubeconfig for initial node registration
 
-### Build
-
+### Build & Deploy
 ```bash
+# Build binaries
 go build ./cmd/perigeos
 go build ./cmd/apsis
 make -C cmd/userns-shim userns-shim-amd64
-```
 
-### Deploy
-
-```bash
-# Install systemd service and binary
-./deploy/perigeos-install.sh
-
-# Start
-systemctl start perigeos
+# Install and Start
+sudo ./deploy/perigeos-install.sh
+sudo systemctl start perigeos
 
 # Verify
 kubectl get nodes
-apsis status
+sudo apsis status
 ```
+
 
 Config: `/etc/apsis/perigeos/perigeos.toml`
 
@@ -221,8 +233,8 @@ kubectl get nodes
 kubectl run test --image=busybox --restart=Never -- sleep 3600
 kubectl exec -it test -- sh
 
-apsis status
-apsis doctor
+sudo apsis status
+sudo apsis doctor
 ```
 
 ---
@@ -284,40 +296,18 @@ See `adr/` for full records. Notable:
 
 ---
 
-### What is a Pawn?
+## The "Pawn" Architecture
 
-The name "Pawn" is a nod to both `systemd-nspawn` and the chess piece: lightweight, numerous, and expendable.
+In standard Kubernetes, the relationship between a Node and a physical machine is 1:1. **A Pawn breaks this mapping.** 
 
-In standard Kubernetes, there is a 1:1 relationship between a Node and a physical machine (or VM). Because of API overhead, IP allocation limits, and scheduler design, Kubernetes enforces a soft limit of 110 pods per Node.
+Currently, Periapsis supports only **Static Pawn Provisioning**. The number of Pawns and their resource limits (CPU/Memory/IO) must be manually defined in the host configuration.
 
-If you have a massive 128-core, 1TB RAM bare-metal server, the 1:1 mapping is a massive bottleneck. The server can easily run 3,000 lightweight pods, but standard Kubernetes will stop sending workloads after 110.
+A Pawn is a virtual Kubernetes node that multiplexes a single physical server. When the `perigeos` daemon boots, it registers $N$ virtual nodes (e.g., `compute-00` through `compute-29`). To the Kubernetes Control Plane, these are independent servers with their own:
+- **Capacity:** Dedicated CPU/RAM/IO limits, enforced by cgroups v2.
+- **Identity:** Unique TLS certificates and Kubelet API.
+- **Networking:** Dedicated Pod CIDR blocks.
 
-**A Pawn breaks the 1:1 mapping. It is a virtual Node that multiplexes a single physical server.**
-
-When you boot the `perigeos` daemon on a host, it doesn't register the host itself. Instead, it registers multiple independent Pawns (e.g., `compute-00` through `compute-29`).
-
-To the Kubernetes Control Plane, a Pawn looks exactly like a standard physical server. It has:
-- Its own Node capacity (CPU/RAM limits, IO limits).
-- Its own unique TLS certificate for the Kubelet API.
-- Its own dedicated Pod CIDR block for IP routing.
-- Its own heartbeat and readiness status.
-
-Under the hood on the Linux host, a Pawn is just a logical grouping. Each Pawn gets its own parent `cgroup v2` slice, and its network namespace is wired up by Constellation. When the scheduler assigns a pod to `compute-xx`, the `perigeos` daemon gets it, drops it into `compute-xx`'s cgroup slice, and boots it via `systemd-nspawn`.
-
-By splitting one physical machine into 30 Pawns, the Kubernetes scheduler natively distributes thousands of pods across your bare metal without ever hitting the 110-pod threshold, requiring zero modifications to the control plane.
-
-### Nodes as Cattle, Not Pets
-
-In modern infrastructure, we treat containers as "cattle" (expendable and easily replaced) rather than "pets" (individually nurtured). However, in bare-metal Kubernetes deployments, the massive physical worker nodes often revert to being pets. They require heavy state management (`kubelet`, `containerd`), complex upgrade cycles, and if one goes down, it takes a massive blast radius with it.
-
-Periapsis takes the "cattle" philosophy and applies it to the nodes themselves.
-
-The name **Pawn** reflects this perfectly.
-
-Because a Pawn is just a lightweight software abstraction rather than a heavy daemon, you can treat them with complete indifference:
-*   You don't upgrade a Pawn; you just restart the `perigeos` daemon.
-*   Because of `KillMode=process`, you can recycle the daemon in milliseconds, and the Pawns instantly re-register with the control plane while the underlying pod processes (the `systemd-nspawn` units) never drop a single request.
-*   The physical server is no longer a "Kubernetes Node" you have to care for. It is just a pool of compute, memory, and IO. The control plane only interacts with the Pawns.
+**Nodes as Cattle:** Because Pawns are lightweight software abstractions, they are expendable. Using `KillMode=process`, the `perigeos` daemon can be restarted or upgraded in milliseconds without dropping a single request from the underlying `systemd-nspawn` pods.
 
 ---
 
@@ -329,10 +319,11 @@ Because a Pawn is just a lightweight software abstraction rather than a heavy da
 ---
 
 Periapsis is licensed under BSL 1.1, see [LICENSE](LICENSE).
+On 2030-04-27, it will transition to GPL-3.0.
 
 It incorporates a fork of virtual-kubelet by the VK authors (Apache 2.0).
 See [NOTICES](NOTICES) for full third-party attribution.
 
 Kubernetes is a trademark of The Linux Foundation.
 
-:: Malformed C ::
+`:: Malformed C ::`

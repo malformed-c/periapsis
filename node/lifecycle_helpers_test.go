@@ -129,7 +129,7 @@ func TestBuildContainerRuntimeProfiles_PerContainerMap(t *testing.T) {
 		},
 	}
 
-	profiles := buildContainerRuntimeProfiles(pod)
+	profiles := buildContainerRuntimeProfiles(pod, 0)
 	if len(profiles) != 2 {
 		t.Fatalf("expected 2 profiles, got %d", len(profiles))
 	}

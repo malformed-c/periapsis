@@ -638,6 +638,11 @@ func main() {
 				reconciler.Run(ctx)
 			})
 
+			wg.Go(func() {
+				pawnLogger.Info("Starting eviction loop")
+				g.RunEvictionLoop(ctx)
+			})
+
 			pawnServer, err := server.NewPawnServer(g, server.PawnServerConfig{
 				CACertPath:   perigeosCfg.Global.ServerCAPath,
 				CAKeyPath:    perigeosCfg.Global.ServerCAKeyPath,

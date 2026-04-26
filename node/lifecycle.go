@@ -212,7 +212,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// Step 3: Init Containers (Strictly Sequential)
 	g.Logger.Debug("sync: step3 init containers", "uid", uid, "pod", pod.Name, "count", len(pod.Spec.InitContainers))
 
-	runtimeProfiles := buildContainerRuntimeProfiles(pod)
+	runtimeProfiles := buildContainerRuntimeProfiles(pod, g.Config.Memory.Value())
 
 	for i := range pod.Spec.InitContainers {
 		ic := &pod.Spec.InitContainers[i]
@@ -607,7 +607,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// Dummy cache for individual container restart
 	dummyCache := make(map[string]pullCacheEntry)
 
-	profiles := buildContainerRuntimeProfiles(pod)
+	profiles := buildContainerRuntimeProfiles(pod, g.Config.Memory.Value())
 	err := g.launchContainer(ctx, pod, container, uid, netPath, podIP, dummyCache, profiles, false)
 	if err != nil {
 		g.Logger.Error("Restart: launch failed", "container", containerName, "err", err)
@@ -686,7 +686,7 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 	return
 }
 
-func calculateOOMScore(pod *corev1.Pod) (int, corev1.PodQOSClass) {
+func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQOSClass) {
 	// 1. Check if it's BestEffort (No limits, no requests)
 	// In K8s, a pod is BestEffort if NO containers have limits or requests.
 	isBestEffort := true
@@ -722,14 +722,32 @@ func calculateOOMScore(pod *corev1.Pod) (int, corev1.PodQOSClass) {
 		return -998, corev1.PodQOSGuaranteed // Almost impossible to kill
 	}
 
-	// 3. Otherwise, it's Burstable.
-	// We can return 0, or calculate a value based on memory usage vs request.
-	// For now, 0 is the standard baseline.
-	return 0, corev1.PodQOSBurstable
+	// 3. Burstable: score proportional to memory request vs node capacity.
+	// Matches kubelet: score = 2 + 1000 * (memRequest / nodeCapacity),
+	// clamped to [2, 999]. Lower memory request → lower score → killed last.
+	if nodeMemoryBytes > 0 {
+		var totalMemRequest int64
+		for _, c := range pod.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				totalMemRequest += req.Value()
+			}
+		}
+		if totalMemRequest > 0 {
+			score := 2 + int(1000*float64(totalMemRequest)/float64(nodeMemoryBytes))
+			if score < 2 {
+				score = 2
+			}
+			if score > 999 {
+				score = 999
+			}
+			return score, corev1.PodQOSBurstable
+		}
+	}
+	return 2, corev1.PodQOSBurstable
 }
 
-func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeProfile {
-	score, _ := calculateOOMScore(pod)
+func buildContainerRuntimeProfiles(pod *corev1.Pod, nodeMemoryBytes int64) map[string]containerRuntimeProfile {
+	score, _ := calculateOOMScore(pod, nodeMemoryBytes)
 
 	profiles := make(map[string]containerRuntimeProfile, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
 	for i := range pod.Spec.InitContainers {

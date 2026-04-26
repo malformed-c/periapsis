@@ -71,6 +71,7 @@ func (g *Gambit) RunInContainer(
 	if err != nil {
 		g.Logger.Error("RunInContainer: pod not found",
 			"namespace", namespace, "pod", podName, "container", containerName, "err", err)
+
 		return err
 	}
 
@@ -84,6 +85,7 @@ func (g *Gambit) RunInContainer(
 			"namespace", namespace, "pod", podName, "uid", uid,
 			"container", containerName, "cmd", cmd, "err", err)
 	}
+
 	return err
 }
 

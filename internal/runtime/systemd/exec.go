@@ -40,6 +40,7 @@ func (s *SystemdRuntime) runInContainerNsenter(
 		slog.Debug("runInContainerNsenter: getMachineLeaderPID failed, falling back to program mode",
 			"machine", machineName, "err", err)
 		unitName := wrapperUnitName(s.pawnName, podUID, containerName)
+
 		return s.runInProgramContainer(ctx, unitName, cmd, attach)
 	}
 
@@ -60,6 +61,7 @@ func (s *SystemdRuntime) runInContainerNsenter(
 
 	if attach.TTY() {
 		err = wrapExitError(runWithPTY(ctx, execCmd, attach))
+
 	} else {
 		wireAttach(execCmd, attach)
 		err = wrapExitError(execCmd.Run())
@@ -68,6 +70,7 @@ func (s *SystemdRuntime) runInContainerNsenter(
 		slog.Debug("runInContainerNsenter: nsenter exited with error",
 			"machine", machineName, "pid", pid, "err", err)
 	}
+
 	return err
 }
 
@@ -92,7 +95,9 @@ func (s *SystemdRuntime) runInContainerMachinectl(
 	if attach.TTY() {
 		return wrapExitError(runWithPTY(ctx, execCmd, attach))
 	}
+
 	wireAttach(execCmd, attach)
+
 	return wrapExitError(execCmd.Run())
 }
 
@@ -142,9 +147,11 @@ func (s *SystemdRuntime) leaderPIDFromMachined(machineName string) (int, error) 
 	).Store(&leader); err != nil {
 		return 0, fmt.Errorf("GetLeaderProcess(%s): %w", machineName, err)
 	}
+
 	if leader == 0 {
 		return 0, fmt.Errorf("machined returned zero leader PID for %s", machineName)
 	}
+
 	return int(leader), nil
 }
 
@@ -169,15 +176,19 @@ func (s *SystemdRuntime) leaderPIDFromSupervisor(machineName string) (int, error
 		if err != nil {
 			return 0, fmt.Errorf("read children of nspawn PID %d: %w", nspawnPID, err)
 		}
+
 		if fields := strings.Fields(string(data)); len(fields) > 0 {
 			pid, err := strconv.Atoi(fields[0])
 			if err != nil {
 				return 0, fmt.Errorf("parse container init PID %q: %w", fields[0], err)
 			}
+
 			return pid, nil
 		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
+
 	return 0, fmt.Errorf("nspawn PID %d had no children after 2s", nspawnPID)
 }
 
@@ -198,10 +209,12 @@ func (s *SystemdRuntime) supervisorPIDFromMachined(machineName string) (int, err
 	if err != nil {
 		return 0, fmt.Errorf("supervisor property(%s): %w", machineName, err)
 	}
+
 	supervisor, ok := supervisorVar.Value().(uint32)
 	if !ok || supervisor == 0 {
 		return 0, fmt.Errorf("machined returned zero supervisor PID for %s", machineName)
 	}
+
 	return int(supervisor), nil
 }
 
@@ -213,10 +226,12 @@ func (s *SystemdRuntime) supervisorPIDFromUnit(machineName string) (int, error) 
 	if err != nil {
 		return 0, fmt.Errorf("GetServiceProperty MainPID for %s: %w", unitName, err)
 	}
+
 	nspawnPID, ok := prop.Value.Value().(uint32)
 	if !ok || nspawnPID == 0 {
 		return 0, fmt.Errorf("unit %s has no MainPID (not running?)", unitName)
 	}
+
 	return int(nspawnPID), nil
 }
 
@@ -259,7 +274,9 @@ func (s *SystemdRuntime) runInProgramContainer(
 	if attach.TTY() {
 		return wrapExitError(runWithPTY(execCtx, execCmd, attach))
 	}
+
 	wireAttach(execCmd, attach)
+
 	return wrapExitError(execCmd.Run())
 }
 
@@ -275,10 +292,12 @@ func (s *SystemdRuntime) getUnitMainPID(ctx context.Context, unitName string) (i
 	if err != nil {
 		return 0, fmt.Errorf("GetServiceProperty MainPID for %s: %w", unitName, err)
 	}
+
 	pid, ok := prop.Value.Value().(uint32)
 	if !ok || pid == 0 {
 		return 0, fmt.Errorf("unit %s has no MainPID (not running?)", unitName)
 	}
+
 	return int(pid), nil
 }
 
@@ -311,8 +330,10 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 
 	if err := cmd.Start(); err != nil {
 		slave.Close()
+
 		return fmt.Errorf("cmd start: %w", err)
 	}
+
 	slave.Close() // parent doesn't need the slave end
 
 	// Forward terminal resize events.
@@ -344,6 +365,7 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, attach api.AttachIO) error {
 		if attach.Stdin() == nil {
 			return
 		}
+
 		buf := make([]byte, 4096)
 		for {
 			n, err := attach.Stdin().Read(buf)
@@ -377,6 +399,7 @@ func openPTY() (master, slave *os.File, err error) {
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, master.Fd(),
 		unix.TIOCSPTLCK, uintptr(unsafe.Pointer(&lock))); errno != 0 {
 		master.Close()
+
 		return nil, nil, fmt.Errorf("TIOCSPTLCK: %w", errno)
 	}
 
@@ -385,6 +408,7 @@ func openPTY() (master, slave *os.File, err error) {
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, master.Fd(),
 		unix.TIOCGPTN, uintptr(unsafe.Pointer(&ptno))); errno != 0 {
 		master.Close()
+
 		return nil, nil, fmt.Errorf("TIOCGPTN: %w", errno)
 	}
 
@@ -395,6 +419,7 @@ func openPTY() (master, slave *os.File, err error) {
 	slave, err = os.OpenFile(slavePath, os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		master.Close()
+
 		return nil, nil, fmt.Errorf("open slave PTY %s: %w", slavePath, err)
 	}
 
@@ -421,9 +446,10 @@ func wrapExitError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return utilexec.CodeExitError{Err: err, Code: exitErr.ExitCode()}
 	}
+
 	return err
 }

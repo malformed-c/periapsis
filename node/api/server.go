@@ -15,6 +15,9 @@
 package api
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -181,15 +184,44 @@ func instrumentRequest(r *http.Request) *http.Request {
 }
 
 // InstrumentHandler wraps an http.Handler and injects instrumentation into the request context.
+// The wrapper implements http.Hijacker so that SPDY-based exec/attach/portforward can upgrade
+// the connection. Without this, ochttp.Handler's ResponseWriter wrapper hides Hijacker from
+// ServeExec/ServeAttach, causing stream negotiation to hang silently until the client times out.
 func InstrumentHandler(h http.Handler) http.Handler {
 	instrumented := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		req = instrumentRequest(req)
 		h.ServeHTTP(w, req)
 	})
-	return &ochttp.Handler{
-		Handler:     instrumented,
-		Propagation: &b3.HTTPFormat{},
+	return &hijackableOCHandler{
+		Handler: &ochttp.Handler{
+			Handler:     instrumented,
+			Propagation: &b3.HTTPFormat{},
+		},
 	}
+}
+
+// hijackableOCHandler wraps ochttp.Handler and delegates http.Hijacker to the
+// underlying ResponseWriter so SPDY stream upgrades work correctly.
+type hijackableOCHandler struct {
+	*ochttp.Handler
+}
+
+func (h *hijackableOCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.Handler.ServeHTTP(&hijackableResponseWriter{ResponseWriter: w}, r)
+}
+
+// hijackableResponseWriter wraps http.ResponseWriter and implements http.Hijacker
+// by delegating to the underlying writer if it supports it.
+type hijackableResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (w *hijackableResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return hijacker.Hijack()
 }
 
 // NotFound provides a handler for cases where the requested endpoint doesn't exist

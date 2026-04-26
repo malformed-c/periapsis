@@ -26,7 +26,9 @@ import (
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/types"
+	remoteconstants "k8s.io/apimachinery/pkg/util/remotecommand"
 	remoteutils "k8s.io/client-go/tools/remotecommand"
+
 	"k8s.io/kubelet/pkg/cri/streaming/remotecommand"
 )
 
@@ -103,7 +105,7 @@ func HandleContainerExec(h ContainerExecHandlerFunc, opts ...ContainerExecHandle
 		pod := vars["pod"]
 		container := vars["container"]
 
-		supportedStreamProtocols := strings.Split(req.Header.Get("X-Stream-Protocol-Version"), ",")
+		clientSupportedStreamProtocols := strings.Split(req.Header.Get("X-Stream-Protocol-Version"), ",")
 
 		q := req.URL.Query()
 		command := q["command"]
@@ -120,7 +122,7 @@ func HandleContainerExec(h ContainerExecHandlerFunc, opts ...ContainerExecHandle
 		slog.Debug("exec: stream negotiation",
 			"pod", pod, "container", container,
 			"cmd", command,
-			"protocols", supportedStreamProtocols,
+			"protocols", clientSupportedStreamProtocols,
 			"stdin", streamOpts.Stdin,
 			"stdout", streamOpts.Stdout,
 			"stderr", streamOpts.Stderr,
@@ -142,7 +144,7 @@ func HandleContainerExec(h ContainerExecHandlerFunc, opts ...ContainerExecHandle
 			streamOpts,
 			cfg.StreamIdleTimeout,
 			cfg.StreamCreationTimeout,
-			supportedStreamProtocols,
+			remoteconstants.SupportedStreamingProtocols,
 		)
 
 		return nil
@@ -219,6 +221,7 @@ func (c *containerExecContext) ExecInContainer(
 				select {
 				case eio.chResize <- TermSize{Width: s.Width, Height: s.Height}:
 					return false
+
 				case <-ctx.Done():
 					return true
 				}
@@ -230,6 +233,7 @@ func (c *containerExecContext) ExecInContainer(
 					if send(s) {
 						return
 					}
+
 				case <-ctx.Done():
 					return
 				}

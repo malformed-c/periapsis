@@ -192,6 +192,7 @@ func InstrumentHandler(h http.Handler) http.Handler {
 		req = instrumentRequest(req)
 		h.ServeHTTP(w, req)
 	})
+
 	return &hijackableOCHandler{
 		Handler: &ochttp.Handler{
 			Handler:     instrumented,

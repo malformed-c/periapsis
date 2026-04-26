@@ -89,7 +89,7 @@ engifire (Intel N150)
 | **Idle Daemon Footprint**       | ~350 MB (kubelet + containerd + shims)                    | ~67 MB (perigeos daemon)                               |
 | **Per-Pod Memory Tax**          | ~15–20 MB (`containerd-shim` process per pod)             | < 1 MB (native `systemd` transient unit)               |
 | **Max Pods per Physical Host**  | 110 (hard limit without heavy tuning hacks)               | Thousands (limited only by physics and subnet size)    |
-| **Virtualization/Isolation**    | OS-level (runc) or HW-level (Kata/Firecracker)            | OS-level natively tied to Linux init (`nspawn`)        |
+| **Virtualization/Isolation**    | OS-level (runc) or HW-level (Kata/Firecracker)            | OS-level natively tied to systemd (`nspawn`)        |
 | **Logging Backend**             | Text files (`json-file` / CRI logs)                       | Native `journald` (queryable via `journalctl`)         |
 | **Process Visibility**          | Opaque (requires `crictl` or `ctr`)                       | Transparent (visible in `machinectl` and `systemctl`)  |
 | **Daemon Upgrades**             | Disruptive (requires draining node or risking state loss) | Zero-downtime (`KillMode=process` leaves pods running) |
@@ -111,7 +111,8 @@ compute-27          4.3%  ( 97,052 hits)
 compute-22          1.8%  ( 40,923 hits)
 ```
 
-Daemon RSS: ~67–200 MiB (varies by pawn and pod count), running Constellation and Envoy GW. Compared to a standard Kubelet + Cilium and Envoy GW + containerd footprint of ~400-700 MiB.
+Daemon RSS: ~67–200 MiB (varies by pawn and pod count), running Constellation and Envoy GW.
+Compared to a standard Kubelet + Cilium and Envoy GW + containerd footprint of ~400-700 MiB for kubelet itself + shim tax.
 
 Full results: [docs/show-off.md](docs/show-off.md)
 

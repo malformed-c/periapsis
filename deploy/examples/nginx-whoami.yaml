@@ -141,10 +141,10 @@ spec:
         resources:
           requests:
             cpu: 10m
-            memory: 16Mi
+            memory: 8Mi
           limits:
-            cpu: 100m
-            memory: 32Mi
+            cpu: 15m
+            memory: 16Mi
 
         env:
         - name: POD_NAME
@@ -190,11 +190,11 @@ spec:
 
         resources:
           requests:
-            cpu: 50m
-            memory: 32Mi
+            cpu: 20m
+            memory: 16Mi
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: 200m
+            memory: 64Mi
 
         command:
         - /bin/sh

@@ -310,8 +310,8 @@ func (pn *PawnNode) nodeConditions() []corev1.NodeCondition {
 			Status:             corev1.ConditionFalse,
 			LastHeartbeatTime:  now,
 			LastTransitionTime: now,
-			Reason:             "RouteCreated",
-			Message:            "RouteController created a route",
+			Reason:             "PawnNetworkAvailable",
+			Message:            "Pawn network is available",
 		},
 	}
 }

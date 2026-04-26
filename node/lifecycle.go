@@ -733,16 +733,12 @@ func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQ
 			}
 		}
 		if totalMemRequest > 0 {
-			score := 2 + int(1000*float64(totalMemRequest)/float64(nodeMemoryBytes))
-			if score < 2 {
-				score = 2
-			}
-			if score > 999 {
-				score = 999
-			}
+			score := min(max(2+int(1000*float64(totalMemRequest)/float64(nodeMemoryBytes)), 2), 999)
+
 			return score, corev1.PodQOSBurstable
 		}
 	}
+
 	return 2, corev1.PodQOSBurstable
 }
 
@@ -952,6 +948,7 @@ func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev
 		for _, h := range handler.HTTPGet.HTTPHeaders {
 			req.Header.Set(h.Name, h.Value)
 		}
+
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("HTTP request failed: %w", err)
@@ -961,6 +958,7 @@ func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev
 		if resp.StatusCode >= 300 {
 			return fmt.Errorf("HTTP status %d", resp.StatusCode)
 		}
+
 		return nil
 
 	case handler.Sleep != nil:

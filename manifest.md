@@ -6,7 +6,11 @@ This document explains the reasoning behind Periapsis's licensing choices.
 
 AppGet was an open source Windows package manager built by a single developer. Microsoft read the project, understood the architecture, and shipped winget. The author was left with nothing — not because the license was wrong, but because Apache 2.0 offers no protection against capability replication. A larger organization with more resources can implement the same idea independently and there is nothing a permissive license can do about that. The project was effectively erased.
 
-This is not a commercial concern. There is no intent to build a company around Periapsis or to sell licenses. The concern is simpler: the work should not be absorbed and erased by a party with more resources and distribution power. Periapsis solves a real problem in a non-obvious way. The architecture is documented, the ADRs are public, the benchmarks are reproducible. A well-resourced team could reimplement it in a few months. The license is the only mechanism that makes that politically and legally costly.
+This is the primary concern. Periapsis solves a real problem in a non-obvious way. The architecture is documented, the ADRs are public, the benchmarks are reproducible. A well-resourced team could reimplement it in a few months. The project should not be absorbed and erased by a party with more resources and distribution power.
+
+Beyond that: if a company wants to run Periapsis as a managed service and profit from it, that is a legitimate basis for a commercial conversation. The BSL creates that conversation rather than foreclosing it. This is not the primary motivation, but it is not unwelcome either.
+
+CNCF adoption would be valuable — neutral governance, visibility, institutional backing. It is unlikely given that Periapsis deliberately bypasses CRI and couples tightly to systemd, both of which cut against CNCF's portability ethos. But it is not a deliberate rejection. If the project reaches the point where CNCF membership makes sense, the license can be changed. The author holds the copyright.
 
 ## Why not Apache 2.0
 
@@ -30,10 +34,6 @@ The Additional Use Grant explicitly prohibits offering Periapsis or a substantia
 
 The Change License is GPL v3, not Apache 2.0. After 2030, Periapsis becomes free software with strong copyleft — anyone who modifies and distributes it must publish their modifications. This fits the systemd lineage the project belongs to and ensures that even after the commercial window closes, the project cannot be quietly forked and closed.
 
-## The CNCF question
-
-CNCF requires Apache 2.0. BSL closes that path while it is in effect. This is an accepted tradeoff — not because CNCF membership is undesirable, but because it requires donating the project to the foundation before the project has the visibility to be the obvious canonical implementation. The sequence matters. If Periapsis becomes recognized as the reference for this architecture, CNCF membership can be revisited with the project already having institutional weight. The license can be changed; the author holds the copyright.
-
 ## The systemd angle
 
 Periapsis is architecturally a systemd-family project. It uses systemd-nspawn as its runtime, transient units for pod lifecycle, journald for logging, machinectl for container visibility, and cgroups v2 via systemd's own resource management. It treats Kubernetes as a control plane and delegates everything else to systemd.
@@ -56,3 +56,5 @@ The copyright position taken here is that the author is the creative and intelle
 | Change License: GPL v3 | Strong copyleft after the window; fits the systemd lineage |
 | Change Date: 2030 | Time to establish recognition before the license opens |
 | Internal use permitted | The license protects against erasure, not against use |
+| Commercial licensing open | Companies wanting managed services have a clear path to engage |
+| CNCF not ruled out | Unlikely given CRI/systemd coupling, but relicensing remains possible |

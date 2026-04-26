@@ -52,7 +52,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "AdmissionFailed", reason)
 		}
 
-		return fmt.Errorf("pod admission: %s", reason)
+		return fmt.Errorf("Pod admission: %s", reason)
 	}
 
 	uid := string(pod.UID)

@@ -320,6 +320,14 @@ A Pawn is a virtual Kubernetes node that multiplexes a single physical server. W
 
 Periapsis is licensed under BSL 1.1, see [LICENSE](LICENSE).
 On 2030-04-27, it will transition to GPL-3.0.
+What this means in practice:
+
+Individual users, homelab enthusiasts, researchers, and internal company deployments can freely read, fork, modify, and run the code in production.
+The license restricts offering Periapsis (or a substantially modified version) as a commercial hosted or managed service to third parties during the BSL period.
+
+If you plan to build a commercial managed Kubernetes/edge platform on top of Periapsis and want to avoid the BSL obligations, please contact me to discuss a commercial license.
+
+---
 
 It incorporates a fork of virtual-kubelet by the VK authors (Apache 2.0).
 See [NOTICES](NOTICES) for full third-party attribution.

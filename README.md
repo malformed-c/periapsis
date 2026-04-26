@@ -141,7 +141,7 @@ Full results: [docs/show-off.md](docs/show-off.md)
 - **Management:** `apsis` CLI for introspection.
 
 ### ⚠️ What is in Progress/Unsupported
-- **Dynamic Node Sizing**: Not implemented. Currently, Periapsis supports only **Static Pawn Provisioning**, where Pawn capacity and limits are manually defined in the daemon configuration by the admin.
+- **Dynamic Node Sizing**: Not implemented. Currently, Periapsis supports only **Static Pawn Provisioning**, where Pawn capacity and limits are manually defined in the daemon configuration by the operator.
 - **OOM Eviction** Not yet implemented
 - **PersistentVolumeClaims:** Local-path and SeaweedFS work; others untested.
 - **SecurityContext**: unprivileged pods work; Partial coverage; not all fields map to `nspawn`

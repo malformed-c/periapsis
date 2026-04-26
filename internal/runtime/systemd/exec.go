@@ -6,6 +6,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
@@ -36,9 +37,14 @@ func (s *SystemdRuntime) runInContainerNsenter(
 		// Program-mode (hostPID) containers don't register with machined.
 		// Use chroot into the unit's RootDirectory instead of nsenter - simpler
 		// and avoids trying to enter namespaces that are shared with the host.
+		slog.Debug("runInContainerNsenter: getMachineLeaderPID failed, falling back to program mode",
+			"machine", machineName, "err", err)
 		unitName := wrapperUnitName(s.pawnName, podUID, containerName)
 		return s.runInProgramContainer(ctx, unitName, cmd, attach)
 	}
+
+	slog.Debug("runInContainerNsenter: got leader PID, entering namespaces",
+		"machine", machineName, "pid", pid, "cmd", cmd)
 
 	args := []string{
 		fmt.Sprintf("--target=%d", pid),
@@ -53,10 +59,16 @@ func (s *SystemdRuntime) runInContainerNsenter(
 	execCmd := exec.CommandContext(ctx, "nsenter", args...)
 
 	if attach.TTY() {
-		return wrapExitError(runWithPTY(ctx, execCmd, attach))
+		err = wrapExitError(runWithPTY(ctx, execCmd, attach))
+	} else {
+		wireAttach(execCmd, attach)
+		err = wrapExitError(execCmd.Run())
 	}
-	wireAttach(execCmd, attach)
-	return wrapExitError(execCmd.Run())
+	if err != nil {
+		slog.Debug("runInContainerNsenter: nsenter exited with error",
+			"machine", machineName, "pid", pid, "err", err)
+	}
+	return err
 }
 
 // runInContainerMachinectl uses `machinectl shell` to execute inside the container.

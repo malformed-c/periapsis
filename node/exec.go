@@ -69,10 +69,22 @@ func (g *Gambit) RunInContainer(
 ) error {
 	uid, err := g.findPodUID(namespace, podName)
 	if err != nil {
+		g.Logger.Error("RunInContainer: pod not found",
+			"namespace", namespace, "pod", podName, "container", containerName, "err", err)
 		return err
 	}
 
-	return g.Runtime.RunInContainer(ctx, uid, containerName, cmd, attach)
+	g.Logger.Debug("RunInContainer: enter",
+		"namespace", namespace, "pod", podName, "uid", uid,
+		"container", containerName, "cmd", cmd)
+
+	err = g.Runtime.RunInContainer(ctx, uid, containerName, cmd, attach)
+	if err != nil {
+		g.Logger.Error("RunInContainer: failed",
+			"namespace", namespace, "pod", podName, "uid", uid,
+			"container", containerName, "cmd", cmd, "err", err)
+	}
+	return err
 }
 
 func (g *Gambit) findPodUID(namespace, podName string) (string, error) {

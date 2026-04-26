@@ -161,6 +161,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		if netNSPath == "" {
 			netNSPath = "/proc/1/ns/net"
 		}
+
 	} else if netNSPath == "" {
 		return fmt.Errorf("NetNSPath is required for machine %s", podUID)
 	}
@@ -275,6 +276,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		arg := bm.HostPath + ":" + bm.ContainerPath
 		if bm.ReadOnly {
 			execStart = append(execStart, "--bind-ro="+arg)
+
 		} else {
 			execStart = append(execStart, "--bind="+arg)
 		}

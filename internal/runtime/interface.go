@@ -168,7 +168,10 @@ type PodConfig struct {
 	// Resource limits from container.Resources.Limits.
 	// Applied as systemd cgroup properties (MemoryMax, CPUQuotaPerSecUSec).
 	MemoryLimitBytes uint64 // 0 = no limit
-	CPULimitMillis   int64  // 0 = no limit (millicores, e.g. 500 = 0.5 CPU)
+	SwapLimitBytes   uint64 // 0 = no limit
+
+	CPULimitMillis int64 // 0 = no limit (millicores, e.g. 500 = 0.5 CPU)
+
 	// Resource request from container.Resources.Requests.
 	// Converted to systemd CPUWeight to mirror Kubernetes relative CPU shares.
 	CPURequestMillis int64 // 0 = no request

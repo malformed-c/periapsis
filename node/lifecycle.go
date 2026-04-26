@@ -29,6 +29,7 @@ type pullCacheEntry struct {
 
 type containerRuntimeProfile struct {
 	MemoryLimitBytes uint64
+	SwapLimitBytes   uint64
 	CPULimitMillis   int64
 	CPURequestMillis int64
 	RunAsUser        *int64
@@ -424,6 +425,7 @@ func (g *Gambit) launchContainer(
 		Environment:                   resolvedEnv,
 		PodIP:                         podIP,
 		MemoryLimitBytes:              profile.MemoryLimitBytes,
+		SwapLimitBytes:                profile.SwapLimitBytes,
 		CPULimitMillis:                profile.CPULimitMillis,
 		CPURequestMillis:              profile.CPURequestMillis,
 		ImageEntrypoint:               ep,
@@ -630,12 +632,18 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	}
 }
 
-// Helpers ---
+// --- Helpers ---
 
-func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint64, cpuLimitMillis int64, cpuRequestMillis int64) {
+// TODO: Return x2 of memory for now
+func calculateSwap(memBytes uint64) (swapBytes uint64) {
+	return memBytes * 2
+}
+
+func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swapBytes uint64, cpuLimitMillis, cpuRequestMillis int64) {
 	if c.Resources.Limits != nil {
 		if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
 			memBytes = uint64(mem.Value())
+			swapBytes = calculateSwap(memBytes)
 		}
 		if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
 			cpuLimitMillis = cpu.MilliValue()
@@ -655,6 +663,7 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint6
 		if memBytes == 0 {
 			if mem, ok := pod.Spec.Resources.Limits[corev1.ResourceMemory]; ok {
 				memBytes = uint64(mem.Value())
+				swapBytes = calculateSwap(memBytes)
 			}
 		}
 		if cpuLimitMillis == 0 {
@@ -662,6 +671,7 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes uint6
 				cpuLimitMillis = cpu.MilliValue()
 			}
 		}
+
 		if cpuRequestMillis == 0 {
 			if cpu, ok := pod.Spec.Resources.Requests[corev1.ResourceCPU]; ok {
 				cpuRequestMillis = cpu.MilliValue()
@@ -676,10 +686,11 @@ func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeP
 	profiles := make(map[string]containerRuntimeProfile, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
 	for i := range pod.Spec.InitContainers {
 		c := &pod.Spec.InitContainers[i]
-		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		memLimit, swapLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
 		runAsUser, runAsGroup := effectiveRunAs(pod, c)
 		profiles[c.Name] = containerRuntimeProfile{
 			MemoryLimitBytes: memLimit,
+			SwapLimitBytes:   swapLimit,
 			CPULimitMillis:   cpuLimit,
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,
@@ -688,10 +699,11 @@ func buildContainerRuntimeProfiles(pod *corev1.Pod) map[string]containerRuntimeP
 	}
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
-		memLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
+		memLimit, swapLimit, cpuLimit, cpuRequest := extractResourceLimits(pod, c)
 		runAsUser, runAsGroup := effectiveRunAs(pod, c)
 		profiles[c.Name] = containerRuntimeProfile{
 			MemoryLimitBytes: memLimit,
+			SwapLimitBytes:   swapLimit,
 			CPULimitMillis:   cpuLimit,
 			CPURequestMillis: cpuRequest,
 			RunAsUser:        runAsUser,

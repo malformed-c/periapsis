@@ -19,6 +19,7 @@ import (
 func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
 	res := &cgroup2.Resources{}
 
+	// CPU
 	var cpu cgroup2.CPU
 	hasCPU := false
 	if w := cgroup.MilliCPUToCPUWeight(cfg.CPURequestMillis); w > 0 {
@@ -33,9 +34,21 @@ func buildPodResources(cfg runtime.PodConfig) *cgroup2.Resources {
 		res.CPU = &cpu
 	}
 
+	// Memory and Swap
+	var mem cgroup2.Memory
+	hasMem := false
 	if cfg.MemoryLimitBytes > 0 {
 		memMax := int64(cfg.MemoryLimitBytes)
-		res.Memory = &cgroup2.Memory{Max: &memMax}
+		mem.Max = &memMax
+		hasMem = true
+	}
+	if cfg.SwapLimitBytes > 0 {
+		swapMax := int64(cfg.SwapLimitBytes)
+		mem.Swap = &swapMax
+		hasMem = true
+	}
+	if hasMem {
+		res.Memory = &mem
 	}
 
 	return res

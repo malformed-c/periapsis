@@ -522,6 +522,8 @@ func (g *Gambit) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	uid := string(pod.UID)
 	g.Logger.Info("DeletePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "name", pod.Name)
 
+	// Mark deleting immediately - this needs to happen synchronously
+	// for concurrency control (prevents new CreatePod from starting).
 	g.store.MarkDeleting(uid)
 	g.cancelInFlight(uid) // Stops any currently running CreatePod reconcile loop
 

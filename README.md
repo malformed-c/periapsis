@@ -173,6 +173,7 @@ That being said, Periapsis supports **coexistance** with standard kubelet (or k3
 - Go 1.26+ (to build)
 
 Optional: Constellation CNI for cross-host pod networking and multi-pawn isolation. Without it, pods use veth bridges on the host network namespace - single-pawn deployments only.
+Optional: Kernel arg `swapaccount=1` for swap enforcement
 
 ---
 

@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -115,6 +116,19 @@ func HandleContainerExec(h ContainerExecHandlerFunc, opts ...ContainerExecHandle
 		// Use req.Context() so exec sessions are cancelled when the client disconnects.
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
+
+		slog.Debug("exec: stream negotiation",
+			"pod", pod, "container", container,
+			"cmd", command,
+			"protocols", supportedStreamProtocols,
+			"stdin", streamOpts.Stdin,
+			"stdout", streamOpts.Stdout,
+			"stderr", streamOpts.Stderr,
+			"tty", streamOpts.TTY,
+			"upgrade", req.Header.Get("Upgrade"),
+			"connection", req.Header.Get("Connection"),
+			"proto", req.Proto,
+		)
 
 		exec := &containerExecContext{ctx: ctx, h: h, pod: pod, namespace: namespace, container: container}
 		remotecommand.ServeExec(

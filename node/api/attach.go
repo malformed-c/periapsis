@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/malformed-c/periapsis/errdefs"
 	"k8s.io/apimachinery/pkg/types"
+	remoteconstants "k8s.io/apimachinery/pkg/util/remotecommand"
 	remoteutils "k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubelet/pkg/cri/streaming/remotecommand"
 )
@@ -59,7 +61,7 @@ func HandleContainerAttach(h ContainerAttachHandlerFunc, opts ...ContainerExecHa
 		pod := vars["pod"]
 		container := vars["container"]
 
-		supportedStreamProtocols := strings.Split(req.Header.Get("X-Stream-Protocol-Version"), ",")
+		clientSupportedStreamProtocols := strings.Split(req.Header.Get("X-Stream-Protocol-Version"), ",")
 
 		streamOpts, err := getExecOptions(req)
 		if err != nil {
@@ -68,6 +70,18 @@ func HandleContainerAttach(h ContainerAttachHandlerFunc, opts ...ContainerExecHa
 
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
+
+		slog.Debug("exec: stream negotiation",
+			"pod", pod, "container", container,
+			"protocols", clientSupportedStreamProtocols,
+			"stdin", streamOpts.Stdin,
+			"stdout", streamOpts.Stdout,
+			"stderr", streamOpts.Stderr,
+			"tty", streamOpts.TTY,
+			"upgrade", req.Header.Get("Upgrade"),
+			"connection", req.Header.Get("Connection"),
+			"proto", req.Proto,
+		)
 
 		attach := &containerAttachContext{
 			ctx:       ctx,
@@ -87,7 +101,7 @@ func HandleContainerAttach(h ContainerAttachHandlerFunc, opts ...ContainerExecHa
 			streamOpts,
 			cfg.StreamIdleTimeout,
 			cfg.StreamCreationTimeout,
-			supportedStreamProtocols,
+			remoteconstants.SupportedStreamingProtocols,
 		)
 
 		return nil

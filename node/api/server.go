@@ -41,8 +41,10 @@ type PodHandlerConfig struct { //nolint:golint
 	AttachContainer  ContainerAttachHandlerFunc
 	PortForward      PortForwardHandlerFunc
 	GetContainerLogs ContainerLogsHandlerFunc
+
 	// GetPods is meant to enumerate the pods that the provider knows about
 	GetPods PodListerFunc
+
 	// GetPodsFromKubernetes is meant to enumerate the pods that the node is meant to be running
 	GetPodsFromKubernetes PodListerFunc
 	GetStatsSummary       PodStatsSummaryHandlerFunc

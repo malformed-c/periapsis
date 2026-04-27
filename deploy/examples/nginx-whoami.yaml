@@ -197,10 +197,7 @@ spec:
         command:
         - /bin/sh
         - -c
-        - |
-          rm -f /var/log/nginx/error.log /var/log/nginx/access.log
-          touch /var/log/nginx/error.log /var/log/nginx/access.log
-          exec nginx -c /config/nginx.conf -g 'daemon off;'
+        - exec nginx -c /config/nginx.conf -g 'daemon off;'
 
         volumeMounts:
         - name: www

@@ -142,7 +142,14 @@ type PodConfig struct {
 	PawnName string // determines parent cgroup slice
 
 	// Filesystem
-	RootFS string // absolute path to the overlayfs merged dir
+	// TODO(overlay-refactor): Replace RootFS with LayerPaths once --overlay=
+	// is the primary nspawn path. prepareUserIdentity and ensureGetentShim
+	// writes should become --bind= entries of host-side generated temp files
+	// rather than writes into the merged rootfs dir.
+	// Related: program.go RootDirectory should use RootDirectory= only for
+	// the DDI/erofs path; nspawn path should use --overlay= exclusively.
+	RootFS     string   // absolute path to the overlayfs merged dir
+	LayerPaths []string // ordered image layer paths (bottom→top); when set, nspawn uses --overlay= instead of --directory=
 
 	// Bind mounts: resolved from pod Volumes + container VolumeMounts.
 	BindMounts []BindMount

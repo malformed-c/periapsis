@@ -387,6 +387,9 @@ func (g *Gambit) launchContainer(
 	}
 
 	// 2. Mount Overlay
+	// TODO(overlay-refactor): Pass layers directly as LayerPaths to PodConfig
+	// and remove the manual Mount() call once prepareUserIdentity is converted
+	// to --bind= temp files and --volatile=overlay is proven stable in prod.
 	rootfs, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
 	if err != nil {
 		return fmt.Errorf("mount: %w", err)
@@ -418,6 +421,9 @@ func (g *Gambit) launchContainer(
 		Container:                     c,
 		PawnName:                      g.Config.Name,
 		RootFS:                        rootfs,
+		// TODO(overlay-refactor): Set LayerPaths: layers here once --overlay=
+		// is the primary path. At that point remove RootFS assignment above.
+		// LayerPaths: layers,
 		BindMounts:                    bindMounts,
 		NetNSPath:                     netPath,
 		HostNetwork:                   pod.Spec.HostNetwork,

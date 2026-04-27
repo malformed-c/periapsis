@@ -1017,6 +1017,11 @@ func commitLayer(tmpPath, destPath string) (string, error) {
 // Mount creates an overlayfs for a pod using the given ordered layer paths.
 // Returns the absolute path to the merged directory (the container's rootfs view).
 //
+// TODO(overlay-refactor): When nspawn --overlay= is the primary path, this
+// manual unix.Mount call and the upper/work dir management can be removed.
+// Mount() would then just return the layer paths for PodConfig.LayerPaths,
+// and Unmount() only cleans up pre-start bind mount temp files.
+//
 // Layout under <baseDir>/pods/<podUID>/:
 //
 //	rootfs/  - merged (container's view)

@@ -206,12 +206,34 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		// calling unit's cgroup rather than creating a new scope, so nspawn
 		// ignores --slice= (and warns about it). The slice is already set on
 		// the transient unit itself via dbus.PropSlice - that's what matters.
-		"--directory=" + cfg.RootFS,
 		"--network-namespace-path=" + netNSPath,
 		// Do not let nspawn bind-mount the host /etc/resolv.conf into the
 		// container - we write our own cluster-DNS resolv.conf into the
 		// overlayfs before starting, and nspawn's default would overwrite it.
 		"--resolv-conf=off",
+	}
+
+	// Filesystem: use --overlay= when LayerPaths are provided so nspawn
+	// constructs and owns the overlay mount (upper/work dirs managed by
+	// nspawn internally, torn down on unit stop). Fall back to --directory=
+	// for the old path.
+	//
+	// TODO(overlay-refactor): Once --overlay= is stable and prepareUserIdentity
+	// is converted to --bind= temp files, remove the --directory= path entirely
+	// along with ImageManager.Mount() / Unmount() manual unix.Mount calls.
+	if len(cfg.LayerPaths) > 0 {
+		// nspawn --overlay= format: lower1:lower2:...:target
+		// target is the mountpoint inside the container (always /)
+		// Layers are bottom→top in LayerPaths; nspawn expects the same order.
+		parts := make([]string, 0, len(cfg.LayerPaths)+1)
+		parts = append(parts, cfg.LayerPaths...)
+		parts = append(parts, "/")
+		execStart = append(execStart, "--overlay="+strings.Join(parts, ":"))
+		// Volatile=overlay gives a tmpfs-backed upper layer — no host-side
+		// upper/work dirs to manage. nspawn cleans them up on container stop.
+		execStart = append(execStart, "--volatile=overlay")
+	} else {
+		execStart = append(execStart, "--directory="+cfg.RootFS)
 	}
 
 	// Privileged containers get all capabilities - required for workloads
@@ -221,6 +243,10 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	}
 	// User identity setup (ADR-0010). Inject passwd/group entries for the
 	// target UID/GID so nspawn's --user= can resolve them.
+	// TODO(overlay-refactor): prepareUserIdentity writes /etc/passwd + /etc/group
+	// into the merged rootfs, which breaks when LayerPaths are used (no merged dir).
+	// Replace with: generate temp files on host, add --bind-ro= entries to execStart.
+	// Then this call and cfg.RootFS dependency can be removed from RunMachine.
 	prepareUserIdentity(cfg.RootFS, cfg.RunAsUser, cfg.RunAsGroup, s.logger)
 
 	// Userns shim: create a user namespace INSIDE the container after nspawn

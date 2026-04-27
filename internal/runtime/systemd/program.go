@@ -130,6 +130,9 @@ func (s *SystemdRuntime) runProgram(ctx context.Context, podUID string, cfg runt
 		{Name: "KillMode", Value: dbusv5.MakeVariant("mixed")},
 		// RootDirectory performs a chroot into the container image rootfs.
 		// systemd creates a private mount namespace automatically when this is set.
+		// TODO(overlay-refactor): For the DDI/erofs path, replace with RootImage=.
+		// For the nspawn path this property is unused (nspawn uses --overlay=).
+		// Remove cfg.RootFS dependency from program.go once both paths are migrated.
 		{Name: "RootDirectory", Value: dbusv5.MakeVariant(cfg.RootFS)},
 		// Enable MountAPIVFS only when the pod mounts /proc, /sys, or /dev -
 		// this ensures the directories exist in the chroot before BindPaths

@@ -221,6 +221,10 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if cfg.MStackPath != "" {
 		execStart = append(execStart, "--mstack="+cfg.MStackPath)
 
+		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
+		// Without this, the rootfs is read-only and containers cannot write.
+		execStart = append(execStart, "--volatile=overlay")
+
 	} else {
 		execStart = append(execStart, "--directory="+cfg.RootFS)
 	}
@@ -248,6 +252,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 					os.RemoveAll(bindTmpDir)
 
 					return
+
 				case <-time.After(2 * time.Second):
 				}
 
@@ -258,6 +263,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 					return
 				}
+
 				state, _ := prop.Value.Value().(string)
 				if state != "active" && state != "activating" && state != "deactivating" {
 					os.RemoveAll(bindTmpDir)

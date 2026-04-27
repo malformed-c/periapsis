@@ -3,6 +3,8 @@
 **Status:** Accepted  
 **Date:** 2026-04-12  
 
+Related: https://github.com/systemd/systemd/issues/38054
+
 ---
 
 ## Summary

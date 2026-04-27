@@ -511,14 +511,11 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				hasAnyDue := false
 				if c.StartupProbe != nil && isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
 					hasAnyDue = true
-
 				} else if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
 					hasAnyDue = true
-
 				} else if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
 					hasAnyDue = true
 				}
-
 				if !hasAnyDue {
 					continue
 				}

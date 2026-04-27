@@ -126,6 +126,10 @@ func entryExists(path, value string, fieldIdx int) bool {
 
 // prepareUserIdentity injects passwd/group entries and creates a home directory
 // for the target UID/GID before container start. Called from both runtime paths.
+//
+// TODO(overlay-refactor): Remove once prepareBindFiles is the sole code path.
+// This function writes into the overlay rootfs which doesn't exist when using
+// --overlay= with LayerPaths. prepareBindFiles replaces it with --bind-ro= mounts.
 func prepareUserIdentity(rootfs string, runAsUser, runAsGroup *int64, logger *slog.Logger) {
 	if runAsUser == nil {
 		return

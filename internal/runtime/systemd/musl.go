@@ -76,6 +76,9 @@ func installGetentShim(rootfs string, logger *slog.Logger) error {
 // shim if needed. This must be called before nspawn starts with --user= on
 // non-root UIDs, because musl's getent lacks initgroups support which nspawn
 // requires for user resolution.
+//
+// TODO(overlay-refactor): Remove once prepareBindFiles is the sole code path.
+// The shim is now written to a host tmpdir and bind-mounted via writeGetentShim.
 func ensureGetentShim(rootfs string, logger *slog.Logger) {
 	if !isMuslRootFS(rootfs) {
 		return

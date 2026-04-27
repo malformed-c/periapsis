@@ -213,41 +213,49 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"--resolv-conf=off",
 	}
 
-	// Filesystem: use --overlay= when LayerPaths are provided so nspawn
-	// constructs and owns the overlay mount (upper/work dirs managed by
-	// nspawn internally, torn down on unit stop). Fall back to --directory=
-	// for the old path.
-	//
-	// TODO(overlay-refactor): Once --overlay= is stable and prepareUserIdentity
-	// is converted to --bind= temp files, remove the --directory= path entirely
-	// along with ImageManager.Mount() / Unmount() manual unix.Mount calls.
+	// Filesystem: use --overlay= when LayerPaths are provided (new path).
+	// Fall back to --directory= for existing deployments (old path).
 	if len(cfg.LayerPaths) > 0 {
-		// nspawn --overlay= format: lower1:lower2:...:target
-		// target is the mountpoint inside the container (always /)
+		// nspawn --overlay= format: lower1:lower2:...:target (always /)
 		// Layers are bottom→top in LayerPaths; nspawn expects the same order.
 		parts := make([]string, 0, len(cfg.LayerPaths)+1)
 		parts = append(parts, cfg.LayerPaths...)
 		parts = append(parts, "/")
 		execStart = append(execStart, "--overlay="+strings.Join(parts, ":"))
-		// Volatile=overlay gives a tmpfs-backed upper layer — no host-side
-		// upper/work dirs to manage. nspawn cleans them up on container stop.
+		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
+		// No host-side upper/work dirs to create or clean up.
 		execStart = append(execStart, "--volatile=overlay")
 	} else {
 		execStart = append(execStart, "--directory="+cfg.RootFS)
 	}
+
+	// Generate host-side bind files (resolv.conf, passwd, group, getent shim).
+	// These are bind-mounted read-only into the container instead of being
+	// written into the overlay rootfs. Works for both --directory= and
+	// --overlay= paths since no merged rootfs needs to exist at prep time.
+	extraMounts, bindTmpDir, err := prepareBindFiles(cfg, s.logger)
+	if err != nil {
+		return fmt.Errorf("prepareBindFiles: %w", err)
+	}
+	if bindTmpDir != "" {
+		// Ensure the tmpdir is cleaned up after the container stops.
+		// We use a goroutine that waits for the unit to exit rather than
+		// a defer, since RunMachine returns before the container stops.
+		go func() {
+			unitName := wrapperUnitName(cfg.PawnName, podUID, containerName)
+			ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			_, _ = s.conn.GetUnitPropertyContext(ctx2, unitName, "ActiveState")
+			os.RemoveAll(bindTmpDir)
+		}()
+	}
+	cfg.BindMounts = append(cfg.BindMounts, extraMounts...)
 
 	// Privileged containers get all capabilities - required for workloads
 	// that load BPF programs, manipulate network interfaces, etc.
 	if cfg.Privileged {
 		execStart = append(execStart, "--capability=all")
 	}
-	// User identity setup (ADR-0010). Inject passwd/group entries for the
-	// target UID/GID so nspawn's --user= can resolve them.
-	// TODO(overlay-refactor): prepareUserIdentity writes /etc/passwd + /etc/group
-	// into the merged rootfs, which breaks when LayerPaths are used (no merged dir).
-	// Replace with: generate temp files on host, add --bind-ro= entries to execStart.
-	// Then this call and cfg.RootFS dependency can be removed from RunMachine.
-	prepareUserIdentity(cfg.RootFS, cfg.RunAsUser, cfg.RunAsGroup, s.logger)
 
 	// Userns shim: create a user namespace INSIDE the container after nspawn
 	// has joined the CNI netns. This avoids the --private-users +
@@ -275,9 +283,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	if !useUserNS && cfg.RunAsUser != nil {
 		// Fallback: use nspawn's --user= (no userns isolation).
-		if *cfg.RunAsUser != 0 {
-			ensureGetentShim(cfg.RootFS, s.logger)
-		}
+		// getent shim is now installed via prepareBindFiles --bind-ro=.
 		execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
 	}
 

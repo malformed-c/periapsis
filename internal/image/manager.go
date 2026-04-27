@@ -1108,6 +1108,12 @@ func (im *ImageManager) ensureOSRelease(merged string) error {
 }
 
 // Unmount lazily unmounts the overlayfs and removes the pod's workspace directory.
+//
+// TODO(overlay-refactor): Remove once --overlay= is the sole path.
+// With --volatile=overlay + nspawn --overlay=, nspawn tears down the overlay on
+// container stop. The only remaining cleanup is the layer cache and tmpdir from
+// prepareBindFiles (handled by the goroutine in RunMachine). This function and
+// the upper/work dir management below can then be deleted entirely.
 func (im *ImageManager) Unmount(podUID string) error {
 	base, err := filepath.Abs(filepath.Join(im.baseDir, "pods", podUID))
 	if err != nil {

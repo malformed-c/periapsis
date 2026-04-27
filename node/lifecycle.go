@@ -386,11 +386,15 @@ func (g *Gambit) launchContainer(
 		// }
 	}
 
-	// 2. Mount Overlay
-	// TODO(overlay-refactor): Pass layers directly as LayerPaths to PodConfig
-	// and remove the manual Mount() call once prepareUserIdentity is converted
-	// to --bind= temp files and --volatile=overlay is proven stable in prod.
-	rootfs, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
+	// 2. Mount Overlay — now uses nspawn --overlay= + --volatile=overlay.
+	// LayerPaths are passed directly to PodConfig so nspawn constructs and
+	// owns the overlay. No host-side merged rootfs dir is created.
+	//
+	// TODO(overlay-refactor): Remove ImageManager.Mount() call entirely once
+	// --overlay= path is validated in prod. Unmount() is also no longer needed
+	// for overlay teardown (nspawn handles it); it stays only for layer cache
+	// cleanup and can be replaced with a plain RemoveAll.
+	_, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
 	if err != nil {
 		return fmt.Errorf("mount: %w", err)
 	}
@@ -406,9 +410,11 @@ func (g *Gambit) launchContainer(
 		return fmt.Errorf("volume resolution: %w", err)
 	}
 
-	if g.clusterDNS != "" {
-		_ = writeResolvConf(rootfs, g.clusterDNS, pod.Namespace)
-	}
+	// resolv.conf, passwd, group, getent shim are now generated as host-side
+	// temp files and bind-mounted by prepareBindFiles inside RunMachine.
+	// writeResolvConf into rootfs is no longer called here.
+	// TODO(overlay-refactor): Remove writeResolvConf from gambit.go once the
+	// old --directory= path is gone.
 
 	profile := runtimeProfiles[c.Name]
 	ep, cmd := g.ImageManager.ImageEntrypoint(c.Image)
@@ -420,10 +426,9 @@ func (g *Gambit) launchContainer(
 		ContainerName:                 c.Name,
 		Container:                     c,
 		PawnName:                      g.Config.Name,
-		RootFS:                        rootfs,
-		// TODO(overlay-refactor): Set LayerPaths: layers here once --overlay=
-		// is the primary path. At that point remove RootFS assignment above.
-		// LayerPaths: layers,
+		RootFS:                        "", // TODO(overlay-refactor): Remove once --directory= path is gone.
+		LayerPaths:                    layers,
+		ClusterDNS:                    g.clusterDNS,
 		BindMounts:                    bindMounts,
 		NetNSPath:                     netPath,
 		HostNetwork:                   pod.Spec.HostNetwork,

@@ -157,6 +157,9 @@ type PodConfig struct {
 	// Networking
 	NetNSPath   string // absolute path to /var/run/netns/<uid>
 	HostNetwork bool   // when true, join the host network namespace
+	// ClusterDNS is the cluster DNS server IP injected into resolv.conf via
+	// --bind-ro= rather than written into the overlay rootfs.
+	ClusterDNS string
 
 	// Security
 	Privileged bool // when true, grant all capabilities (--capability=all)

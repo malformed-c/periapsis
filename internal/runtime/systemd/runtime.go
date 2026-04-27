@@ -216,23 +216,10 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	rootFSPath := "" // Track the path to use as the positional argument
 
-	// Filesystem: use --overlay= when LayerPaths are provided (new path).
+	// Filesystem: use mstack when it's provided (new path).
 	// Fall back to --directory= for existing deployments (old path).
-	if len(cfg.LayerPaths) > 0 {
-		// nspawn --overlay= format: lower1:lower2:...:target (always /)
-		// Layers are bottom->top in LayerPaths; nspawn expects the same order.
-		parts := make([]string, 0, len(cfg.LayerPaths)+1)
-		parts = append(parts, cfg.LayerPaths...)
-		parts = append(parts, "/")
-		execStart = append(execStart, "--overlay="+strings.Join(parts, ":"))
-
-		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
-		// No host-side upper/work dirs to create or clean up.
-		execStart = append(execStart, "--volatile=overlay")
-
-		// The base image is the first layer.
-		// This is needed to bypass the /var/lib/machines check and the /usr sanity check.
-		rootFSPath = cfg.LayerPaths[0]
+	if cfg.MStackPath != "" {
+		execStart = append(execStart, "--mstack="+cfg.MStackPath)
 
 	} else {
 		execStart = append(execStart, "--directory="+cfg.RootFS)
@@ -246,13 +233,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	if err != nil {
 		return fmt.Errorf("prepareBindFiles: %w", err)
 	}
+
 	if bindTmpDir != "" {
 		// Clean up the tmpdir once the container unit has stopped.
 		// Poll until ActiveState leaves "active"/"activating" - nspawn
 		// will have torn down the --volatile=overlay by then.
 		go func() {
 			unitName := wrapperUnitName(cfg.PawnName, podUID, containerName)
-			ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			ctx2, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer cancel()
 			for {
 				select {
@@ -411,6 +399,9 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"PERIGEOS_META_IP=" + cfg.PodIP,
 		"PERIGEOS_META_CONTAINER=" + containerName,
 	}
+
+	// Temporary debug log to see the exact command being sent to systemd
+	s.logger.Info("DEBUG: Final ExecStart command", "cmd", strings.Join(execStart, " "))
 
 	properties := []dbus.Property{
 		dbus.PropDescription("Pod " + podUID),

@@ -1017,7 +1017,7 @@ func commitLayer(tmpPath, destPath string) (string, error) {
 // Mount creates an overlayfs for a pod using the given ordered layer paths.
 // Returns the absolute path to the merged directory (the container's rootfs view).
 //
-// TODO(overlay-refactor): When nspawn --overlay= is the primary path, this
+// TODO(overlay-refactor): When mstack is the primary path, this
 // manual unix.Mount call and the upper/work dir management can be removed.
 // Mount() would then just return the layer paths for PodConfig.LayerPaths,
 // and Unmount() only cleans up pre-start bind mount temp files.
@@ -1155,4 +1155,56 @@ func (im *ImageManager) Unmount(podUID string) error {
 	}
 
 	return rmErr
+}
+
+// --- MStack Management ---
+
+// PrepareMStack creates a .mstack directory for a specific container.
+// It assembles the root filesystem hierarchy by creating symlinks to the
+// provided layers, ordered as layer@0 (bottom) to layer@N (top).
+func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string) (string, error) {
+	// 1. Use baseDir to keep paths consistent with the rest of the manager.
+	stacksBase := filepath.Join(im.baseDir, "stacks")
+
+	// 2. Path MUST be per-container to support pods with multiple images.
+	// Result: <baseDir>/stacks/<podUID>-<cName>.mstack
+	mstackName := fmt.Sprintf("%s-%s.mstack", podUID, cName)
+	mstackDir := filepath.Join(stacksBase, mstackName)
+
+	// 3. Idempotency: Clean up any existing stack from a previous attempt.
+	if err := os.RemoveAll(mstackDir); err != nil {
+		return "", fmt.Errorf("failed to clean existing mstack: %w", err)
+	}
+
+	if err := os.MkdirAll(mstackDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create mstack dir: %w", err)
+	}
+
+	// 4. Create the layer stack.
+	// systemd-nspawn sorts these numerically: layer@0 is the bottom-most.
+	for i, layerPath := range layers {
+		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
+
+		if err := os.Symlink(layerPath, linkName); err != nil {
+			// Cleanup on failure to avoid leaving partial stacks
+			_ = os.RemoveAll(mstackDir)
+
+			return "", fmt.Errorf("failed to link layer %d (%s): %w", i, layerPath, err)
+		}
+	}
+
+	// Return absolute path for the --mstack= flag
+	return filepath.Abs(mstackDir)
+}
+
+// RemoveMStack deletes the .mstack directory for a specific container.
+func (im *ImageManager) RemoveMStack(podUID, cName string) error {
+	mstackName := fmt.Sprintf("%s-%s.mstack", podUID, cName)
+	mstackDir := filepath.Join(im.baseDir, "stacks", mstackName)
+
+	if err := os.RemoveAll(mstackDir); err != nil {
+		return fmt.Errorf("failed to remove mstack %s: %w", mstackName, err)
+	}
+
+	return nil
 }

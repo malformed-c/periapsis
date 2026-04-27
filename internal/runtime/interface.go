@@ -149,8 +149,8 @@ type PodConfig struct {
 	// rather than writes into the merged rootfs dir.
 	// Related: program.go RootDirectory should use RootDirectory= only for
 	// the DDI/erofs path; nspawn path should use --overlay= exclusively.
-	RootFS     string   // absolute path to the overlayfs merged dir
-	LayerPaths []string // ordered image layer paths (bottom->top); when set, nspawn uses --overlay= instead of --directory=
+	RootFS     string // absolute path to the overlayfs merged dir
+	MStackPath string // ordered image layer paths (bottom->top); when set, nspawn uses --overlay= instead of --directory=
 
 	// Bind mounts: resolved from pod Volumes + container VolumeMounts.
 	BindMounts []BindMount

@@ -13,8 +13,7 @@ metadata:
 
 data:
   nginx.conf: |
-    # worker_processes auto lets nginx use available CPUs up to the CPU limit.
-    worker_processes auto;
+    worker_processes 1;
     error_log /tmp/nginx-error.log warn;
     pid /tmp/nginx.pid;
 

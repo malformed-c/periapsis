@@ -317,12 +317,19 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
 		// Unmount the container filesystem and remove the overlay dir.
-		overlayName := uid + "-" + c.Name
-		_ = g.ImageManager.Unmount(overlayName)
-		overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
-		if err := os.RemoveAll(overlayDir); err != nil {
-			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
+		// overlayName := uid + "-" + c.Name
+
+		// _ = g.ImageManager.Unmount(overlayName)
+
+		// Clean up the mount stack directory.
+		if err := g.ImageManager.RemoveMStack(uid, c.Name); err != nil {
+			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
 		}
+
+		// overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
+		// if err := os.RemoveAll(overlayDir); err != nil {
+		// 	g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
+		// }
 
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", c.Name)
 	}
@@ -385,17 +392,23 @@ func (g *Gambit) launchContainer(
 		// }
 	}
 
-	// 2. Mount Overlay - now uses nspawn --overlay= + --volatile=overlay.
-	// LayerPaths are passed directly to PodConfig so nspawn constructs and
-	// owns the overlay. No host-side merged rootfs dir is created.
+	// 2. RootFS - now uses mstack + nspawn --volatile=overlay.
 	//
 	// TODO(overlay-refactor): Remove ImageManager.Mount() call entirely once
-	// --overlay= path is validated in prod. Unmount() is also no longer needed
+	// mstack path is validated in prod. Unmount() is also no longer needed
 	// for overlay teardown (nspawn handles it); it stays only for layer cache
 	// cleanup and can be replaced with a plain RemoveAll.
-	_, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
+	// _, err := g.ImageManager.Mount(uid+"-"+c.Name, layers)
+	// if err != nil {
+	// 	return fmt.Errorf("mount: %w", err)
+	// }
+
+	// 2.1. Prepare Mount Stack
+	// We create a .mstack directory containing symlinks to the image layers.
+	// This allows systemd-nspawn to assemble the root filesystem natively.
+	mstackPath, err := g.ImageManager.PrepareMStack(uid, c.Name, layers)
 	if err != nil {
-		return fmt.Errorf("mount: %w", err)
+		return fmt.Errorf("prepare mstack: %w", err)
 	}
 
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted overlay for container %s", c.Name)
@@ -405,7 +418,12 @@ func (g *Gambit) launchContainer(
 	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
 	bindMounts, err := volResolver.Resolve(ctx, pod, c)
 	if err != nil {
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+		if imErr != nil {
+			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+		}
 
 		return fmt.Errorf("volume resolution: %w", err)
 	}
@@ -427,7 +445,7 @@ func (g *Gambit) launchContainer(
 		Container:                     c,
 		PawnName:                      g.Config.Name,
 		RootFS:                        "", // TODO(overlay-refactor): Remove once --directory= path is gone.
-		LayerPaths:                    layers,
+		MStackPath:                    mstackPath,
 		ClusterDNS:                    g.clusterDNS,
 		BindMounts:                    bindMounts,
 		NetNSPath:                     netPath,
@@ -467,7 +485,13 @@ func (g *Gambit) launchContainer(
 
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		// Immediately clean up the mount if systemd rejects the Run request
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+		if imErr != nil {
+			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+		}
+
 		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
@@ -477,7 +501,13 @@ func (g *Gambit) launchContainer(
 	// 5. Wait for target state
 	if isInit {
 		state, err := g.Runtime.WaitForMachineExit(ctx, uid, c.Name, initContainerTimeout)
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name) // Init containers ephemeral
+
+		// _ = g.ImageManager.Unmount(uid + "-" + c.Name) // Init containers ephemeral
+
+		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+		if imErr != nil {
+			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+		}
 
 		if err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
@@ -510,7 +540,13 @@ func (g *Gambit) launchContainer(
 		// running without shared propagation is worse than a clean retry.
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
-			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+			// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+			imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+			if imErr != nil {
+				g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+			}
 
 			return fmt.Errorf("MakeSharedMounts: %w", err)
 		}
@@ -590,7 +626,12 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// 1. Scrub previous crash state
 	_ = g.Runtime.StopMachine(ctx, uid, containerName)
 	_ = g.Runtime.ResetUnit(ctx, uid, containerName)
-	_ = g.ImageManager.Unmount(uid + "-" + containerName)
+
+	// _ = g.ImageManager.Unmount(uid + "-" + containerName)
+
+	if err := g.ImageManager.RemoveMStack(uid, containerName); err != nil {
+		g.Logger.Error(err.Error(), "uid", uid, "container", containerName)
+	}
 
 	if err := g.Runtime.CheckMachined(ctx); err != nil {
 		g.Logger.Error("Restart: machined unhealthy, skipping", "container", containerName, "err", err)

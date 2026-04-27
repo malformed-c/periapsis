@@ -238,15 +238,32 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		return fmt.Errorf("prepareBindFiles: %w", err)
 	}
 	if bindTmpDir != "" {
-		// Ensure the tmpdir is cleaned up after the container stops.
-		// We use a goroutine that waits for the unit to exit rather than
-		// a defer, since RunMachine returns before the container stops.
+		// Clean up the tmpdir once the container unit has stopped.
+		// Poll until ActiveState leaves "active"/"activating" — nspawn
+		// will have torn down the --volatile=overlay by then.
 		go func() {
 			unitName := wrapperUnitName(cfg.PawnName, podUID, containerName)
 			ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
-			_, _ = s.conn.GetUnitPropertyContext(ctx2, unitName, "ActiveState")
-			os.RemoveAll(bindTmpDir)
+			for {
+				select {
+				case <-ctx2.Done():
+					os.RemoveAll(bindTmpDir)
+					return
+				case <-time.After(2 * time.Second):
+				}
+				prop, err := s.conn.GetUnitPropertyContext(ctx2, unitName, "ActiveState")
+				if err != nil {
+					// Unit gone — safe to clean up.
+					os.RemoveAll(bindTmpDir)
+					return
+				}
+				state, _ := prop.Value.Value().(string)
+				if state != "active" && state != "activating" && state != "deactivating" {
+					os.RemoveAll(bindTmpDir)
+					return
+				}
+			}
 		}()
 	}
 	cfg.BindMounts = append(cfg.BindMounts, extraMounts...)

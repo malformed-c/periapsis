@@ -374,11 +374,14 @@ func TestUpdatePodStatusUsesKubernetesResourceVersion(t *testing.T) {
 		if !ok {
 			return false, nil, nil
 		}
+
 		updatedPod, ok := update.GetObject().(*corev1.Pod)
 		if !ok {
 			t.Fatalf("expected pod object, got %T", update.GetObject())
 		}
+
 		gotResourceVersion = updatedPod.ResourceVersion
+
 		return false, nil, nil
 	})
 
@@ -429,10 +432,12 @@ func TestUpdatePodStatusRejectsZeroResourceVersion(t *testing.T) {
 		if !ok {
 			return false, nil, nil
 		}
+
 		updatedPod, ok := update.GetObject().(*corev1.Pod)
 		if !ok {
 			return false, nil, nil
 		}
+
 		rv := updatedPod.ResourceVersion
 		if rv == "0" || rv == "" {
 			return true, nil, errors.NewInvalid(
@@ -447,6 +452,7 @@ func TestUpdatePodStatusRejectsZeroResourceVersion(t *testing.T) {
 				},
 			)
 		}
+
 		return false, nil, nil
 	})
 

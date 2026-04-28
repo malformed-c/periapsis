@@ -52,10 +52,10 @@ type SystemdRuntime struct {
 	// master is used by AttachContainer to relay stdin/stdout.
 	attachPTYs sync.Map
 
-	// bindTmpDirs holds host-side temp directories created by prepareBindFiles
-	// for each container. Key: machineName, Value: tmpdir path (string).
-	// Cleaned up in StopMachine after nspawn has torn down the container.
-	bindTmpDirs sync.Map
+	// mstackSupported is true when the host systemd version is >= 260 and
+	// systemd-nspawn supports the --mstack= flag. Detected once at construction.
+	// When false, the old --directory= + manual overlayfs path is used.
+	mstackSupported bool
 
 	// startSem limits concurrent StartTransientUnit calls to avoid
 	// overwhelming D-Bus and systemd during burst pod creation.
@@ -71,6 +71,11 @@ type SystemdRuntime struct {
 
 // Ensure compile-time interface compliance.
 var _ runtime.Runtime = (*SystemdRuntime)(nil)
+
+// MStackSupported returns true when the host systemd supports --mstack= (>= 260).
+func (s *SystemdRuntime) MStackSupported() bool {
+	return s.mstackSupported
+}
 
 // Close releases the dbus connections held by the runtime.
 func (s *SystemdRuntime) Close() {
@@ -118,6 +123,11 @@ func NewSystemdRuntime(
 
 	rt := NewSystemdRuntimeWithConns(pawnName, im, logger, execStrategy, conn, rawConn, sigConn)
 	rt.ownsSigConn = ownsSigConn
+
+	// Detect whether --mstack= is supported (systemd >= 260).
+	// GetManagerProperty returns the Version property from org.freedesktop.systemd1.Manager.
+	rt.mstackSupported = detectMStackSupport(ctx, conn, logger)
+
 	return rt, nil
 }
 
@@ -221,16 +231,22 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	rootFSPath := "" // Track the path to use as the positional argument
 
-	// Filesystem: use mstack when it's provided (new path).
-	// Fall back to --directory= for existing deployments (old path).
-	if cfg.MStackPath != "" {
+	// Filesystem: use --mstack= on systemd >= 260; fall back to --directory=
+	// with a manually constructed overlayfs rootfs on older systems.
+	if cfg.MStackPath != "" && s.mstackSupported {
 		execStart = append(execStart, "--mstack="+cfg.MStackPath)
 		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
-		// Without this, the rootfs is read-only and containers cannot write to
-		// /tmp, /var/run, /var/log, etc.
+		// Without this, the rootfs is read-only and containers cannot write.
 		execStart = append(execStart, "--volatile=overlay")
 	} else {
+		// Pre-260 fallback: --directory= with a manually constructed overlayfs
+		// rootfs. cfg.RootFS must be set by the caller for this path.
+		if cfg.RootFS == "" {
+			return fmt.Errorf("RunMachine: mstack not supported (systemd < 260) and RootFS is empty")
+		}
 		execStart = append(execStart, "--directory="+cfg.RootFS)
+		s.logger.Debug("RunMachine: using legacy --directory= path (systemd < 260)",
+			"uid", podUID, "container", containerName)
 	}
 
 	// Bind entries (resolv.conf, passwd, group, getent shim) are now written
@@ -934,6 +950,32 @@ func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, container
 	}
 
 	return strings.TrimSpace(string(data))
+}
+
+
+// detectMStackSupport returns true when the running systemd version is >= 260.
+// --mstack= was added in systemd 260. On older systems the runtime falls back
+// to --directory= with a manually constructed overlayfs rootfs.
+func detectMStackSupport(ctx context.Context, conn systemdDBus, logger *slog.Logger) bool {
+	prop, err := conn.GetManagerPropertyContext(ctx, "Version")
+	if err != nil {
+		logger.Warn("systemd version detection failed, assuming pre-260", "err", err)
+		return false
+	}
+	// Version is a quoted string variant, e.g. "\"256.6-1-arch\""
+	raw := strings.Trim(fmt.Sprintf("%v", prop), "\"")
+	// Extract the leading numeric part before any dot or dash.
+	numStr := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '.' || r == '-' || r == '~'
+	})[0]
+	var ver int
+	if _, err := fmt.Sscanf(numStr, "%d", &ver); err != nil {
+		logger.Warn("systemd version parse failed, assuming pre-260", "raw", raw, "err", err)
+		return false
+	}
+	supported := ver >= 260
+	logger.Info("systemd version detected", "version", raw, "mstackSupported", supported)
+	return supported
 }
 
 // readUnitStartTime returns the time the unit entered the active state by

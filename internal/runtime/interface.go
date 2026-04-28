@@ -16,6 +16,10 @@ import (
 
 // Runtime defines the contract for managing pod lifecycle as systemd machines.
 type Runtime interface {
+	// MStackSupported returns true when the host systemd version supports
+	// --mstack= (>= 260). When false, callers must provide RootFS in PodConfig
+	// and the runtime uses --directory= with a manually constructed overlayfs.
+	MStackSupported() bool
 	// RunMachine creates and starts a transient systemd-nspawn service for the pod.
 	RunMachine(ctx context.Context, podUID string, cfg PodConfig) error
 

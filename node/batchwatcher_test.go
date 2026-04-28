@@ -106,6 +106,7 @@ func (r *stubRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perig
 func (r *stubRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
 	return 0, nil
 }
+func (r *stubRuntime) MStackSupported() bool               { return true }
 func (r *stubRuntime) SliceActive(_ context.Context) bool { return true }
 
 func (r *stubRuntime) GetContainerExitInfo(_ context.Context, _, _ string) perigeos.ContainerExitInfo {

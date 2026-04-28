@@ -82,17 +82,8 @@ type BatchWatcher struct {
 	stateCacheMu sync.RWMutex
 	stateCache   map[string]perigeos.MachineState
 
-	// seenRunning tracks containers that have been observed in Running
-	// state at least once. Used to prevent premature terminal phase
-	// decisions: systemd units briefly pass through inactive/dead during
-	// startup, and ExecMainStatus isn't updated until after the unit
-	// settles. We only make terminal decisions for containers we've
-	// confirmed were actually running.
-	// Protected exclusively by pollMu.
-	seenRunning map[string]bool // key: uid/containerName
-
 	// pollMu serializes poll() and handleUnitEvent() to prevent concurrent
-	// access to prevStateMap, prevReady, and seenRunning.
+	// access to prevStateMap and prevReady.
 	pollMu sync.Mutex
 
 	// restarting tracks containers currently in a restart goroutine
@@ -136,12 +127,11 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		prevStateMap: make(map[string]perigeos.MachineState),
 		prevReady:    make(map[string]bool),
 		stateCache:   make(map[string]perigeos.MachineState),
-		seenRunning:  make(map[string]bool),
 		restarting:   make(map[string]bool),
 	}
 
 	// Seed seenRunning from hydrated pods - these containers were running
-	// before perigeos restarted, so the BatchWatcher must know they started
+	// before perigeos restarted, so the store must know they started
 	// even though it never observed the Running transition. Without this,
 	// containers killed by KillMode=control-group appear as Exited-never-ran
 	// and the restart/terminal logic defers forever.
@@ -150,7 +140,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		uid := string(pod.UID)
 		if deps.Store.PodPhase(uid) == corev1.PodRunning {
 			for _, c := range pod.Spec.Containers {
-				bw.seenRunning[uid+"/"+c.Name] = true
+				deps.Store.MarkContainerSeenRunning(uid, c.Name)
 			}
 		}
 	}
@@ -170,14 +160,11 @@ func (bw *BatchWatcher) Poke() {
 }
 
 // MarkRunning records that a container has been observed in Running state.
-// Called by CreatePod after the machine is started so that the BatchWatcher
+// Called by CreatePod after the machine is started so that the store
 // knows the container was running even if the D-Bus "running" event arrives
 // after the unit exits (fast-exit containers).
 func (bw *BatchWatcher) MarkRunning(uid, containerName string) {
-	key := uid + "/" + containerName
-	bw.pollMu.Lock()
-	bw.seenRunning[key] = true
-	bw.pollMu.Unlock()
+	bw.deps.Store.MarkContainerSeenRunning(uid, containerName)
 }
 
 // ContainerState returns the cached state for a container from the most recent
@@ -348,9 +335,7 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 	// Track seenRunning for BW's internal checkPod / makeStateLookup logic.
 	// (Syzygy tracks this independently via ContainerState.SeenRunning.)
 	if state == perigeos.StateRunning {
-		bw.pollMu.Lock()
-		bw.seenRunning[key] = true
-		bw.pollMu.Unlock()
+		bw.deps.Store.MarkContainerSeenRunning(uid, containerName)
 	}
 
 	// Update stateCache atomically.
@@ -667,11 +652,6 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 			delete(bw.prevReady, k)
 		}
 	}
-	for k := range bw.seenRunning {
-		if !activeKeys[k] {
-			delete(bw.seenRunning, k)
-		}
-	}
 }
 
 func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState, exitCodeMap map[string]int32) {
@@ -720,11 +700,11 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		// However, if the machine existed in ListManagedMachines with exit
 		// code 0, the unit genuinely ran and completed (e.g. a Job certgen
 		// that exits in <1s). Accept that as a successful run.
-		if !bw.seenRunning[key] && (state == perigeos.StateExited || state == perigeos.StateUnknown) {
+		if !bw.deps.Store.IsContainerSeenRunning(uid, c.Name) && (state == perigeos.StateExited || state == perigeos.StateUnknown) {
 			if exists && state == perigeos.StateExited && exitCodeMap[key] == 0 {
 				bw.logger.Debug("Fast-exit container completed successfully (never seen running but exit 0)", "pod", pod.Name, "container", c.Name)
 
-				bw.seenRunning[key] = true
+				bw.deps.Store.MarkContainerSeenRunning(uid, c.Name)
 				// Fall through to the normal switch below.
 
 			} else {
@@ -743,7 +723,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			allSucceeded = false
 
 			if state == perigeos.StateRunning {
-				bw.seenRunning[key] = true
+				bw.deps.Store.MarkContainerSeenRunning(uid, c.Name)
 			}
 
 			// Reset backoff if container has been running long enough.
@@ -1033,11 +1013,7 @@ func (bw *BatchWatcher) makeStateLookup(stateMap map[string]perigeos.MachineStat
 
 		// Container was seen running but its unit is gone and it's not
 		// being restarted - it completed.
-		// pollMu is already held by poll() (caller)
-		// Just read the map directly.
-		seen := bw.seenRunning[key]
-
-		if seen {
+		if bw.deps.Store.IsContainerSeenRunning(uid, containerName) {
 			return perigeos.StateExited
 		}
 

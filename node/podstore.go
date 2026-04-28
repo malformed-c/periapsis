@@ -43,6 +43,11 @@ type podState struct {
 	deleting bool
 	restarts map[string]*containerRestartState
 	probes   map[string]*ContainerProbeState
+
+	// seenRunning tracks containers that have been observed in Running state at
+	// least once. Owned here so that BatchWatcher doesn't need a parallel map
+	// with its own GC loop - cleanup is automatic when the pod is unregistered.
+	seenRunning map[string]bool
 }
 
 // PodStore is the single source of truth for node-level pod state.
@@ -325,6 +330,31 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 	}
 
 	return true
+}
+
+// MarkContainerSeenRunning records that a container has been observed in Running
+// state at least once. Safe to call before InitRestartState (the map is lazily
+// initialised). Idempotent.
+func (s *PodStore) MarkContainerSeenRunning(uid, containerName string) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.Lock()
+		if ps.seenRunning == nil {
+			ps.seenRunning = make(map[string]bool)
+		}
+		ps.seenRunning[containerName] = true
+		ps.mu.Unlock()
+	}
+}
+
+// IsContainerSeenRunning reports whether a container has ever been observed in
+// Running state. Returns false for unknown pods or containers.
+func (s *PodStore) IsContainerSeenRunning(uid, containerName string) bool {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.RLock()
+		defer ps.mu.RUnlock()
+		return ps.seenRunning[containerName]
+	}
+	return false
 }
 
 // --- Composite State Mutations ---

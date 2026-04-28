@@ -22,7 +22,6 @@ import (
 	"github.com/malformed-c/periapsis/internal/pki"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	pawnstats "github.com/malformed-c/periapsis/internal/stats"
-	"github.com/malformed-c/periapsis/internal/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	listersv1 "k8s.io/client-go/listers/core/v1"
@@ -227,7 +226,7 @@ func NewGambit(deps GambitDeps) *Gambit {
 	return g
 }
 
-func (g *Gambit) StartBatchWatcher(sendFact func(types.Fact) bool) {
+func (g *Gambit) StartBatchWatcher() {
 	g.batchWatcher = StartBatchWatcher(BatchWatcherDeps{
 		Store:            g.store,
 		Runtime:          g.Runtime,
@@ -240,7 +239,7 @@ func (g *Gambit) StartBatchWatcher(sendFact func(types.Fact) bool) {
 		ParseUnitName: func(unitName string) (string, string) {
 			return ParseUnitName(g.Config.Name, unitName)
 		},
-		SendFact: sendFact,
+		// SendFact: sendFact,
 	})
 
 	g.Logger.Info("BatchWatcher started and assigned to Gambit")

@@ -26,7 +26,6 @@ import (
 	"github.com/malformed-c/periapsis/errdefs"
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/control"
-	"github.com/malformed-c/periapsis/internal/horizon"
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/join"
 	"github.com/malformed-c/periapsis/internal/network"
@@ -35,7 +34,6 @@ import (
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	"github.com/malformed-c/periapsis/internal/runtime/systemd"
 	"github.com/malformed-c/periapsis/internal/server"
-	"github.com/malformed-c/periapsis/internal/syzygy"
 	"github.com/malformed-c/periapsis/internal/vklogger"
 	vklog "github.com/malformed-c/periapsis/log"
 	"github.com/malformed-c/periapsis/node"
@@ -490,37 +488,37 @@ func main() {
 			gambitsMu.Unlock()
 
 			// --- Horizon: pure k8s API executor (worker pool) ---
-			h := horizon.NewHorizon(horizon.HorizonConfig{
-				Logger:      pawnLogger,
-				Client:      kubeClient,
-				RecordEvent: horizon.EventRecorderAdapter(eventRecorder, store.GetPodCopy),
-				ResetUnit: func(ctx context.Context, uid, containerName string) {
-					_ = rt.ResetUnit(ctx, uid, containerName)
-				},
-				RestartContainer: func(ctx context.Context, uid, namespace, podName, containerName string, count int32, backoff time.Duration) {
-					pod := store.GetPodCopy(uid)
-					if pod != nil {
-						g.RestartContainerCB(ctx, uid, pod, containerName, count, backoff)
-					}
-				},
-			})
+			// h := horizon.NewHorizon(horizon.HorizonConfig{
+			// 	Logger:      pawnLogger,
+			// 	Client:      kubeClient,
+			// 	RecordEvent: horizon.EventRecorderAdapter(eventRecorder, store.GetPodCopy),
+			// 	ResetUnit: func(ctx context.Context, uid, containerName string) {
+			// 		_ = rt.ResetUnit(ctx, uid, containerName)
+			// 	},
+			// 	RestartContainer: func(ctx context.Context, uid, namespace, podName, containerName string, count int32, backoff time.Duration) {
+			// 		pod := store.GetPodCopy(uid)
+			// 		if pod != nil {
+			// 			g.RestartContainerCB(ctx, uid, pod, containerName, count, backoff)
+			// 		}
+			// 	},
+			// })
 
 			// --- Syzygy: single-goroutine state machine + effect worker pool ---
-			sz := syzygy.NewSyzygy(syzygy.SyzygyConfig{
-				Logger:           pawnLogger,
-				Horizon:          h,
-				SetPodPhase:      store.SetPhase,
-				PersistPodState:  g.PersistPodStateByUID,
-				InitRestartState: store.InitRestartStateFrom,
-			})
+			// sz := syzygy.NewSyzygy(syzygy.SyzygyConfig{
+			// 	Logger:           pawnLogger,
+			// 	Horizon:          h,
+			// 	SetPodPhase:      store.SetPhase,
+			// 	PersistPodState:  g.PersistPodStateByUID,
+			// 	InitRestartState: store.InitRestartStateFrom,
+			// })
 
-			wg.Go(func() { h.Run(ctx, 8) })
-			wg.Go(func() { sz.Run(ctx, 0) })
+			// wg.Go(func() { h.Run(ctx, 8) })
+			// wg.Go(func() { sz.Run(ctx, 0) })
 
 			// Start the batch watcher - single goroutine per pawn that monitors
 			// all containers and handles restarts + probes.
 			// sz.Send is the fact channel into Syzygy.
-			g.StartBatchWatcher(sz.Send)
+			g.StartBatchWatcher()
 			wg.Go(func() { <-ctx.Done(); g.StopBatchWatcher() })
 
 			nodeController, err := node.NewNodeController(

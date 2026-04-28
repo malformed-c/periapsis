@@ -119,11 +119,13 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			cs.State = corev1.ContainerState{
 				Running: &corev1.ContainerStateRunning{StartedAt: startedAt},
 			}
+
 		case perigeos.StateCreating:
 			podPhase = corev1.PodPending
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
+
 		case perigeos.StateUnknown:
 			// Only keep the last known Running status if the pod is still in the
 			// process of being created (Pending). If the pod is already Running, a
@@ -132,6 +134,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 				if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
 					cs.Ready = previous.Ready
 					cs.State = previous.State
+
 					break
 				}
 			}
@@ -141,13 +144,15 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
-			// Don't force podPhase = Pending here if the pod is already Running
+
+		// Don't force podPhase = Pending here if the pod is already Running
 		case perigeos.StateFailed:
 			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				podPhase = corev1.PodRunning
 				cs.State = corev1.ContainerState{
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
+
 			} else {
 				// Don't set podPhase to Failed here - terminal phase is
 				// handled by checkPod/SetPhase.
@@ -161,12 +166,14 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 					},
 				}
 			}
+
 		case perigeos.StateExited:
 			if policy == corev1.RestartPolicyAlways {
 				podPhase = corev1.PodRunning
 				cs.State = corev1.ContainerState{
 					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
 				}
+
 			} else {
 				// Don't set podPhase to Succeeded here - the terminal
 				// phase transition is handled by checkPod/SetPhase.
@@ -187,6 +194,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 		if !cs.Ready {
 			allReady = false
 		}
+
 		containerStatuses = append(containerStatuses, cs)
 	}
 

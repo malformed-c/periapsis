@@ -302,7 +302,7 @@ In standard Kubernetes, the relationship between a Node and a physical machine i
 
 Currently, Periapsis supports only **Static Pawn Provisioning**. The number of Pawns and their resource limits (CPU/Memory/IO) must be manually defined in the host configuration.
 
-A Pawn is a virtual Kubernetes node that multiplexes a single physical server. When the `perigeos` daemon boots, it registers $N$ virtual nodes (e.g., `compute-00` through `compute-29`). To the Kubernetes Control Plane, these are independent servers with their own:
+A Pawn is a virtual Kubernetes node that multiplexes a single physical server. When the `perigeos` daemon boots, it registers N virtual nodes (e.g., `compute-00` through `compute-29`). To the Kubernetes Control Plane, these are independent servers with their own:
 - **Capacity:** Dedicated CPU/RAM/IO limits, enforced by cgroups v2.
 - **Identity:** Unique TLS certificates and Kubelet API.
 - **Networking:** Dedicated Pod CIDR blocks.

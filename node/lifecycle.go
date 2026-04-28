@@ -801,10 +801,7 @@ func prepareMStackBindEntries(clusterDNS, namespace string, runAsUser, runAsGrou
 		search := fmt.Sprintf("%s.svc.cluster.local svc.cluster.local cluster.local", namespace)
 		entries = append(entries, image.MStackBindEntry{
 			ContainerPath: "/etc/resolv.conf",
-			Content:       []byte(fmt.Sprintf("nameserver %s
-search %s
-options ndots:5
-", clusterDNS, search)),
+			Content:       []byte(fmt.Sprintf("nameserver %s\nsearch %s\noptions ndots:5\n", clusterDNS, search)),
 			ReadOnly:      true,
 		})
 	}
@@ -823,14 +820,12 @@ options ndots:5
 		entries = append(entries,
 			image.MStackBindEntry{
 				ContainerPath: "/etc/passwd",
-				Content:       []byte(fmt.Sprintf("%s:x:%d:%d::%s:/bin/sh
-", username, uid, gid, home)),
+				Content:       []byte(fmt.Sprintf("%s:x:%d:%d::%s:/bin/sh\n", username, uid, gid, home)),
 				ReadOnly:      true,
 			},
 			image.MStackBindEntry{
 				ContainerPath: "/etc/group",
-				Content:       []byte(fmt.Sprintf("peri-%d:x:%d:
-", gid, gid)),
+				Content:       []byte(fmt.Sprintf("peri-%d:x:%d:\n", gid, gid)),
 				ReadOnly:      true,
 			},
 		)

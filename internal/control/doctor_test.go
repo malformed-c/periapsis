@@ -150,10 +150,12 @@ func callDoctor(t *testing.T, s *Server) DoctorResponse {
 	if err != nil {
 		t.Fatalf("marshal doctor result: %v", err)
 	}
+
 	var resp DoctorResponse
 	if err := json.Unmarshal(b, &resp); err != nil {
 		t.Fatalf("decode DoctorResponse: %v", err)
 	}
+
 	return resp
 }
 
@@ -170,6 +172,7 @@ func TestScanDiskPods(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	// Also put a file (not a dir) - should be ignored.
 	if err := os.WriteFile(filepath.Join(podsDir, "not-a-uid.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)

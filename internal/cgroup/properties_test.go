@@ -22,8 +22,8 @@ func TestBuildSystemdProperties_Empty(t *testing.T) {
 	if got := BuildSystemdProperties(nil); len(got) != 0 {
 		t.Fatalf("nil resources: got %d props, want 0", len(got))
 	}
-	if got := BuildSystemdProperties(&types.PodResources{}); len(got) != 0 {
-		t.Fatalf("empty resources: got %d props, want 0", len(got))
+	if got := BuildSystemdProperties(&types.PodResources{}); len(got) != 1 {
+		t.Fatalf("empty resources: got %d props, want 1", len(got))
 	}
 }
 

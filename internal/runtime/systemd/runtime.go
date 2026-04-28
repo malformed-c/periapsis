@@ -233,24 +233,9 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		execStart = append(execStart, "--directory="+cfg.RootFS)
 	}
 
-	// Generate host-side bind files (resolv.conf, passwd, group, getent shim).
-	// These are bind-mounted read-only into the container instead of being
-	// written into the overlay rootfs. Works for both --directory= and
-	// --overlay= paths since no merged rootfs needs to exist at prep time.
-	extraMounts, bindTmpDir, err := prepareBindFiles(cfg, s.logger)
-	if err != nil {
-		return fmt.Errorf("prepareBindFiles: %w", err)
-	}
-
-	if bindTmpDir != "" {
-		// Register the tmpdir for deferred cleanup. It will be removed
-		// in StopMachine after nspawn has torn down the container and
-		// unmounted the bind mounts. This replaces the previous background
-		// goroutine approach — cleanup is now deterministic and happens
-		// at a known point in the lifecycle rather than via polling.
-		s.bindTmpDirs.Store(machineName, bindTmpDir)
-	}
-	cfg.BindMounts = append(cfg.BindMounts, extraMounts...)
+	// Bind entries (resolv.conf, passwd, group, getent shim) are now written
+	// directly into the .mstack dir by PrepareMStack via robind@/bind@ entries.
+	// No prepareBindFiles, no bindTmpDirs, no cleanup goroutine needed here.
 
 	// Privileged containers get all capabilities - required for workloads
 	// that load BPF programs, manipulate network interfaces, etc.
@@ -284,7 +269,6 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 
 	if !useUserNS && cfg.RunAsUser != nil {
 		// Fallback: use nspawn's --user= (no userns isolation).
-		// getent shim is now installed via prepareBindFiles --bind-ro=.
 		execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
 	}
 
@@ -488,7 +472,6 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			cleanupUserNSFIFOs(podUID, containerName)
 		}
 
-		s.cleanupBindTmpDir(machineName)
 		// "already loaded or has a fragment file" means the unit from a
 		// previous attempt wasn't fully removed yet (transient unit auto-unload
 		// is async). Stop+reset it and retry once.
@@ -758,7 +741,6 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 
 		// Clean up the bind tmpdir. This is safe now because nspawn has
 		// exited and unmounted all bind mounts as part of the stop job.
-		s.cleanupBindTmpDir(machineName)
 
 	case <-ctx.Done():
 		return ctx.Err()
@@ -953,23 +935,6 @@ func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, container
 	return strings.TrimSpace(string(data))
 }
 
-// cleanupBindTmpDir removes the bind tmpdir associated with the given machine.
-// It logs errors rather than returning them since this is always called during
-// teardown where the primary error (stop/start failure) takes precedence.
-func (s *SystemdRuntime) cleanupBindTmpDir(machineName string) {
-	tmpDirVal, ok := s.bindTmpDirs.LoadAndDelete(machineName)
-	if !ok {
-		return
-	}
-	tmpDir := tmpDirVal.(string)
-	if err := os.RemoveAll(tmpDir); err != nil {
-		s.logger.Error("bind tmpdir cleanup failed",
-			"dir", tmpDir, "machine", machineName, "error", err)
-	} else {
-		s.logger.Debug("bind tmpdir cleaned up",
-			"dir", tmpDir, "machine", machineName)
-	}
-}
 
 // readUnitStartTime returns the time the unit entered the active state by
 // reading the ActiveEnterTimestamp D-Bus property (microseconds since epoch).

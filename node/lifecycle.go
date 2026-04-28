@@ -405,8 +405,13 @@ func (g *Gambit) launchContainer(
 
 	// 2.1. Prepare Mount Stack
 	// We create a .mstack directory containing symlinks to the image layers.
-	// This allows systemd-nspawn to assemble the root filesystem natively.
-	mstackPath, err := g.ImageManager.PrepareMStack(uid, c.Name, layers)
+	// Bind entries (resolv.conf, passwd, group, getent shim, home dirs) are
+	// written directly into the mstack dir as robind@/bind@ entries — no
+	// separate tmpdir, no cleanup goroutine. RemoveMStack handles everything.
+	profile := runtimeProfiles[c.Name]
+	bindEntries := prepareMStackBindEntries(g.clusterDNS, pod.Namespace, profile.RunAsUser, profile.RunAsGroup)
+
+	mstackPath, err := g.ImageManager.PrepareMStack(uid, c.Name, layers, bindEntries)
 	if err != nil {
 		return fmt.Errorf("prepare mstack: %w", err)
 	}
@@ -418,23 +423,13 @@ func (g *Gambit) launchContainer(
 	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
 	bindMounts, err := volResolver.Resolve(ctx, pod, c)
 	if err != nil {
-		// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
-
 		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
 		if imErr != nil {
 			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
 		}
-
 		return fmt.Errorf("volume resolution: %w", err)
 	}
 
-	// resolv.conf, passwd, group, getent shim are now generated as host-side
-	// temp files and bind-mounted by prepareBindFiles inside RunMachine.
-	// writeResolvConf into rootfs is no longer called here.
-	// TODO(overlay-refactor): Remove writeResolvConf from gambit.go once the
-	// old --directory= path is gone.
-
-	profile := runtimeProfiles[c.Name]
 	ep, cmd := g.ImageManager.ImageEntrypoint(c.Image)
 
 	cfg := perigeos.PodConfig{
@@ -444,9 +439,7 @@ func (g *Gambit) launchContainer(
 		ContainerName:                 c.Name,
 		Container:                     c,
 		PawnName:                      g.Config.Name,
-		RootFS:                        "", // TODO(overlay-refactor): Remove once --directory= path is gone.
 		MStackPath:                    mstackPath,
-		ClusterDNS:                    g.clusterDNS,
 		BindMounts:                    bindMounts,
 		NetNSPath:                     netPath,
 		HostNetwork:                   pod.Spec.HostNetwork,
@@ -796,6 +789,62 @@ func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQ
 	}
 
 	return 2, corev1.PodQOSBurstable
+}
+
+// prepareMStackBindEntries generates the bind entries for resolv.conf, passwd,
+// group, getent shim and home dirs. Written directly into the .mstack dir
+// by PrepareMStack — no tmpdir, no cleanup goroutine needed.
+func prepareMStackBindEntries(clusterDNS, namespace string, runAsUser, runAsGroup *int64) []image.MStackBindEntry {
+	var entries []image.MStackBindEntry
+
+	if clusterDNS != "" {
+		search := fmt.Sprintf("%s.svc.cluster.local svc.cluster.local cluster.local", namespace)
+		entries = append(entries, image.MStackBindEntry{
+			ContainerPath: "/etc/resolv.conf",
+			Content:       []byte(fmt.Sprintf("nameserver %s
+search %s
+options ndots:5
+", clusterDNS, search)),
+			ReadOnly:      true,
+		})
+	}
+
+	if runAsUser != nil {
+		uid := *runAsUser
+		gid := int64(0)
+		if runAsGroup != nil {
+			gid = *runAsGroup
+		}
+		username := fmt.Sprintf("peri-%d", uid)
+		home := "/"
+		if uid != 0 {
+			home = fmt.Sprintf("/home/%s", username)
+		}
+		entries = append(entries,
+			image.MStackBindEntry{
+				ContainerPath: "/etc/passwd",
+				Content:       []byte(fmt.Sprintf("%s:x:%d:%d::%s:/bin/sh
+", username, uid, gid, home)),
+				ReadOnly:      true,
+			},
+			image.MStackBindEntry{
+				ContainerPath: "/etc/group",
+				Content:       []byte(fmt.Sprintf("peri-%d:x:%d:
+", gid, gid)),
+				ReadOnly:      true,
+			},
+		)
+		if uid != 0 {
+			entries = append(entries, image.MStackBindEntry{
+				ContainerPath: home,
+				IsDir:         true,
+				DirMode:       0750,
+				ReadOnly:      false,
+			})
+		}
+	}
+
+	return entries
 }
 
 func buildContainerRuntimeProfiles(pod *corev1.Pod, nodeMemoryBytes int64) map[string]containerRuntimeProfile {

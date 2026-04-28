@@ -1162,7 +1162,37 @@ func (im *ImageManager) Unmount(podUID string) error {
 // PrepareMStack creates a .mstack directory for a specific container.
 // It assembles the root filesystem hierarchy by creating symlinks to the
 // provided layers, ordered as layer@0 (bottom) to layer@N (top).
-func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string) (string, error) {
+// MStackBindEntry describes a file or directory to inject into the mstack dir
+// so it gets bind-mounted into the container at the given path.
+// Files are written as regular files; directories are created as subdirs.
+// No host tmpdir or symlinks needed — RemoveMStack cleans everything up.
+type MStackBindEntry struct {
+	// ContainerPath is the absolute destination inside the container.
+	ContainerPath string
+	// Content is the file content. Mutually exclusive with IsDir.
+	Content []byte
+	// IsDir creates a directory bind entry instead of a file.
+	IsDir bool
+	// DirMode sets the permission on a directory entry (0 = default 0755).
+	DirMode os.FileMode
+	// ReadOnly creates a robind@ entry; false creates a bind@ entry.
+	ReadOnly bool
+}
+
+// escapeMStackPath encodes a container path as a mstack bind entry name.
+// Follows the same escaping rules as systemd unit names: leading / stripped,
+// remaining / replaced with -.
+// e.g. /etc/resolv.conf → etc-resolv.conf
+func escapeMStackPath(containerPath string) string {
+	p := strings.TrimPrefix(containerPath, "/")
+	return strings.ReplaceAll(p, "/", "-")
+}
+
+// PrepareMStack creates a .mstack directory for a container.
+// It creates layer@N symlinks for image layers and robind@/bind@ symlinks
+// for bind-mounted files (resolv.conf, passwd, group, getent shim, home dirs).
+// Bind files are co-located in the mstack dir so RemoveMStack cleans everything up.
+func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, binds []MStackBindEntry) (string, error) {
 	// 1. Use baseDir to keep paths consistent with the rest of the manager.
 	stacksBase := filepath.Join(im.baseDir, "stacks")
 
@@ -1180,16 +1210,44 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string) (st
 		return "", fmt.Errorf("failed to create mstack dir: %w", err)
 	}
 
+	cleanup := func() { _ = os.RemoveAll(mstackDir) }
+
 	// 4. Create the layer stack.
 	// systemd-nspawn sorts these numerically: layer@0 is the bottom-most.
 	for i, layerPath := range layers {
 		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
-
 		if err := os.Symlink(layerPath, linkName); err != nil {
-			// Cleanup on failure to avoid leaving partial stacks
-			_ = os.RemoveAll(mstackDir)
-
+			cleanup()
 			return "", fmt.Errorf("failed to link layer %d (%s): %w", i, layerPath, err)
+		}
+	}
+
+	// 5. Write bind entries directly into the mstack dir.
+	// robind@<escaped-path> is a regular file/dir with the bind content.
+	// mstack interprets it as a read-only bind mount at the escaped path.
+	// bind@<escaped-path> is the same but read-write.
+	// No symlinks, no external tmpdir — RemoveMStack cleans everything up.
+	for _, b := range binds {
+		prefix := "robind@"
+		if !b.ReadOnly {
+			prefix = "bind@"
+		}
+		escaped := escapeMStackPath(b.ContainerPath)
+		entryPath := filepath.Join(mstackDir, prefix+escaped)
+
+		if b.IsDir {
+			if err := os.MkdirAll(entryPath, 0755); err != nil {
+				cleanup()
+				return "", fmt.Errorf("failed to create bind dir %s: %w", b.ContainerPath, err)
+			}
+			if b.DirMode != 0 {
+				_ = os.Chmod(entryPath, b.DirMode)
+			}
+		} else {
+			if err := os.WriteFile(entryPath, b.Content, 0644); err != nil {
+				cleanup()
+				return "", fmt.Errorf("failed to write bind file %s: %w", b.ContainerPath, err)
+			}
 		}
 	}
 

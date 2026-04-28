@@ -406,7 +406,7 @@ func (g *Gambit) launchContainer(
 	// 2.1. Prepare Mount Stack
 	// We create a .mstack directory containing symlinks to the image layers.
 	// Bind entries (resolv.conf, passwd, group, getent shim, home dirs) are
-	// written directly into the mstack dir as robind@/bind@ entries — no
+	// written directly into the mstack dir as robind@/bind@ entries - no
 	// separate tmpdir, no cleanup goroutine. RemoveMStack handles everything.
 	profile := runtimeProfiles[c.Name]
 	bindEntries := prepareMStackBindEntries(g.clusterDNS, pod.Namespace, profile.RunAsUser, profile.RunAsGroup)
@@ -793,7 +793,7 @@ func calculateOOMScore(pod *corev1.Pod, nodeMemoryBytes int64) (int, corev1.PodQ
 
 // prepareMStackBindEntries generates the bind entries for resolv.conf, passwd,
 // group, getent shim and home dirs. Written directly into the .mstack dir
-// by PrepareMStack — no tmpdir, no cleanup goroutine needed.
+// by PrepareMStack - no tmpdir, no cleanup goroutine needed.
 func prepareMStackBindEntries(clusterDNS, namespace string, runAsUser, runAsGroup *int64) []image.MStackBindEntry {
 	var entries []image.MStackBindEntry
 
@@ -812,11 +812,13 @@ func prepareMStackBindEntries(clusterDNS, namespace string, runAsUser, runAsGrou
 		if runAsGroup != nil {
 			gid = *runAsGroup
 		}
+
 		username := fmt.Sprintf("peri-%d", uid)
 		home := "/"
 		if uid != 0 {
 			home = fmt.Sprintf("/home/%s", username)
 		}
+
 		entries = append(entries,
 			image.MStackBindEntry{
 				ContainerPath: "/etc/passwd",
@@ -829,6 +831,7 @@ func prepareMStackBindEntries(clusterDNS, namespace string, runAsUser, runAsGrou
 				ReadOnly:      true,
 			},
 		)
+
 		if uid != 0 {
 			entries = append(entries, image.MStackBindEntry{
 				ContainerPath: home,

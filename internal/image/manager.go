@@ -1165,26 +1165,31 @@ func (im *ImageManager) Unmount(podUID string) error {
 // MStackBindEntry describes a file or directory to inject into the mstack dir
 // so it gets bind-mounted into the container at the given path.
 // Files are written as regular files; directories are created as subdirs.
-// No host tmpdir or symlinks needed — RemoveMStack cleans everything up.
+// No host tmpdir or symlinks needed - RemoveMStack cleans everything up.
 type MStackBindEntry struct {
 	// ContainerPath is the absolute destination inside the container.
 	ContainerPath string
+
 	// Content is the file content. Mutually exclusive with IsDir.
 	Content []byte
+
 	// IsDir creates a directory bind entry instead of a file.
 	IsDir bool
+
 	// DirMode sets the permission on a directory entry (0 = default 0755).
 	DirMode os.FileMode
+
 	// ReadOnly creates a robind@ entry; false creates a bind@ entry.
 	ReadOnly bool
 }
 
 // escapeMStackPath encodes a container path as a mstack bind entry name.
 // Follows the same escaping rules as systemd unit names: leading / stripped,
-// remaining / replaced with -.
-// e.g. /etc/resolv.conf → etc-resolv.conf
+// remaining / replaced with -
+// e.g. /etc/resolv.conf -> etc-resolv.conf
 func escapeMStackPath(containerPath string) string {
 	p := strings.TrimPrefix(containerPath, "/")
+
 	return strings.ReplaceAll(p, "/", "-")
 }
 
@@ -1218,6 +1223,7 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
 		if err := os.Symlink(layerPath, linkName); err != nil {
 			cleanup()
+
 			return "", fmt.Errorf("failed to link layer %d (%s): %w", i, layerPath, err)
 		}
 	}
@@ -1226,26 +1232,30 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 	// robind@<escaped-path> is a regular file/dir with the bind content.
 	// mstack interprets it as a read-only bind mount at the escaped path.
 	// bind@<escaped-path> is the same but read-write.
-	// No symlinks, no external tmpdir — RemoveMStack cleans everything up.
+	// No symlinks, no external tmpdir - RemoveMStack cleans everything up.
 	for _, b := range binds {
 		prefix := "robind@"
 		if !b.ReadOnly {
 			prefix = "bind@"
 		}
+
 		escaped := escapeMStackPath(b.ContainerPath)
 		entryPath := filepath.Join(mstackDir, prefix+escaped)
 
 		if b.IsDir {
 			if err := os.MkdirAll(entryPath, 0755); err != nil {
 				cleanup()
+
 				return "", fmt.Errorf("failed to create bind dir %s: %w", b.ContainerPath, err)
 			}
 			if b.DirMode != 0 {
 				_ = os.Chmod(entryPath, b.DirMode)
 			}
+
 		} else {
 			if err := os.WriteFile(entryPath, b.Content, 0644); err != nil {
 				cleanup()
+
 				return "", fmt.Errorf("failed to write bind file %s: %w", b.ContainerPath, err)
 			}
 		}

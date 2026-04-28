@@ -918,7 +918,7 @@ func (s *SystemdRuntime) GetContainerExitInfo(ctx context.Context, podUID, conta
 }
 
 // tailContainerLog reads the last N lines of container output from journald.
-// Returns an empty string on any error — this is best-effort enrichment.
+// Returns an empty string on any error - this is best-effort enrichment.
 func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, containerName string, lines int) string {
 	rc, err := s.GetLogStream(ctx, podUID, containerName, api.ContainerLogOpts{Tail: lines})
 	if err != nil {
@@ -935,7 +935,6 @@ func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, container
 
 	return strings.TrimSpace(string(data))
 }
-
 
 // readUnitStartTime returns the time the unit entered the active state by
 // reading the ActiveEnterTimestamp D-Bus property (microseconds since epoch).

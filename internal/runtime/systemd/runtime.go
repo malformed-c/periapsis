@@ -932,6 +932,7 @@ func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, container
 	if len(data) == 0 {
 		return ""
 	}
+
 	return strings.TrimSpace(string(data))
 }
 

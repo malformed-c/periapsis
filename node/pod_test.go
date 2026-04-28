@@ -394,12 +394,12 @@ func TestUpdatePodStatusUsesKubernetesResourceVersion(t *testing.T) {
 //
 //	metadata.resourceVersion: Invalid value: 0: must be specified for an update
 //
-// This validation has existed since Kubernetes 1.3 — the generic registry Store.Update rejects
+// This validation has existed since Kubernetes 1.3 - the generic registry Store.Update rejects
 // resourceVersion="0" (integer 0 after parsing) for any update, including UpdateStatus.
 // The reactor simulates that validation. With the fix at node/pod.go:252 the test passes
 // because the Kubernetes ResourceVersion ("123") is copied onto the provider pod before the
 // UpdateStatus call. To observe the error locally, temporarily comment out line 252 and re-run
-// this test — it will fail with the simulated validation error.
+// this test - it will fail with the simulated validation error.
 func TestUpdatePodStatusRejectsZeroResourceVersion(t *testing.T) {
 	ctx := context.Background()
 	c := newTestController()

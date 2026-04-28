@@ -77,6 +77,9 @@ func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
 func (r *doctorMockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
 	return nil
 }
+func (r *doctorMockRuntime) GetContainerExitInfo(_ context.Context, _, _ string) perigeos.ContainerExitInfo {
+	return perigeos.ContainerExitInfo{}
+}
 
 // --- Mock Network ---
 

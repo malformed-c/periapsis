@@ -72,6 +72,10 @@ func (r *mockRuntimeForGhosts) PortForward(ctx context.Context, podUID, containe
 	return nil
 }
 
+func (r *mockRuntimeForGhosts) GetContainerExitInfo(_ context.Context, _, _ string) perigeos.ContainerExitInfo {
+	return perigeos.ContainerExitInfo{}
+}
+
 // --- Mock Network ---
 
 type mockNetworkForGhosts struct {

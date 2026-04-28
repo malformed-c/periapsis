@@ -141,6 +141,7 @@ func TestPodShouldEnqueueDifferentDeleteTimeStamp(t *testing.T) {
 	p2 := p1.DeepCopy()
 	now := v1.NewTime(time.Now())
 	p2.DeletionTimestamp = &now
+
 	assert.Assert(t, podShouldEnqueue(p1, p2))
 }
 
@@ -151,6 +152,7 @@ func TestPodShouldEnqueueDifferentLabel(t *testing.T) {
 
 	p2 := p1.DeepCopy()
 	p2.Labels = map[string]string{"test": "test"}
+
 	assert.Assert(t, podShouldEnqueue(p1, p2))
 }
 
@@ -161,6 +163,7 @@ func TestPodShouldEnqueueDifferentAnnotation(t *testing.T) {
 
 	p2 := p1.DeepCopy()
 	p2.Annotations = map[string]string{"test": "test"}
+
 	assert.Assert(t, podShouldEnqueue(p1, p2))
 }
 
@@ -171,6 +174,7 @@ func TestPodShouldNotEnqueueDifferentStatus(t *testing.T) {
 
 	p2 := p1.DeepCopy()
 	p2.Status.Phase = corev1.PodSucceeded
+
 	assert.Assert(t, !podShouldEnqueue(p1, p2))
 }
 
@@ -189,6 +193,7 @@ func TestPodShouldEnqueueDifferentDeleteGraceTime(t *testing.T) {
 
 	p2.DeletionGracePeriodSeconds = &newGraceTime
 	p2.DeletionTimestamp = &newTime
+
 	assert.Assert(t, podShouldEnqueue(p1, p2))
 }
 
@@ -200,6 +205,7 @@ func TestPodShouldEnqueueGraceTimeChanged(t *testing.T) {
 	p2 := p1.DeepCopy()
 	graceTime := int64(30)
 	p2.DeletionGracePeriodSeconds = &graceTime
+
 	assert.Assert(t, podShouldEnqueue(p1, p2))
 }
 
@@ -212,8 +218,8 @@ func TestPodCreateNewPod(t *testing.T) {
 	pod.Spec = newPodSpec()
 
 	err := svr.createOrUpdatePod(context.Background(), pod.DeepCopy())
-
 	assert.Check(t, is.Nil(err))
+
 	// createOrUpdate called CreatePod but did not call UpdatePod because the pod did not exist
 	assert.Check(t, is.Equal(svr.mock.creates.read(), 1))
 	assert.Check(t, is.Equal(svr.mock.updates.read(), 0))
@@ -285,10 +291,12 @@ func TestPodStatusDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal("pod updated failed")
 	}
+
 	newPod, err := c.client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, v1.GetOptions{})
 	if err != nil && !errors.IsNotFound(err) {
 		t.Fatalf("Get pod %v failed", key)
 	}
+
 	if err == nil && newPod.DeletionTimestamp == nil {
 		t.Fatalf("Pod %v delete failed", key)
 	}
@@ -299,6 +307,7 @@ func TestPodStatusDelete(t *testing.T) {
 	if _, err = c.client.CoreV1().Pods(pod.Namespace).Create(ctx, pod, v1.CreateOptions{}); err != nil {
 		t.Fatal("Parepare pod in k8s failed")
 	}
+
 	podCopy.Status.ContainerStatuses = []corev1.ContainerStatus{
 		{
 			State: corev1.ContainerState{
@@ -311,21 +320,26 @@ func TestPodStatusDelete(t *testing.T) {
 			},
 		},
 	}
+
 	c.knownPods.Store(key, &knownPod{lastPodStatusReceivedFromProvider: podCopy})
 	err = c.updatePodStatus(ctx, pod, key)
 	if err != nil {
 		t.Fatalf("pod updated failed %v", err)
 	}
+
 	newPod, err = c.client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, v1.GetOptions{})
 	if err != nil && !errors.IsNotFound(err) {
 		t.Fatalf("Get pod %v failed", key)
 	}
+
 	if newPod.DeletionTimestamp == nil {
 		t.Fatalf("Pod %v delete failed", key)
 	}
+
 	if newPod.Status.ContainerStatuses[0].State.Terminated == nil {
 		t.Fatalf("Pod status %v update failed", key)
 	}
+
 	t.Logf("pod updated, container status: %+v, pod delete Time: %v", newPod.Status.ContainerStatuses[0].State.Terminated, newPod.DeletionTimestamp)
 }
 
@@ -350,14 +364,20 @@ func TestReCreatePodRace(t *testing.T) {
 	if err := c.podsInformer.Informer().GetStore().Add(pod); err != nil {
 		t.Fatal(err)
 	}
+
 	c.client.AddReactor("delete", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.DeleteAction).GetName()
+
 		t.Logf("deleted pod %s", name)
+
 		return true, nil, errors.NewConflict(schema.GroupResource{Group: "", Resource: "pods"}, "nginx", fmt.Errorf("test conflict"))
 	})
+
 	c.client.AddReactor("get", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.GetAction).GetName()
+
 		t.Logf("get pod %s", name)
+
 		return true, podCopy, nil
 	})
 
@@ -365,13 +385,16 @@ func TestReCreatePodRace(t *testing.T) {
 	if err != nil {
 		t.Error("Failed")
 	}
+
 	p, err := c.client.CoreV1().Pods(podCopy.Namespace).Get(ctx, podCopy.Name, v1.GetOptions{})
 	if err != nil {
 		t.Fatalf("Pod not exist, %v", err)
 	}
+
 	if p.UID != podCopy.UID {
 		t.Errorf("Desired uid: %v, get: %v", podCopy.UID, p.UID)
 	}
+
 	t.Log("pod conflict test success")
 
 	// test not found
@@ -383,15 +406,20 @@ func TestReCreatePodRace(t *testing.T) {
 	if err = c.podsInformer.Informer().GetStore().Add(pod); err != nil {
 		t.Fatal(err)
 	}
+
 	c.client.AddReactor("delete", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.DeleteAction).GetName()
+
 		t.Logf("deleted pod %s", name)
+
 		return true, nil, errors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "nginx")
 	})
 
 	c.client.AddReactor("get", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.GetAction).GetName()
+
 		t.Logf("get pod %s", name)
+
 		return true, nil, errors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "nginx")
 	})
 
@@ -402,11 +430,14 @@ func TestReCreatePodRace(t *testing.T) {
 	_, err = c.client.CoreV1().Pods(podCopy.Namespace).Get(ctx, podCopy.Name, v1.GetOptions{})
 	if err == nil {
 		t.Log("delete success")
+
 		return
 	}
+
 	if !errors.IsNotFound(err) {
 		t.Fatal("Desired pod not exist")
 	}
+
 	t.Log("pod not found test success")
 
 	// test uid not equal before query
@@ -415,19 +446,25 @@ func TestReCreatePodRace(t *testing.T) {
 	c.client = fk8s
 	c.knownPods.Store(key, &knownPod{lastPodStatusReceivedFromProvider: podCopy})
 	c.deletePodsFromKubernetes.Enqueue(ctx, key)
+
 	// add new pod
 	if err = c.podsInformer.Informer().GetStore().Add(podCopy); err != nil {
 		t.Fatal(err)
 	}
+
 	c.client.AddReactor("delete", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.DeleteAction).GetName()
+
 		t.Logf("deleted pod %s", name)
+
 		return true, nil, errors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "nginx")
 	})
 
 	c.client.AddReactor("get", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		name := action.(core.GetAction).GetName()
+
 		t.Logf("get pod %s", name)
+
 		return true, nil, errors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "nginx")
 	})
 
@@ -435,14 +472,17 @@ func TestReCreatePodRace(t *testing.T) {
 	if err != nil {
 		t.Error("Failed")
 	}
+
 	_, err = c.client.CoreV1().Pods(podCopy.Namespace).Get(ctx, podCopy.Name, v1.GetOptions{})
 	if err == nil {
 		t.Log("delete success")
+
 		return
 	}
 	if !errors.IsNotFound(err) {
 		t.Fatal("Desired pod not exist")
 	}
+
 	t.Log("pod uid conflict test success")
 }
 

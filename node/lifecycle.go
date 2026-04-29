@@ -242,6 +242,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			g.Logger.Warn("sync: step3 init container failed", "uid", uid, "pod", pod.Name, "container", ic.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "InitFailed", "Init container %s: %v", ic.Name, err)
 
+			g.store.IncrementRestart(uid, ic.Name)
 			g.batchWatcher.Poke()
 
 			return fmt.Errorf("init container %s failed: %w", ic.Name, err)

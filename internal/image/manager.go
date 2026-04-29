@@ -1198,13 +1198,25 @@ type MStackBindEntry struct {
 }
 
 // escapeMStackPath encodes a container path as a mstack bind entry name.
-// Follows the same escaping rules as systemd unit names: leading / stripped,
-// remaining / replaced with -
-// e.g. /etc/resolv.conf -> etc-resolv.conf
+// Rules:
+//  1. Strip leading /
+//  2. Encode literal '-' as '--' (must come before step 3)
+//  3. Replace '/' path separators with '-'
+//
+// Examples:
+//
+//	/etc/resolv.conf  →  etc-resolv.conf
+//	/var/www          →  var-www
+//	/data-cache       →  data--cache
+//	/data/cache       →  data-cache
+//	/a-b/c-d          →  a--b-c--d
+//
+// Decoding is the reverse: split on single '-' (path sep), unescape '--' → '-'.
 func escapeMStackPath(containerPath string) string {
 	p := strings.TrimPrefix(containerPath, "/")
-
-	return strings.ReplaceAll(p, "/", "-")
+	p = strings.ReplaceAll(p, "-", "--")
+	p = strings.ReplaceAll(p, "/", "-")
+	return p
 }
 
 // PrepareMStack creates a .mstack directory for a container.

@@ -674,7 +674,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 
 	// Clean up prevReady for pods no longer tracked.
 	activeKeys := make(map[string]bool, len(entries)*2)
+	activeUIDs := make(map[string]bool, len(entries))
 	for _, e := range entries {
+		activeUIDs[e.uid] = true
+		for _, c := range e.pod.Spec.InitContainers {
+			activeKeys[e.uid+"/"+c.Name] = true
+		}
 		for _, c := range e.pod.Spec.Containers {
 			activeKeys[e.uid+"/"+c.Name] = true
 		}
@@ -686,15 +691,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		}
 	}
 	for uid := range bw.prevPhases {
-		found := false
-		for _, e := range entries {
-			if e.uid == uid {
-				found = true
-
-				break
-			}
-		}
-		if !found {
+		if !activeUIDs[uid] {
 			delete(bw.prevPhases, uid)
 			delete(bw.prevIPs, uid)
 		}
@@ -702,7 +699,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 }
 
 func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState, exitCodeMap map[string]int32) {
-	allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	// allContainers is a safe concat that never aliases pod.Spec.InitContainers's
+	// backing array (append can mutate it if len < cap).
+	allContainers := make([]corev1.Container, 0, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
+	allContainers = append(allContainers, pod.Spec.InitContainers...)
+	allContainers = append(allContainers, pod.Spec.Containers...)
+
 	policy := pod.Spec.RestartPolicy
 	if policy == "" {
 		policy = corev1.RestartPolicyAlways
@@ -712,7 +714,6 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	allSucceeded := true
 	anyRestarting := false // true only when maybeRestart is called this cycle
 
-	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	for _, c := range allContainers {
 		key := uid + "/" + c.Name
 		state, exists := stateMap[key]
@@ -874,7 +875,6 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	// containers whose units were already cleaned up (not in stateMap) show
 	// as Exited rather than Unknown. The pre-pass wrote seenRunning/restarting
 	// fallbacks, but terminal pods need a definitive Exited for all containers.
-	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	for _, c := range allContainers {
 		key := uid + "/" + c.Name
 		if s, ok := stateMap[key]; ok {
@@ -901,7 +901,6 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 
 	// Clean up dead/failed systemd units now that we've read their state.
 	// Without this, transient units accumulate in systemd's listing.
-	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	for _, c := range allContainers {
 		if err := bw.deps.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
 			bw.logger.Debug("ResetUnit failed (unit may already be collected)",

@@ -300,6 +300,7 @@ func (s *PodStore) MarkContainerSeenRunning(uid, containerName string) {
 	ps := s.getPodState(uid)
 	if ps == nil {
 		s.logger.Error("MarkContainerSeenRunning: pod not registered", "uid", uid, "container", containerName)
+
 		return
 	}
 
@@ -485,6 +486,7 @@ func (s *PodStore) SetContainerMachineState(uid, containerName string, state per
 	ps := s.getPodState(uid)
 	if ps == nil {
 		s.logger.Error("SetContainerMachineState: pod not registered", "uid", uid, "container", containerName)
+
 		return
 	}
 

@@ -1197,26 +1197,44 @@ type MStackBindEntry struct {
 	ReadOnly bool
 }
 
-// escapeMStackPath encodes a container path as a mstack bind entry name.
-// Rules:
+// escapeMStackPath encodes a container path as a mstack bind entry name using
+// the same rules as systemd-escape --path (i.e. .mount unit name encoding):
 //  1. Strip leading /
-//  2. Encode literal '-' as '--' (must come before step 3)
-//  3. Replace '/' path separators with '-'
+//  2. Replace each '/' separator with '-'
+//  3. Encode any character that is not [A-Za-z0-9.] as \xNN (lowercase hex)
 //
 // Examples:
 //
-//	/etc/resolv.conf  →  etc-resolv.conf
+//	/etc/resolv.conf  →  etc-resolv.conf        ('.' is safe, '-' in name encoded)
 //	/var/www          →  var-www
-//	/data-cache       →  data--cache
-//	/data/cache       →  data-cache
-//	/a-b/c-d          →  a--b-c--d
-//
-// Decoding is the reverse: split on single '-' (path sep), unescape '--' → '-'.
+//	/data-cache       →  data\x2dcache          (literal '-' encoded)
+//	/a-b/c-d          →  a\x2db-c\x2dd
 func escapeMStackPath(containerPath string) string {
 	p := strings.TrimPrefix(containerPath, "/")
-	p = strings.ReplaceAll(p, "-", "--")
-	p = strings.ReplaceAll(p, "/", "-")
-	return p
+	var b strings.Builder
+	b.Grow(len(p))
+
+	inSlash := false
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if c == '/' {
+			if !inSlash {
+				b.WriteByte('-')
+			}
+			inSlash = true
+			continue
+		}
+		inSlash = false
+
+		// Safe characters: ASCII alphanumeric and '.'
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, `\x%02x`, c)
+		}
+	}
+
+	return b.String()
 }
 
 // PrepareMStack creates a .mstack directory for a container.

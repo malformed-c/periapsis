@@ -401,27 +401,45 @@ func (g *Gambit) launchContainer(
 		// }
 	}
 
+	// 3. Resolve Environment and Volumes (must happen before mstack so volume
+	// host paths exist before we write symlinks into the mstack dir).
+	resolvedEnv := g.Tidal.ResolveEnv(pod, c, podIP)
+	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
+	bindMounts, err := volResolver.Resolve(ctx, pod, c)
+	if err != nil {
+		return fmt.Errorf("volume resolution: %w", err)
+	}
+
 	// 2. Filesystem setup - mstack path (systemd >= 260) or legacy overlayfs.
 	profile := runtimeProfiles[c.Name]
 	var mstackPath, rootfs string
 
 	if g.Runtime.MStackSupported() {
-		// systemd >= 260: use .mstack directory. nspawn assembles the overlay
-		// and manages the upper tmpfs layer via --volatile=overlay.
-		// Bind entries (resolv.conf, passwd, group, getent shim, home dirs) are
-		// written directly into the mstack dir - no tmpdir, no cleanup goroutine.
-		bindEntries := prepareMStackBindEntries(g.clusterDNS, pod.Namespace, profile.RunAsUser, profile.RunAsGroup)
-		var err error
-		mstackPath, err = g.ImageManager.PrepareMStack(uid, c.Name, layers, bindEntries)
+		// systemd >= 260: all bind entries go into the .mstack dir as
+		// robind@/bind@ symlinks (volume mounts) or files (generated content).
+		// No --bind= args needed - nspawn handles everything from the mstack dir.
+		systemEntries := prepareMStackBindEntries(g.clusterDNS, pod.Namespace, profile.RunAsUser, profile.RunAsGroup)
+		volumeEntries := make([]image.MStackBindEntry, 0, len(bindMounts))
+		for _, bm := range bindMounts {
+			volumeEntries = append(volumeEntries, image.MStackBindEntry{
+				ContainerPath: bm.ContainerPath,
+				HostPath:      bm.HostPath,
+				ReadOnly:      bm.ReadOnly,
+			})
+		}
+		allEntries := append(systemEntries, volumeEntries...)
+
+		mstackPath, err = g.ImageManager.PrepareMStack(uid, c.Name, layers, allEntries)
 		if err != nil {
 			return fmt.Errorf("prepare mstack: %w", err)
 		}
+		// Volume mounts are now in the mstack; don't pass them as --bind= args.
+		bindMounts = nil
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted mstack for container %s", c.Name)
 
 	} else {
 		// Legacy path (systemd < 260): manually construct overlayfs rootfs.
 		// TODO(overlay-refactor): Remove once systemd 260 is ubiquitous.
-		var err error
 		rootfs, err = g.ImageManager.Mount(uid+"-"+c.Name, layers)
 		if err != nil {
 			return fmt.Errorf("mount: %w", err)
@@ -436,21 +454,6 @@ func (g *Gambit) launchContainer(
 		}
 
 		prepareUserIdentityForRootFS(rootfs, profile.RunAsUser, profile.RunAsGroup, g.Logger)
-	}
-
-	// 3. Resolve Environment and Volumes
-	resolvedEnv := g.Tidal.ResolveEnv(pod, c, podIP)
-	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, g.cmLister, g.secretLister, g.kubeClient)
-	bindMounts, err := volResolver.Resolve(ctx, pod, c)
-	if err != nil {
-		if mstackPath != "" {
-			_ = g.ImageManager.RemoveMStack(uid, c.Name)
-
-		} else if rootfs != "" {
-			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
-		}
-
-		return fmt.Errorf("volume resolution: %w", err)
 	}
 
 	ep, cmd := g.ImageManager.ImageEntrypoint(c.Image)

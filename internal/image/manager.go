@@ -1166,14 +1166,28 @@ func (im *ImageManager) Unmount(podUID string) error {
 // so it gets bind-mounted into the container at the given path.
 // Files are written as regular files; directories are created as subdirs.
 // No host tmpdir or symlinks needed - RemoveMStack cleans everything up.
+// MStackBindEntry describes a file, directory, or host path to inject into
+// a .mstack dir so systemd-nspawn bind-mounts it into the container.
+//
+// Exactly one of HostPath, Content, or IsDir must be set:
+//   - HostPath: creates a symlink in the mstack dir pointing to an existing
+//     host path. Used for volume mounts (emptyDir, hostPath, PVC).
+//   - Content: writes a regular file. Used for generated files like resolv.conf.
+//   - IsDir: creates an empty directory. Used for home dirs and emptyDir targets
+//     that don't exist on the host yet (rare; prefer HostPath with pre-created dir).
 type MStackBindEntry struct {
 	// ContainerPath is the absolute destination inside the container.
 	ContainerPath string
 
-	// Content is the file content. Mutually exclusive with IsDir.
+	// HostPath, when non-empty, creates a bind@ or robind@ symlink pointing
+	// to this host path. Mutually exclusive with Content and IsDir.
+	HostPath string
+
+	// Content is the file content. Mutually exclusive with HostPath and IsDir.
 	Content []byte
 
 	// IsDir creates a directory bind entry instead of a file.
+	// Mutually exclusive with HostPath and Content.
 	IsDir bool
 
 	// DirMode sets the permission on a directory entry (0 = default 0755).
@@ -1228,11 +1242,11 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 		}
 	}
 
-	// 5. Write bind entries directly into the mstack dir.
-	// robind@<escaped-path> is a regular file/dir with the bind content.
-	// mstack interprets it as a read-only bind mount at the escaped path.
-	// bind@<escaped-path> is the same but read-write.
-	// No symlinks, no external tmpdir - RemoveMStack cleans everything up.
+	// 5. Write bind entries into the mstack dir.
+	// Three entry forms:
+	//   robind@<escaped> / bind@<escaped>  symlink  -> HostPath (volume mounts)
+	//   robind@<escaped> / bind@<escaped>  file     <- Content  (generated files)
+	//   robind@<escaped> / bind@<escaped>  dir               (home dirs, empty targets)
 	for _, b := range binds {
 		prefix := "robind@"
 		if !b.ReadOnly {
@@ -1242,20 +1256,26 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 		escaped := escapeMStackPath(b.ContainerPath)
 		entryPath := filepath.Join(mstackDir, prefix+escaped)
 
-		if b.IsDir {
+		switch {
+		case b.HostPath != "":
+			// Symlink to an existing host path - used for volume mounts.
+			if err := os.Symlink(b.HostPath, entryPath); err != nil {
+				cleanup()
+				return "", fmt.Errorf("failed to symlink host path %s -> %s: %w", entryPath, b.HostPath, err)
+			}
+
+		case b.IsDir:
 			if err := os.MkdirAll(entryPath, 0755); err != nil {
 				cleanup()
-
 				return "", fmt.Errorf("failed to create bind dir %s: %w", b.ContainerPath, err)
 			}
 			if b.DirMode != 0 {
 				_ = os.Chmod(entryPath, b.DirMode)
 			}
 
-		} else {
+		default:
 			if err := os.WriteFile(entryPath, b.Content, 0644); err != nil {
 				cleanup()
-
 				return "", fmt.Errorf("failed to write bind file %s: %w", b.ContainerPath, err)
 			}
 		}

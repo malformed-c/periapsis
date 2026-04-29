@@ -416,6 +416,7 @@ func (g *Gambit) launchContainer(
 		if err != nil {
 			return fmt.Errorf("prepare mstack: %w", err)
 		}
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted mstack for container %s", c.Name)
 
 	} else {
 		// Legacy path (systemd < 260): manually construct overlayfs rootfs.
@@ -426,6 +427,8 @@ func (g *Gambit) launchContainer(
 			return fmt.Errorf("mount: %w", err)
 		}
 
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted overlay for container %s", c.Name)
+
 		if g.clusterDNS != "" {
 			_ = writeResolvConf(rootfs, g.clusterDNS, pod.Namespace)
 		} else {
@@ -434,8 +437,6 @@ func (g *Gambit) launchContainer(
 
 		prepareUserIdentityForRootFS(rootfs, profile.RunAsUser, profile.RunAsGroup, g.Logger)
 	}
-
-	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Mounted", "Mounted overlay for container %s", c.Name)
 
 	// 3. Resolve Environment and Volumes
 	resolvedEnv := g.Tidal.ResolveEnv(pod, c, podIP)
@@ -514,6 +515,22 @@ func (g *Gambit) launchContainer(
 		return fmt.Errorf("RunMachine: %w", err)
 	}
 
+	// Propagate Bidirectional mounts (required for CSI drivers).
+	// If this fails, stop the container before returning - leaving it
+	// running without shared propagation is worse than a clean retry.
+	if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
+		_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
+
+		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+		if imErr != nil {
+			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+		}
+
+		return fmt.Errorf("MakeSharedMounts: %w", err)
+	}
+
 	// 5. Wait for target state
 	if isInit {
 		state, err := g.Runtime.WaitForMachineExit(ctx, uid, c.Name, initContainerTimeout)
@@ -555,22 +572,6 @@ func (g *Gambit) launchContainer(
 		// never set and the terminal deferral in checkPod loops forever
 		// (the pod gets stuck in a non-Pending non-Running limbo).
 		g.batchWatcher.MarkRunning(uid, c.Name)
-
-		// Propagate Bidirectional mounts (required for CSI drivers).
-		// If this fails, stop the container before returning - leaving it
-		// running without shared propagation is worse than a clean retry.
-		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
-			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
-
-			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
-
-			imErr := g.ImageManager.RemoveMStack(uid, c.Name)
-			if imErr != nil {
-				g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
-			}
-
-			return fmt.Errorf("MakeSharedMounts: %w", err)
-		}
 
 		// Run PostStart lifecycle hook
 		if c.Lifecycle != nil && c.Lifecycle.PostStart != nil {

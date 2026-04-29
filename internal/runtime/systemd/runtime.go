@@ -132,6 +132,8 @@ func NewSystemdRuntime(
 	// GetManagerProperty returns the Version property from org.freedesktop.systemd1.Manager.
 	rt.mstackSupported = detectMStackSupport(ctx, conn, logger)
 
+	logger.Debug("MStack", "supported", rt.mstackSupported)
+
 	return rt, nil
 }
 
@@ -1801,8 +1803,8 @@ func GetManagerPropertySafe(ctx context.Context, conn *dbus.Conn, prop string) (
 			return "", res.err
 		}
 
-		// The library returns 'value' (with quotes).
+		// The library returns "value" (with double quotes).
 		// We trim them to get the actual raw string.
-		return strings.Trim(res.val, "'"), nil
+		return strings.Trim(res.val, "\""), nil
 	}
 }

@@ -65,11 +65,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		return nil
 	}
 
-	if exists, wasStub := g.store.AlreadyRunning(uid, pod); exists {
-		if wasStub {
-			g.store.InitRestartState(pod)
-		}
-
+	if exists, _ := g.store.AlreadyRunning(uid, pod); exists {
 		g.Logger.Info("CreatePod: already running (hydrated), skipping", "pod", pod.Name)
 
 		return nil
@@ -91,6 +87,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		case <-sagaCtx.Done():
 			return
 		}
+
 		defer func() { <-createSem }()
 
 		// Hoisted Pull Cache: Survives retries
@@ -180,6 +177,9 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		g.Logger.Debug("sync: step1 CNI ready", "uid", uid, "pod", pod.Name, "ip", podIP, "netPath", netPath)
 		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkReady", "CNI network configured, podIP=%s", podIP)
 
+		// Persistence of PodIP for early visibility even during Init crashes.
+		g.store.SetPodIP(uid, podIP)
+
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
 
@@ -195,6 +195,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	// Placed here (between network setup and container launch) so it runs
 	// on both first creation and retry-after-failure.
 	g.store.InitRestartState(pod)
+	g.store.SetPodIP(uid, podIP)
 
 	// Step 2: Environment Resolution
 	g.Logger.Debug("sync: step2 env resolution", "uid", uid, "pod", pod.Name)

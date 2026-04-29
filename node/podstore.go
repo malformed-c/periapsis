@@ -329,9 +329,18 @@ func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creation
 	s.registryMu.Lock()
 	if ps, ok := s.pods[uid]; ok {
 		ps.mu.Lock()
+		if ps.pod != nil {
+			pod.Status = ps.pod.Status
+		}
 		ps.pod = pod
 		ps.phase = corev1.PodPending
 		ps.inFlight = handle
+		if ps.restarts == nil {
+			ps.restarts = make(map[string]*containerRestartState)
+		}
+		if ps.probes == nil {
+			ps.probes = make(map[string]*ContainerProbeState)
+		}
 		ps.mu.Unlock()
 		s.registryMu.Unlock()
 
@@ -342,6 +351,8 @@ func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creation
 		pod:      pod,
 		phase:    corev1.PodPending,
 		inFlight: handle,
+		restarts: make(map[string]*containerRestartState),
+		probes:   make(map[string]*ContainerProbeState),
 	}
 
 	s.pods[uid] = ps

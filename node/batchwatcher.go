@@ -77,6 +77,11 @@ type BatchWatcher struct {
 	// but do affect the pod's Ready condition, so they need separate tracking.
 	prevReady map[string]bool // key: uid/containerName
 
+	// Coalescer tracking for fields that don't change machine state.
+	prevPhases   map[string]corev1.PodPhase // key: uid
+	prevIPs      map[string]string          // key: uid
+	prevRestarts map[string]int32           // key: uid/containerName
+
 	// pollMu serializes poll() and handleUnitEvent() to prevent concurrent
 	// access to prevStateMap and prevReady.
 	pollMu sync.Mutex
@@ -121,6 +126,9 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		pokeCh:       make(chan struct{}, 1),
 		prevStateMap: make(map[string]perigeos.MachineState),
 		prevReady:    make(map[string]bool),
+		prevPhases:   make(map[string]corev1.PodPhase),
+		prevIPs:      make(map[string]string),
+		prevRestarts: make(map[string]int32),
 		restarting:   make(map[string]bool),
 	}
 
@@ -133,7 +141,8 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 	for _, pod := range pods {
 		uid := string(pod.UID)
 		if deps.Store.PodPhase(uid) == corev1.PodRunning {
-			for _, c := range pod.Spec.Containers {
+			allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+			for _, c := range allContainers {
 				deps.Store.MarkContainerSeenRunning(uid, c.Name)
 			}
 		}
@@ -527,6 +536,12 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// A unit disappearing from stateMap (after ResetUnit cleanup) is NOT
 		// a state change - it's expected cleanup.
 		if e.phase == corev1.PodSucceeded || e.phase == corev1.PodFailed {
+			// If the phase just changed to terminal, we MUST push one last time.
+			if prev, ok := bw.prevPhases[e.uid]; !ok || prev != e.phase {
+				changedPods[e.uid] = true
+			}
+
+			// Systemd machine state change (e.g. late failure reporting)
 			needsReeval := false
 			for _, c := range e.pod.Spec.Containers {
 				key := e.uid + "/" + c.Name
@@ -539,7 +554,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				}
 			}
 
-			if !needsReeval {
+			if !needsReeval && !changedPods[e.uid] {
 				continue
 			}
 		}
@@ -552,6 +567,18 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// For pending pods, we still want to resolve init container states
 		// so they show up in kubectl.
 		allContainers := append(e.pod.Spec.InitContainers, e.pod.Spec.Containers...)
+
+		// 1. Pod Phase change
+		if prev, ok := bw.prevPhases[e.uid]; !ok || prev != e.phase {
+			changedPods[e.uid] = true
+			bw.prevPhases[e.uid] = e.phase
+		}
+
+		// 2. Pod IP change
+		if prev, ok := bw.prevIPs[e.uid]; !ok || prev != e.podIP {
+			changedPods[e.uid] = true
+			bw.prevIPs[e.uid] = e.podIP
+		}
 		for _, c := range allContainers {
 			key := e.uid + "/" + c.Name
 			cur := stateMap[key]
@@ -561,6 +588,19 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 					"prev", prev, "cur", cur)
 
 				changedPods[e.uid] = true
+			}
+
+			// 3. Restart Count change
+			counts := bw.deps.Store.RestartCounts(e.uid)
+			if count, ok := counts[c.Name]; ok {
+				if prev, ok := bw.prevRestarts[key]; !ok || prev != count {
+					bw.logger.Debug("Coalescer: restart count change",
+						"pod", e.pod.Name, "container", c.Name,
+						"prev", prev, "cur", count)
+
+					changedPods[e.uid] = true
+					bw.prevRestarts[key] = count
+				}
 			}
 
 			// Check readiness changes (probe transitions don't change machine state).
@@ -597,10 +637,14 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
 		if currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
-			bw.logger.Debug("Coalescer: skipping status push (terminal phase filter)",
-				"uid", e.uid, "pod", e.pod.Name, "storePhase", currentPhase)
+			// Only skip if the phase was ALREADY terminal in the previous cycle.
+			// If it just transitioned to Succeeded/Failed, we must push the final status.
+			if prev, ok := bw.prevPhases[e.uid]; ok && prev == currentPhase {
+				bw.logger.Debug("Coalescer: skipping status push (already terminal)",
+					"uid", e.uid, "pod", e.pod.Name, "storePhase", currentPhase)
 
-			continue
+				continue
+			}
 		}
 
 		// Fetch the current pod under lock rather than using e.pod from the
@@ -638,11 +682,27 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	for k := range bw.prevReady {
 		if !activeKeys[k] {
 			delete(bw.prevReady, k)
+			delete(bw.prevRestarts, k)
+		}
+	}
+	for uid := range bw.prevPhases {
+		found := false
+		for _, e := range entries {
+			if e.uid == uid {
+				found = true
+
+				break
+			}
+		}
+		if !found {
+			delete(bw.prevPhases, uid)
+			delete(bw.prevIPs, uid)
 		}
 	}
 }
 
 func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Pod, podIP string, stateMap map[string]perigeos.MachineState, exitCodeMap map[string]int32) {
+	allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	policy := pod.Spec.RestartPolicy
 	if policy == "" {
 		policy = corev1.RestartPolicyAlways
@@ -652,7 +712,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	allSucceeded := true
 	anyRestarting := false // true only when maybeRestart is called this cycle
 
-	for _, c := range pod.Spec.Containers {
+	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
 		key := uid + "/" + c.Name
 		state, exists := stateMap[key]
 		if !exists {
@@ -783,7 +844,7 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 		currentPod := bw.deps.Store.GetPodCopy(uid)
 		if currentPod != nil {
 			status := bw.deps.BuildPodStatus(currentPod)
-			if status.Phase == corev1.PodRunning {
+			if status.Phase == corev1.PodRunning || status.Phase == corev1.PodPending {
 				bw.logger.Info("checkPod: eager restart status push",
 					"uid", uid, "pod", currentPod.Name, "ready", status.Conditions[0].Status)
 
@@ -813,7 +874,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	// containers whose units were already cleaned up (not in stateMap) show
 	// as Exited rather than Unknown. The pre-pass wrote seenRunning/restarting
 	// fallbacks, but terminal pods need a definitive Exited for all containers.
-	for _, c := range pod.Spec.Containers {
+	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
 		key := uid + "/" + c.Name
 		if s, ok := stateMap[key]; ok {
 			bw.deps.Store.SetContainerMachineState(uid, c.Name, s, exitCodeMap[key])
@@ -839,7 +901,8 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 
 	// Clean up dead/failed systemd units now that we've read their state.
 	// Without this, transient units accumulate in systemd's listing.
-	for _, c := range pod.Spec.Containers {
+	allContainers = append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
 		if err := bw.deps.Runtime.ResetUnit(ctx, uid, c.Name); err != nil {
 			bw.logger.Debug("ResetUnit failed (unit may already be collected)",
 				"uid", uid, "pod", pod.Name, "container", c.Name, "err", err)

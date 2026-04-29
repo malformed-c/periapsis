@@ -139,8 +139,6 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // syncPodSandboxAndContainers evaluates the current reality of the pod and pushes it forward.
 // It builds the network sandbox and injects the containers into systemd.
 func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Pod, pullCache map[string]pullCacheEntry) error {
-	defer g.notifyPodStatus(pod)
-
 	uid := string(pod.UID)
 
 	g.Logger.Debug("sync: enter", "uid", uid, "pod", pod.Name)
@@ -179,6 +177,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 		// Persistence of PodIP for early visibility even during Init crashes.
 		g.store.SetPodIP(uid, podIP)
+		g.batchWatcher.Poke()
 
 	} else {
 		netPath = filepath.Join("/var/run/netns", "peri-"+uid)
@@ -243,7 +242,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			g.Logger.Warn("sync: step3 init container failed", "uid", uid, "pod", pod.Name, "container", ic.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "InitFailed", "Init container %s: %v", ic.Name, err)
 
-			g.store.IncrementRestart(uid, ic.Name)
+			g.batchWatcher.Poke()
 
 			return fmt.Errorf("init container %s failed: %w", ic.Name, err)
 		}
@@ -298,6 +297,7 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 	g.store.PromoteRunning(uid, pod, podIP)
 	g.volumes.Track(uid, pod)
+	g.batchWatcher.Poke()
 
 	g.Logger.Info("sync: complete", "uid", uid, "pod", pod.Name, "ip", podIP)
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Started", "Started pod %s", pod.Name)
@@ -449,6 +449,7 @@ func (g *Gambit) launchContainer(
 
 		if g.clusterDNS != "" {
 			_ = writeResolvConf(rootfs, g.clusterDNS, pod.Namespace)
+
 		} else {
 			g.Logger.Error("ClusterDNS is not set")
 		}
@@ -518,22 +519,6 @@ func (g *Gambit) launchContainer(
 		return fmt.Errorf("RunMachine: %w", err)
 	}
 
-	// Propagate Bidirectional mounts (required for CSI drivers).
-	// If this fails, stop the container before returning - leaving it
-	// running without shared propagation is worse than a clean retry.
-	if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
-		_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
-
-		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
-
-		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
-		if imErr != nil {
-			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
-		}
-
-		return fmt.Errorf("MakeSharedMounts: %w", err)
-	}
-
 	// 5. Wait for target state
 	if isInit {
 		state, err := g.Runtime.WaitForMachineExit(ctx, uid, c.Name, initContainerTimeout)
@@ -575,6 +560,22 @@ func (g *Gambit) launchContainer(
 		// never set and the terminal deferral in checkPod loops forever
 		// (the pod gets stuck in a non-Pending non-Running limbo).
 		g.batchWatcher.MarkRunning(uid, c.Name)
+
+		// Propagate Bidirectional mounts (required for CSI drivers).
+		// If this fails, stop the container before returning - leaving it
+		// running without shared propagation is worse than a clean retry.
+		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
+			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
+
+			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
+			imErr := g.ImageManager.RemoveMStack(uid, c.Name)
+			if imErr != nil {
+				g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+			}
+
+			return fmt.Errorf("MakeSharedMounts: %w", err)
+		}
 
 		// Run PostStart lifecycle hook
 		if c.Lifecycle != nil && c.Lifecycle.PostStart != nil {
@@ -697,22 +698,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	g.store.MarkRestarted(uid, containerName)
 	g.Logger.Info("Container restarted successfully", "pod", pod.Name, "container", containerName)
 
-	// Publish updated status. Query each container's live state and write to
-	// the store so buildPodStatus can read it without a D-Bus call per container.
-	restartedPod := g.store.GetPodCopy(uid)
-	if restartedPod != nil {
-		for _, c := range restartedPod.Spec.Containers {
-			state, err := g.Runtime.MachineStatus(ctx, uid, c.Name)
-			if err != nil {
-				state = perigeos.StateUnknown
-			}
-			g.store.SetContainerMachineState(uid, c.Name, state, 0)
-		}
-
-		updated := restartedPod.DeepCopy()
-		g.buildPodStatus(restartedPod).DeepCopyInto(&updated.Status)
-		g.notifyPodStatus(updated)
-	}
+	g.batchWatcher.Poke()
 }
 
 // --- Helpers ---
@@ -1063,8 +1049,8 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 
 func (g *Gambit) markPodFailed(uid string, pod *corev1.Pod, err error) {
 	g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "pod creation failed: %v", err)
-	failedPod := g.store.MarkFailed(uid, pod, "CreateFailed", err.Error())
-	g.notifyPodStatus(failedPod)
+	g.store.MarkFailed(uid, pod, "CreateFailed", err.Error())
+	g.batchWatcher.Poke()
 }
 
 // formatExitInfo builds a human-readable detail string from ContainerExitInfo.

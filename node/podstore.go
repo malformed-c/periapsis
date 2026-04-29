@@ -297,14 +297,18 @@ func (s *PodStore) IsContainerReady(uid, containerName string) bool {
 // state at least once. Safe to call before InitRestartState (the map is lazily
 // initialised). Idempotent.
 func (s *PodStore) MarkContainerSeenRunning(uid, containerName string) {
-	if ps := s.getPodState(uid); ps != nil {
-		ps.mu.Lock()
-		if ps.seenRunning == nil {
-			ps.seenRunning = make(map[string]bool)
-		}
-		ps.seenRunning[containerName] = true
-		ps.mu.Unlock()
+	ps := s.getPodState(uid)
+	if ps == nil {
+		s.logger.Error("MarkContainerSeenRunning: pod not registered", "uid", uid, "container", containerName)
+		return
 	}
+
+	ps.mu.Lock()
+	if ps.seenRunning == nil {
+		ps.seenRunning = make(map[string]bool)
+	}
+	ps.seenRunning[containerName] = true
+	ps.mu.Unlock()
 }
 
 // IsContainerSeenRunning reports whether a container has ever been observed in
@@ -478,14 +482,18 @@ func (s *PodStore) SetPodStatus(uid string, status corev1.PodStatus) {
 // buildPodStatus reads from here to build corev1.ContainerState without
 // requiring a D-Bus call per container.
 func (s *PodStore) SetContainerMachineState(uid, containerName string, state perigeos.MachineState, exitCode int32) {
-	if ps := s.getPodState(uid); ps != nil {
-		ps.mu.Lock()
-		if ps.machineStates == nil {
-			ps.machineStates = make(map[string]containerMachineState)
-		}
-		ps.machineStates[containerName] = containerMachineState{State: state, ExitCode: exitCode}
-		ps.mu.Unlock()
+	ps := s.getPodState(uid)
+	if ps == nil {
+		s.logger.Error("SetContainerMachineState: pod not registered", "uid", uid, "container", containerName)
+		return
 	}
+
+	ps.mu.Lock()
+	if ps.machineStates == nil {
+		ps.machineStates = make(map[string]containerMachineState)
+	}
+	ps.machineStates[containerName] = containerMachineState{State: state, ExitCode: exitCode}
+	ps.mu.Unlock()
 }
 
 // ContainerMachineState returns the last-known OS-level state and exit code

@@ -25,11 +25,10 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	uid := string(targetPod.UID)
 
-	phase := g.store.PodPhase(uid)
-
 	// If the pod is in a terminal phase (set by BatchWatcher), return
 	// the stored status directly. The systemd unit may already be cleaned
 	// up (ResetUnit) so machineStates would be stale or absent.
+	phase := g.store.PodPhase(uid)
 	if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 		statusCopy := targetPod.Status.DeepCopy()
 

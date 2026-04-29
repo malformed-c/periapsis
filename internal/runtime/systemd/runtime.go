@@ -1053,15 +1053,8 @@ func (s *SystemdRuntime) GetLogStream(
 		// No invocation IDs found - fall back to unit name match.
 		if err := j.AddMatch("_SYSTEMD_UNIT" + "=" + unitName); err != nil {
 			j.Close()
-
 			return nil, fmt.Errorf("journal match unit: %w", err)
 		}
-	}
-
-	if err := j.AddMatch("SYSLOG_IDENTIFIER" + "=" + containerName); err != nil {
-		j.Close()
-
-		return nil, fmt.Errorf("journal match syslog id: %w", err)
 	}
 
 	if opts.SinceSeconds > 0 {

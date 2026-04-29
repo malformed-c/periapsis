@@ -326,13 +326,24 @@ func (s *PodStore) IsContainerSeenRunning(uid, containerName string) bool {
 // --- Composite State Mutations ---
 
 func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creationHandle) {
+	s.registryMu.Lock()
+	if ps, ok := s.pods[uid]; ok {
+		ps.mu.Lock()
+		ps.pod = pod
+		ps.phase = corev1.PodPending
+		ps.inFlight = handle
+		ps.mu.Unlock()
+		s.registryMu.Unlock()
+
+		return
+	}
+
 	ps := &podState{
 		pod:      pod,
 		phase:    corev1.PodPending,
 		inFlight: handle,
 	}
 
-	s.registryMu.Lock()
 	s.pods[uid] = ps
 	s.nameIndex[pod.Namespace+"/"+pod.Name] = uid
 	s.registryMu.Unlock()
@@ -555,37 +566,36 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 	allContainers = append(allContainers, pod.Spec.InitContainers...)
 	allContainers = append(allContainers, pod.Spec.Containers...)
 
-	rs := make(map[string]*containerRestartState, len(allContainers))
-	probes := make(map[string]*ContainerProbeState, len(allContainers))
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 
-	for _, c := range allContainers {
-		rs[c.Name] = &containerRestartState{
-			backoff:     restartBackoffInit,
-			lastStarted: time.Now(),
-		}
-		probes[c.Name] = &ContainerProbeState{
-			StartedAt:     time.Now(),
-			Ready:         c.ReadinessProbe == nil,
-			LastProbeTime: make(map[string]time.Time),
-		}
+	if ps.restarts == nil {
+		ps.restarts = make(map[string]*containerRestartState, len(allContainers))
+	}
+	if ps.probes == nil {
+		ps.probes = make(map[string]*ContainerProbeState, len(allContainers))
 	}
 
-	ps.mu.Lock()
-	ps.restarts = rs
-	ps.probes = probes
-	ps.mu.Unlock()
+	for _, c := range allContainers {
+		if _, ok := ps.restarts[c.Name]; !ok {
+			ps.restarts[c.Name] = &containerRestartState{
+				backoff:     restartBackoffInit,
+				lastStarted: time.Now(),
+			}
+		}
+		if _, ok := ps.probes[c.Name]; !ok {
+			ps.probes[c.Name] = &ContainerProbeState{
+				StartedAt:     time.Now(),
+				Ready:         c.ReadinessProbe == nil,
+				LastProbeTime: make(map[string]time.Time),
+			}
+		}
+	}
 
 	slog.Info("InitRestartState",
 		"pod", pod.Name, "uid", uid,
 		"containers", len(allContainers),
 		"caller", callerSite())
-
-	for _, c := range allContainers {
-		slog.Debug("InitRestartState: container",
-			"pod", pod.Name, "container", c.Name,
-			"hasReadinessProbe", c.ReadinessProbe != nil,
-			"initialReady", c.ReadinessProbe == nil)
-	}
 }
 
 // InitRestartStateFrom is the flat-payload variant of InitRestartState.

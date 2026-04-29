@@ -23,6 +23,7 @@ type systemdDBus interface {
 	GetServicePropertyContext(ctx context.Context, unit string, property string) (*dbus.Property, error)
 	ListUnitsByPatternsContext(ctx context.Context, states []string, patterns []string) ([]dbus.UnitStatus, error)
 	SetUnitPropertiesContext(ctx context.Context, name string, runtime bool, properties ...dbus.Property) error
+	GetManagerProperty(prop string) (string, error)
 }
 
 // machineDBus defines the subset of *dbusv5.Conn used for org.freedesktop.machine1.

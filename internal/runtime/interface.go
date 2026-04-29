@@ -19,7 +19,9 @@ type Runtime interface {
 	// MStackSupported returns true when the host systemd version supports
 	// --mstack= (>= 260). When false, callers must provide RootFS in PodConfig
 	// and the runtime uses --directory= with a manually constructed overlayfs.
+	// TODO Refactor
 	MStackSupported() bool
+
 	// RunMachine creates and starts a transient systemd-nspawn service for the pod.
 	RunMachine(ctx context.Context, podUID string, cfg PodConfig) error
 
@@ -186,7 +188,6 @@ type PodConfig struct {
 	// Networking
 	NetNSPath   string // absolute path to /var/run/netns/<uid>
 	HostNetwork bool   // when true, join the host network namespace
-
 
 	// Security
 	Privileged bool // when true, grant all capabilities (--capability=all)

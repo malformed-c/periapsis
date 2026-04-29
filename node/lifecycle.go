@@ -6,6 +6,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -316,14 +317,16 @@ func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *cor
 		// Clear failed fragment files from systemd
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
-		// Filesystem cleanup — try mstack first, fall back to legacy Unmount.
+		// Filesystem cleanup - try mstack first, fall back to legacy Unmount.
 		// RemoveMStack is a no-op if the mstack dir doesn't exist (legacy path).
 		// Unmount is a no-op if the overlay isn't mounted (mstack path).
 		overlayName := uid + "-" + c.Name
 		if err := g.ImageManager.RemoveMStack(uid, c.Name); err != nil {
 			g.Logger.Warn("teardown: RemoveMStack failed", "uid", uid, "container", c.Name, "err", err)
 		}
+
 		_ = g.ImageManager.Unmount(overlayName)
+
 		overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
 		if err := os.RemoveAll(overlayDir); err != nil {
 			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
@@ -390,7 +393,7 @@ func (g *Gambit) launchContainer(
 		// }
 	}
 
-	// 2. Filesystem setup — mstack path (systemd >= 260) or legacy overlayfs.
+	// 2. Filesystem setup - mstack path (systemd >= 260) or legacy overlayfs.
 	profile := runtimeProfiles[c.Name]
 	var mstackPath, rootfs string
 
@@ -398,13 +401,14 @@ func (g *Gambit) launchContainer(
 		// systemd >= 260: use .mstack directory. nspawn assembles the overlay
 		// and manages the upper tmpfs layer via --volatile=overlay.
 		// Bind entries (resolv.conf, passwd, group, getent shim, home dirs) are
-		// written directly into the mstack dir — no tmpdir, no cleanup goroutine.
+		// written directly into the mstack dir - no tmpdir, no cleanup goroutine.
 		bindEntries := prepareMStackBindEntries(g.clusterDNS, pod.Namespace, profile.RunAsUser, profile.RunAsGroup)
 		var err error
 		mstackPath, err = g.ImageManager.PrepareMStack(uid, c.Name, layers, bindEntries)
 		if err != nil {
 			return fmt.Errorf("prepare mstack: %w", err)
 		}
+
 	} else {
 		// Legacy path (systemd < 260): manually construct overlayfs rootfs.
 		// TODO(overlay-refactor): Remove once systemd 260 is ubiquitous.
@@ -413,9 +417,13 @@ func (g *Gambit) launchContainer(
 		if err != nil {
 			return fmt.Errorf("mount: %w", err)
 		}
+
 		if g.clusterDNS != "" {
 			_ = writeResolvConf(rootfs, g.clusterDNS, pod.Namespace)
+		} else {
+			g.Logger.Error("ClusterDNS is not set")
 		}
+
 		prepareUserIdentityForRootFS(rootfs, profile.RunAsUser, profile.RunAsGroup, g.Logger)
 	}
 
@@ -428,9 +436,11 @@ func (g *Gambit) launchContainer(
 	if err != nil {
 		if mstackPath != "" {
 			_ = g.ImageManager.RemoveMStack(uid, c.Name)
+
 		} else if rootfs != "" {
 			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
 		}
+
 		return fmt.Errorf("volume resolution: %w", err)
 	}
 
@@ -859,11 +869,13 @@ func prepareUserIdentityForRootFS(rootfs string, runAsUser, runAsGroup *int64, l
 	if runAsUser == nil {
 		return
 	}
+
 	uid := *runAsUser
 	gid := int64(0)
 	if runAsGroup != nil {
 		gid = *runAsGroup
 	}
+
 	username := fmt.Sprintf("peri-%d", uid)
 	home := "/"
 	if uid != 0 {
@@ -878,11 +890,13 @@ func prepareUserIdentityForRootFS(rootfs string, runAsUser, runAsGroup *int64, l
 		_, _ = f.WriteString(passwdLine)
 		f.Close()
 	}
+
 	groupPath := filepath.Join(rootfs, "etc", "group")
 	if f, err := os.OpenFile(groupPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		_, _ = f.WriteString(groupLine)
 		f.Close()
 	}
+
 	if uid != 0 {
 		homeDir := filepath.Join(rootfs, home)
 		if err := os.MkdirAll(homeDir, 0750); err == nil {

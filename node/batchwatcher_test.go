@@ -106,7 +106,7 @@ func (r *stubRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perig
 func (r *stubRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
 	return 0, nil
 }
-func (r *stubRuntime) MStackSupported() bool               { return true }
+func (r *stubRuntime) MStackSupported() bool              { return true }
 func (r *stubRuntime) SliceActive(_ context.Context) bool { return true }
 
 func (r *stubRuntime) GetContainerExitInfo(_ context.Context, _, _ string) perigeos.ContainerExitInfo {
@@ -371,7 +371,9 @@ func TestBatchWatcher_ReadinessTransitionPushed(t *testing.T) {
 
 	bw, notified := startBW(t, store, rt)
 	defer bw.Stop()
-	bw.seenRunning[uid+"/nginx"] = true // prime seenRunning
+
+	// prime seenRunning
+	bw.deps.Store.MarkContainerSeenRunning(uid, "nginx")
 
 	// First poll: container Running, not ready. Seeds prevReady[key]=false.
 	bw.Poke()
@@ -420,7 +422,7 @@ func TestBatchWatcher_NoSpuriousPushWhenNothingChanges(t *testing.T) {
 
 	bw, notified := startBW(t, store, rt)
 	defer bw.Stop()
-	bw.seenRunning[uid+"/nginx"] = true
+	bw.deps.Store.MarkContainerSeenRunning(uid, "nginx")
 
 	// First Poke: establishes prevStateMap and prevReady.
 	bw.Poke()

@@ -65,7 +65,7 @@ func (m *mockRuntimeForGhosts) ResetUnit(_ context.Context, _, _ string) error {
 func (m *mockRuntimeForGhosts) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
 	return 0, nil
 }
-func (m *mockRuntimeForGhosts) MStackSupported() bool               { return true }
+func (m *mockRuntimeForGhosts) MStackSupported() bool { return true }
 func (m *mockRuntimeForGhosts) SliceActive(ctx context.Context) bool {
 	return true
 }

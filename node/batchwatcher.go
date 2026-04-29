@@ -403,6 +403,7 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		}
 
 		bw.logger.Error("Batch poll: ListManagedMachines failed", "err", err)
+
 		return
 	}
 
@@ -413,20 +414,6 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		key := m.UID + "/" + m.ContainerName
 		stateMap[key] = m.State
 		exitCodeMap[key] = m.ExitCode
-	}
-
-	// Publish resolved container states to the store so buildPodStatus
-	// can read without a D-Bus call. seenRunning/restarting fallbacks are
-	// applied here once, before checkPod and the coalescer run.
-	for i := range entries {
-		e := &entries[i]
-		if e.phase == corev1.PodPending {
-			continue
-		}
-		for _, c := range e.pod.Spec.Containers {
-			state, exitCode := bw.resolveContainerState(e.uid, c.Name, stateMap, exitCodeMap)
-			bw.deps.Store.SetContainerMachineState(e.uid, c.Name, state, exitCode)
-		}
 	}
 
 	// Snapshot pods efficiently using store's atomic snapshot.
@@ -440,6 +427,21 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	entries := make([]podEntry, len(storeEntries))
 	for i, e := range storeEntries {
 		entries[i] = podEntry{uid: e.UID, pod: e.Pod, phase: e.Phase, podIP: e.PodIP}
+	}
+
+	// Publish resolved container states to the store so buildPodStatus
+	// can read without a D-Bus call. seenRunning/restarting fallbacks are
+	// applied here once, before checkPod and the coalescer run.
+	for i := range entries {
+		e := &entries[i]
+		if e.phase == corev1.PodPending {
+			continue
+		}
+
+		for _, c := range e.pod.Spec.Containers {
+			state, exitCode := bw.resolveContainerState(e.uid, c.Name, stateMap, exitCodeMap)
+			bw.deps.Store.SetContainerMachineState(e.uid, c.Name, state, exitCode)
+		}
 	}
 
 	// Run probes concurrently for all running containers before the sequential
@@ -480,11 +482,14 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 				hasAnyDue := false
 				if c.StartupProbe != nil && isDue(ps, "startup", c.StartupProbe.PeriodSeconds, c.StartupProbe.InitialDelaySeconds) {
 					hasAnyDue = true
+
 				} else if c.LivenessProbe != nil && isDue(ps, "liveness", c.LivenessProbe.PeriodSeconds, c.LivenessProbe.InitialDelaySeconds) {
 					hasAnyDue = true
+
 				} else if c.ReadinessProbe != nil && isDue(ps, "readiness", c.ReadinessProbe.PeriodSeconds, c.ReadinessProbe.InitialDelaySeconds) {
 					hasAnyDue = true
 				}
+
 				if !hasAnyDue {
 					continue
 				}

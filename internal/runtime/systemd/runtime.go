@@ -55,6 +55,7 @@ type SystemdRuntime struct {
 	// mstackSupported is true when the host systemd version is >= 260 and
 	// systemd-nspawn supports the --mstack= flag. Detected once at construction.
 	// When false, the old --directory= + manual overlayfs path is used.
+	// TODO Refactor
 	mstackSupported bool
 
 	// startSem limits concurrent StartTransientUnit calls to avoid
@@ -105,6 +106,7 @@ func NewSystemdRuntime(
 	rawConn, err := dbusv5.ConnectSystemBus()
 	if err != nil {
 		conn.Close()
+
 		return nil, fmt.Errorf("failed to open raw dbus connection: %w", err)
 	}
 
@@ -115,8 +117,10 @@ func NewSystemdRuntime(
 		if err != nil {
 			conn.Close()
 			rawConn.Close()
+
 			return nil, fmt.Errorf("failed to open signal dbus connection: %w", err)
 		}
+
 		sigConn = sc
 		ownsSigConn = true
 	}
@@ -210,7 +214,6 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		}
 	}
 
-	// TODO: Can we rely on ENV?
 	execStart := []string{
 		"systemd-nspawn",
 		"--console=" + consoleMode,
@@ -218,11 +221,13 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"--register=yes",
 		"--kill-signal=SIGTERM",
 		"--machine=" + machineName,
+
 		// --slice= is NOT passed here: --keep-unit tells nspawn to stay in the
 		// calling unit's cgroup rather than creating a new scope, so nspawn
 		// ignores --slice= (and warns about it). The slice is already set on
 		// the transient unit itself via dbus.PropSlice - that's what matters.
 		"--network-namespace-path=" + netNSPath,
+
 		// Do not let nspawn bind-mount the host /etc/resolv.conf into the
 		// container - we write our own cluster-DNS resolv.conf into the
 		// overlayfs before starting, and nspawn's default would overwrite it.
@@ -235,16 +240,20 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// with a manually constructed overlayfs rootfs on older systems.
 	if cfg.MStackPath != "" && s.mstackSupported {
 		execStart = append(execStart, "--mstack="+cfg.MStackPath)
+
 		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
 		// Without this, the rootfs is read-only and containers cannot write.
 		execStart = append(execStart, "--volatile=overlay")
+
 	} else {
 		// Pre-260 fallback: --directory= with a manually constructed overlayfs
 		// rootfs. cfg.RootFS must be set by the caller for this path.
 		if cfg.RootFS == "" {
 			return fmt.Errorf("RunMachine: mstack not supported (systemd < 260) and RootFS is empty")
 		}
+
 		execStart = append(execStart, "--directory="+cfg.RootFS)
+
 		s.logger.Debug("RunMachine: using legacy --directory= path (systemd < 260)",
 			"uid", podUID, "container", containerName)
 	}
@@ -952,29 +961,36 @@ func (s *SystemdRuntime) tailContainerLog(ctx context.Context, podUID, container
 	return strings.TrimSpace(string(data))
 }
 
-
 // detectMStackSupport returns true when the running systemd version is >= 260.
 // --mstack= was added in systemd 260. On older systems the runtime falls back
 // to --directory= with a manually constructed overlayfs rootfs.
 func detectMStackSupport(ctx context.Context, conn systemdDBus, logger *slog.Logger) bool {
-	prop, err := conn.GetManagerPropertyContext(ctx, "Version")
+	callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	prop, err := GetManagerPropertySafe(callCtx, conn.(*dbus.Conn), "Version")
 	if err != nil {
 		logger.Warn("systemd version detection failed, assuming pre-260", "err", err)
+
 		return false
 	}
-	// Version is a quoted string variant, e.g. "\"256.6-1-arch\""
-	raw := strings.Trim(fmt.Sprintf("%v", prop), "\"")
+
 	// Extract the leading numeric part before any dot or dash.
-	numStr := strings.FieldsFunc(raw, func(r rune) bool {
+	numStr := strings.FieldsFunc(prop, func(r rune) bool {
 		return r == '.' || r == '-' || r == '~'
 	})[0]
+
 	var ver int
 	if _, err := fmt.Sscanf(numStr, "%d", &ver); err != nil {
-		logger.Warn("systemd version parse failed, assuming pre-260", "raw", raw, "err", err)
+		logger.Warn("systemd version parse failed, assuming pre-260", "prop", prop, "err", err)
+
 		return false
 	}
+
 	supported := ver >= 260
-	logger.Info("systemd version detected", "version", raw, "mstackSupported", supported)
+
+	logger.Info("systemd version detected", "version", prop, "mstackSupported", supported)
+
 	return supported
 }
 
@@ -1633,7 +1649,7 @@ func (s *SystemdRuntime) CleanupStaleUnits(ctx context.Context, activeUIDs map[s
 // processing PropertiesChanged signals from every systemd unit on the host -
 // only units whose object path starts with our pawn prefix are delivered.
 //
-// Previous approach used go-systemd's Subscribe()+SetPropertiesSubscriber which
+// Previous approach used go-systemd's Subscribe() + SetPropertiesSubscriber which
 // matches ALL PropertiesChanged signals and filters in userspace. That works but
 // wastes CPU on busy hosts with many units.
 func (s *SystemdRuntime) SubscribeEvents(ctx context.Context) <-chan runtime.UnitEvent {
@@ -1758,4 +1774,35 @@ func pathBase(p string) string {
 	}
 
 	return p
+}
+
+// GetManagerPropertySafe is a wrapper around the library's GetManagerProperty
+// to add context support and remove GVariant single quotes.
+func GetManagerPropertySafe(ctx context.Context, conn *dbus.Conn, prop string) (string, error) {
+	type result struct {
+		val string
+		err error
+	}
+
+	resCh := make(chan result, 1)
+
+	go func() {
+		// Call the library's blocking method
+		val, err := conn.GetManagerProperty(prop)
+		resCh <- result{val, err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+
+	case res := <-resCh:
+		if res.err != nil {
+			return "", res.err
+		}
+
+		// The library returns 'value' (with quotes).
+		// We trim them to get the actual raw string.
+		return strings.Trim(res.val, "'"), nil
+	}
 }

@@ -81,6 +81,10 @@ func (r *doctorMockRuntime) GetContainerExitInfo(_ context.Context, _, _ string)
 	return perigeos.ContainerExitInfo{}
 }
 
+func (r *doctorMockRuntime) MStackSupported() bool {
+	return true
+}
+
 // --- Mock Network ---
 
 // doctorMockNetwork implements network.NetworkManager. All calls are no-ops.

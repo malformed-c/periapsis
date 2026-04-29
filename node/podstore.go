@@ -502,7 +502,6 @@ func (s *PodStore) ContainerMachineState(uid, containerName string) (perigeos.Ma
 	return perigeos.StateUnknown, 0
 }
 
-
 func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message string) *corev1.Pod {
 	failedPod := pod.DeepCopy()
 	failedPod.Status.Phase = corev1.PodFailed

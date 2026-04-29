@@ -110,6 +110,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 			RestartCount: restartCount,
 		}
 
+		// TODO Refactor
 		switch state {
 		case perigeos.StateRunning:
 			cs.Ready = g.store.IsContainerReady(uid, c.Name)
@@ -132,15 +133,14 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 				if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
 					cs.Ready = previous.Ready
 					cs.State = previous.State
-
-					break
 				}
-			}
 
-			// For all other cases, if we don't know the state, it's not ready.
-			cs.Ready = false
-			cs.State = corev1.ContainerState{
-				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+			} else {
+				// For all other cases, if we don't know the state, it's not ready.
+				cs.Ready = false
+				cs.State = corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+				}
 			}
 
 		// Don't force podPhase = Pending here if the pod is already Running

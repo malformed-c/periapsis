@@ -170,6 +170,14 @@ func (m *mockSystemdDBus) ListUnitsByPatternsContext(ctx context.Context, states
 	return res, nil
 }
 
+func (o *mockSystemdDBus) GetManagerProperty(p string) (string, error) {
+	if p == "Version" {
+		return "'260.1-2-arch'", nil
+	}
+
+	return "", fmt.Errorf("property %s not found", p)
+}
+
 // Mocking machine1
 
 type mockMachineDBus struct {

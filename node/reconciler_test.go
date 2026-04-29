@@ -75,6 +75,10 @@ func (r *mockRuntime) PortForward(ctx context.Context, podUID, containerName str
 	return nil
 }
 
+func (r *mockRuntime) MStackSupported() bool {
+	return true
+}
+
 // --- Mock Network ---
 
 type mockNetwork struct {

@@ -506,14 +506,15 @@ func (g *Gambit) launchContainer(
 	}
 
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
-		// Immediately clean up the mount if systemd rejects the Run request
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
-
-		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
-		if imErr != nil {
-			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
+		// Only invalidate the mstack on structural errors (EBADMSG from nspawn's
+		// mstack parser). Other failures (e.g. container exits immediately) leave
+		// the mstack intact so the next restart reuses it.
+		if isMStackError(err) {
+			g.Logger.Warn("RunMachine: mstack structural error, invalidating for rebuild",
+				"uid", uid, "container", c.Name, "err", err)
+			_ = g.ImageManager.InvalidateMStack(uid, c.Name)
 		}
-
 		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
@@ -525,11 +526,6 @@ func (g *Gambit) launchContainer(
 		state, err := g.Runtime.WaitForMachineExit(ctx, uid, c.Name, initContainerTimeout)
 
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name) // Init containers ephemeral
-
-		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
-		if imErr != nil {
-			g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
-		}
 
 		if err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
@@ -567,13 +563,7 @@ func (g *Gambit) launchContainer(
 		// running without shared propagation is worse than a clean retry.
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
-
 			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
-
-			imErr := g.ImageManager.RemoveMStack(uid, c.Name)
-			if imErr != nil {
-				g.Logger.Error(err.Error(), "uid", uid, "container", c.Name)
-			}
 
 			return fmt.Errorf("MakeSharedMounts: %w", err)
 		}
@@ -653,12 +643,8 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	// 1. Scrub previous crash state
 	_ = g.Runtime.StopMachine(ctx, uid, containerName)
 	_ = g.Runtime.ResetUnit(ctx, uid, containerName)
-
 	_ = g.ImageManager.Unmount(uid + "-" + containerName)
-
-	if err := g.ImageManager.RemoveMStack(uid, containerName); err != nil {
-		g.Logger.Error(err.Error(), "uid", uid, "container", containerName)
-	}
+	// mstack is preserved - PrepareMStack reuses it and resets rw/ for a fresh writable layer
 
 	if err := g.Runtime.CheckMachined(ctx); err != nil {
 		g.Logger.Error("Restart: machined unhealthy, skipping", "container", containerName, "err", err)
@@ -1121,6 +1107,19 @@ func sanitizeLogForEvent(log string) string {
 
 func (g *Gambit) admitPod(pod *corev1.Pod) string {
 	return g.store.AdmitPod(pod, g.Config.CPU, g.Config.Memory)
+}
+
+// isMStackError reports whether a RunMachine error is caused by nspawn failing
+// to parse the .mstack directory. These are structural errors (EBADMSG / "Bad
+// message") that won't fix themselves on retry - the mstack must be rebuilt.
+func isMStackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "bad message") ||
+		strings.Contains(msg, "ebadmsg") ||
+		strings.Contains(msg, "mstack")
 }
 
 func podEventFn(g *Gambit, pod *corev1.Pod) image.PullEventFn {

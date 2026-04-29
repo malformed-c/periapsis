@@ -1241,16 +1241,30 @@ func escapeMStackPath(containerPath string) string {
 // It creates layer@N symlinks for image layers and robind@/bind@ symlinks
 // for bind-mounted files (resolv.conf, passwd, group, getent shim, home dirs).
 // Bind files are co-located in the mstack dir so RemoveMStack cleans everything up.
+// mstackDir returns the path to the .mstack directory for a container.
+func (im *ImageManager) mstackDir(podUID, cName string) string {
+	return filepath.Join(im.baseDir, "stacks", fmt.Sprintf("%s-%s.mstack", podUID, cName))
+}
+
 func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, binds []MStackBindEntry) (string, error) {
-	// 1. Use baseDir to keep paths consistent with the rest of the manager.
-	stacksBase := filepath.Join(im.baseDir, "stacks")
+	mstackDir := im.mstackDir(podUID, cName)
 
-	// 2. Path MUST be per-container to support pods with multiple images.
-	// Result: <baseDir>/stacks/<podUID>-<cName>.mstack
-	mstackName := fmt.Sprintf("%s-%s.mstack", podUID, cName)
-	mstackDir := filepath.Join(stacksBase, mstackName)
+	// Reuse an existing valid mstack (pod restart case).
+	// A mstack is valid if layer@0 exists - it means the full setup completed
+	// on a previous call. We only reset the rw/ writable layer so the container
+	// gets a clean rootfs writable area while keeping volume bind entries and
+	// layer symlinks intact.
+	if _, err := os.Lstat(filepath.Join(mstackDir, "layer@0")); err == nil {
+		// Clear the upper/work dirs so nspawn recreates them fresh.
+		// This prevents leftover container writes from bleeding into the restart.
+		rwDir := filepath.Join(mstackDir, "rw")
+		if err := os.RemoveAll(rwDir); err != nil {
+			return "", fmt.Errorf("mstack rw reset: %w", err)
+		}
+		return filepath.Abs(mstackDir)
+	}
 
-	// 3. Idempotency: Clean up any existing stack from a previous attempt.
+	// Fresh build.
 	if err := os.RemoveAll(mstackDir); err != nil {
 		return "", fmt.Errorf("failed to clean existing mstack: %w", err)
 	}
@@ -1261,7 +1275,7 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 
 	cleanup := func() { _ = os.RemoveAll(mstackDir) }
 
-	// 4. Create the layer stack.
+	// Create the layer stack.
 	// systemd-nspawn sorts these numerically: layer@0 is the bottom-most.
 	for i, layerPath := range layers {
 		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
@@ -1272,7 +1286,7 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 		}
 	}
 
-	// 5. Write bind entries into the mstack dir.
+	// Write bind entries into the mstack dir.
 	// Three entry forms:
 	//   robind@<escaped> / bind@<escaped>  symlink  -> HostPath (volume mounts)
 	//   robind@<escaped> / bind@<escaped>  file     <- Content  (generated files)
@@ -1311,18 +1325,24 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 		}
 	}
 
-	// Return absolute path for the --mstack= flag
 	return filepath.Abs(mstackDir)
 }
 
-// RemoveMStack deletes the .mstack directory for a specific container.
-func (im *ImageManager) RemoveMStack(podUID, cName string) error {
-	mstackName := fmt.Sprintf("%s-%s.mstack", podUID, cName)
-	mstackDir := filepath.Join(im.baseDir, "stacks", mstackName)
-
-	if err := os.RemoveAll(mstackDir); err != nil {
-		return fmt.Errorf("failed to remove mstack %s: %w", mstackName, err)
+// InvalidateMStack removes the .mstack directory entirely, forcing a full
+// rebuild on the next PrepareMStack call. Use when the mstack is known
+// to be structurally broken (e.g. nspawn returns EBADMSG).
+func (im *ImageManager) InvalidateMStack(podUID, cName string) error {
+	if err := os.RemoveAll(im.mstackDir(podUID, cName)); err != nil {
+		return fmt.Errorf("invalidate mstack: %w", err)
 	}
+	return nil
+}
 
+// RemoveMStack deletes the .mstack directory for a specific container.
+// Called only at pod deletion time; use InvalidateMStack for error recovery.
+func (im *ImageManager) RemoveMStack(podUID, cName string) error {
+	if err := os.RemoveAll(im.mstackDir(podUID, cName)); err != nil {
+		return fmt.Errorf("failed to remove mstack: %w", err)
+	}
 	return nil
 }

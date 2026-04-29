@@ -11,98 +11,21 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
-	"time"
 
 	"github.com/malformed-c/periapsis/internal/config"
 	"github.com/malformed-c/periapsis/internal/image"
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
+	"github.com/malformed-c/periapsis/internal/test/fixtures"
 	"github.com/malformed-c/periapsis/node"
-	"github.com/malformed-c/periapsis/node/api"
 	"k8s.io/client-go/tools/record"
 )
-
-// --- Mock Runtime ---
-
-// doctorMockRuntime implements perigeos.Runtime for doctor tests.
-// Only ListManagedMachines is exercised by doctor; all other methods are stubs.
-type doctorMockRuntime struct {
-	machines []perigeos.PodMetadata
-}
-
-func (r *doctorMockRuntime) RunMachine(_ context.Context, _ string, _ perigeos.PodConfig) error {
-	return nil
-}
-func (r *doctorMockRuntime) StopMachine(_ context.Context, _, _ string) error {
-	return nil
-}
-func (r *doctorMockRuntime) MachineStatus(_ context.Context, _, _ string) (perigeos.MachineState, error) {
-	return perigeos.StateUnknown, nil
-}
-func (r *doctorMockRuntime) WaitForMachineExit(_ context.Context, _, _ string, _ time.Duration) (perigeos.MachineState, error) {
-	return perigeos.StateUnknown, nil
-}
-func (r *doctorMockRuntime) ListManagedMachines(_ context.Context) ([]perigeos.PodMetadata, error) {
-	return r.machines, nil
-}
-func (r *doctorMockRuntime) GetLogStream(_ context.Context, _, _ string, _ api.ContainerLogOpts) (io.ReadCloser, error) {
-	return io.NopCloser(nil), nil
-}
-func (r *doctorMockRuntime) RunInContainer(_ context.Context, _, _ string, _ []string, _ api.AttachIO) error {
-	return nil
-}
-func (r *doctorMockRuntime) AttachContainer(_ context.Context, _, _ string, _ api.AttachIO) error {
-	return nil
-}
-func (r *doctorMockRuntime) InitPawnSlice(_ context.Context, _ perigeos.PawnSliceConfig) error {
-	return nil
-}
-func (r *doctorMockRuntime) CheckMachined(_ context.Context) error {
-	return nil
-}
-func (r *doctorMockRuntime) SubscribeEvents(_ context.Context) <-chan perigeos.UnitEvent {
-	return nil
-}
-func (r *doctorMockRuntime) MakeSharedMounts(_ context.Context, _, _ string, _ []perigeos.BindMount) error {
-	return nil
-}
-func (r *doctorMockRuntime) ResetUnit(_ context.Context, _, _ string) error {
-	return nil
-}
-func (r *doctorMockRuntime) CleanupStaleUnits(_ context.Context, _ map[string]bool) (int, error) {
-	return 0, nil
-}
-func (r *doctorMockRuntime) SliceActive(ctx context.Context) bool {
-	return true
-}
-func (r *doctorMockRuntime) PortForward(ctx context.Context, podUID, containerName string, port int32, stream io.ReadWriteCloser) error {
-	return nil
-}
-func (r *doctorMockRuntime) GetContainerExitInfo(_ context.Context, _, _ string) perigeos.ContainerExitInfo {
-	return perigeos.ContainerExitInfo{}
-}
-
-func (r *doctorMockRuntime) MStackSupported() bool {
-	return true
-}
-
-// --- Mock Network ---
-
-// doctorMockNetwork implements network.NetworkManager. All calls are no-ops.
-type doctorMockNetwork struct{}
-
-func (n *doctorMockNetwork) Setup(_ context.Context, podUID, _, _, _ string) (string, string, error) {
-	return "/var/run/netns/" + podUID, "10.0.0.1", nil
-}
-func (n *doctorMockNetwork) Teardown(_ context.Context, _, _, _ string) error {
-	return nil
-}
 
 // --- Helpers ---
 
 // newDoctorTestGambit creates a Gambit with a mock runtime and a temp BaseDir.
 // machines is the initial list of systemd machines. The gambit's pods map is
 // populated by calling HydrateFromRuntime - use this to seed in-memory state.
-func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodMetadata) (*node.Gambit, *doctorMockRuntime) {
+func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodMetadata) (*node.Gambit, *fixtures.RuntimeFixture) {
 	t.Helper()
 	baseDir := t.TempDir()
 	cfg := config.PawnConfig{
@@ -110,8 +33,9 @@ func newDoctorTestGambit(t *testing.T, pawnName string, machines []perigeos.PodM
 		BaseDir: baseDir,
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	rt := &doctorMockRuntime{machines: machines}
-	nm := &doctorMockNetwork{}
+	rt := fixtures.NewRuntimeFixture()
+	rt.Machines = machines
+	nm := fixtures.NewNetworkFixture()
 	im := image.NewImageManager(baseDir, logger)
 	rec := record.NewFakeRecorder(100)
 	store := node.NewPodStore(rt, 5, logger)
@@ -275,7 +199,7 @@ func TestDoctorGhostPods(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-ok")
 
 	// Simulate systemd drift: uid-ghost is gone.
-	rt.machines = []perigeos.PodMetadata{
+	rt.Machines = []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 	}
 
@@ -309,7 +233,7 @@ func TestDoctorOrphanMachines(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-ok")
 
 	// Systemd now has an extra machine gambit doesn't know about.
-	rt.machines = []perigeos.PodMetadata{
+	rt.Machines = []perigeos.PodMetadata{
 		{UID: "uid-ok", Name: "ok", Namespace: "default"},
 		{UID: "uid-orphan", Name: "orphan", Namespace: "kube-system"},
 	}
@@ -427,7 +351,7 @@ func TestDoctorMultipleDesyncTypes(t *testing.T) {
 	makeDiskPodDir(t, g, "uid-stale")
 
 	// Systemd drifts: uid-a, uid-b, uid-orphan
-	rt.machines = []perigeos.PodMetadata{
+	rt.Machines = []perigeos.PodMetadata{
 		{UID: "uid-a", Name: "pod-a", Namespace: "default"},
 		{UID: "uid-b", Name: "pod-b", Namespace: "default"},
 		{UID: "uid-orphan", Name: "pod-orphan", Namespace: "kube-system"},
@@ -585,8 +509,9 @@ func TestDoctorFuzz(t *testing.T) {
 		pawnName := fmt.Sprintf("pawn-fuzz-%d", iter)
 		baseDir := t.TempDir()
 		cfg := config.PawnConfig{Name: pawnName, BaseDir: baseDir}
-		rt := &doctorMockRuntime{machines: hydrateUIDs}
-		nm := &doctorMockNetwork{}
+		rt := fixtures.NewRuntimeFixture()
+		rt.Machines = hydrateUIDs
+		nm := fixtures.NewNetworkFixture()
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		im := image.NewImageManager(baseDir, logger)
 		rec := record.NewFakeRecorder(100)
@@ -611,7 +536,7 @@ func TestDoctorFuzz(t *testing.T) {
 		}
 
 		// Now set systemd to the (potentially different) inSystemd slice.
-		rt.machines = inSystemd
+		rt.Machines = inSystemd
 
 		// Create disk dirs.
 		for uid := range inDisk {

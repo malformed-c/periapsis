@@ -39,7 +39,7 @@ func TestRunMachine_Issue485Workaround(t *testing.T) {
 
 	// Verify that the call was made
 	select {
-	case name := <-mockDBus.startTransientCalled:
+	case name := <-mockDBus.StartTransientCalled:
 		expectedName := wrapperUnitName("test-pawn", podUID, "test-container")
 		if name != expectedName {
 			t.Errorf("expected unit name %s, got %s", expectedName, name)
@@ -62,8 +62,8 @@ func TestWaitForMachineExit_SuccessPath(t *testing.T) {
 	serviceName := wrapperUnitName("test-pawn", podUID, containerName)
 
 	// Step 1: Unit is "active"
-	mockDBus.units[serviceName] = dbus.UnitStatus{Name: serviceName, ActiveState: "active"}
-	mockDBus.properties[serviceName] = map[string]*dbus.Property{
+	mockDBus.Units[serviceName] = dbus.UnitStatus{Name: serviceName, ActiveState: "active"}
+	mockDBus.Properties[serviceName] = map[string]*dbus.Property{
 		"ActiveState": {Name: "ActiveState", Value: dbusv5.MakeVariant("active")},
 		"SubState":    {Name: "SubState", Value: dbusv5.MakeVariant("running")},
 	}
@@ -81,18 +81,20 @@ func TestWaitForMachineExit_SuccessPath(t *testing.T) {
 	}()
 
 	// Simulate event indicating it has started
-	mockDBus.notifyWaiters(serviceName, "running")
+	mockDBus.NotifyWaiters(serviceName, "running")
 
 	// Step 2: Unit becomes "inactive" (exited)
 	time.Sleep(100 * time.Millisecond)
-	mockDBus.mu.Lock()
-	mockDBus.units[serviceName] = dbus.UnitStatus{Name: serviceName, ActiveState: "inactive"}
-	mockDBus.properties[serviceName] = map[string]*dbus.Property{
+	//
+	mockDBus.Mu.Lock()
+	mockDBus.Units[serviceName] = dbus.UnitStatus{Name: serviceName, ActiveState: "inactive"}
+	mockDBus.Properties[serviceName] = map[string]*dbus.Property{
 		"ActiveState":    {Name: "ActiveState", Value: dbusv5.MakeVariant("inactive")},
 		"ExecMainStatus": {Name: "ExecMainStatus", Value: dbusv5.MakeVariant(int32(0))},
 	}
-	mockDBus.mu.Unlock()
-	mockDBus.notifyWaiters(serviceName, "dead")
+	mockDBus.Mu.Unlock()
+	//
+	mockDBus.NotifyWaiters(serviceName, "dead")
 
 	<-done
 	if waitErr != nil {
@@ -138,12 +140,12 @@ func TestBatchWatcher_FastExit(t *testing.T) {
 	serviceName := wrapperUnitName("test-pawn", podUID, containerName)
 
 	// Simulate unit that ran and exited with 0 before any poll.
-	mockDBus.mu.Lock()
-	mockDBus.units[serviceName] = dbus.UnitStatus{
+	//
+	mockDBus.Units[serviceName] = dbus.UnitStatus{
 		Name:        serviceName,
 		ActiveState: "inactive",
 	}
-	mockDBus.properties[serviceName] = map[string]*dbus.Property{
+	mockDBus.Properties[serviceName] = map[string]*dbus.Property{
 		"ActiveState":    {Name: "ActiveState", Value: dbusv5.MakeVariant("inactive")},
 		"ExecMainStatus": {Name: "ExecMainStatus", Value: dbusv5.MakeVariant(int32(0))},
 		"Environment": {Name: "Environment", Value: dbusv5.MakeVariant([]string{
@@ -151,7 +153,7 @@ func TestBatchWatcher_FastExit(t *testing.T) {
 			"PERIGEOS_META_CONTAINER=" + containerName,
 		})},
 	}
-	mockDBus.mu.Unlock()
+	//
 
 	// Verify ListManagedMachines returns it with ExitCode 0
 	machines, err := rt.ListManagedMachines(context.Background())

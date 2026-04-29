@@ -277,6 +277,9 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 			g.Logger.Warn("sync: step4 container failed to start", "uid", uid, "pod", pod.Name, "container", c.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "StartFailed", "Container %s: %v", c.Name, err)
 
+			g.batchWatcher.MarkRunning(uid, c.Name)
+			g.store.PromoteRunning(uid, pod, podIP)
+
 			return fmt.Errorf("app container %s failed: %w", c.Name, err)
 
 		} else {
@@ -1080,13 +1083,41 @@ func formatExitInfo(info perigeos.ContainerExitInfo) string {
 	}
 
 	if info.LastLog != "" {
-		if detail != "" {
-			detail += ": "
+		sanitized := sanitizeLogForEvent(info.LastLog)
+		if sanitized != "" {
+			if detail != "" {
+				detail += ": "
+			}
+
+			detail += sanitized
 		}
-		detail += info.LastLog
 	}
 
 	return detail
+}
+
+// sanitizeLogForEvent prepares a raw journal log snippet for embedding in a
+// Kubernetes event message. Events must be single-line; newlines are collapsed
+// to a readable separator and the total length is capped so the event stays
+// within etcd's size budget.
+func sanitizeLogForEvent(log string) string {
+	log = strings.TrimSpace(log)
+	if log == "" {
+		return ""
+	}
+
+	// Collapse CR/LF variants to a readable inline separator.
+	log = strings.ReplaceAll(log, "\r\n", " | ")
+	log = strings.ReplaceAll(log, "\n", " | ")
+	log = strings.ReplaceAll(log, "\r", " | ")
+
+	// Cap at 256 characters.
+	const maxLen = 256
+	if len(log) > maxLen {
+		log = log[:maxLen] + "…"
+	}
+
+	return log
 }
 
 func (g *Gambit) admitPod(pod *corev1.Pod) string {

@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crashloop-pod
+
+spec:
+  containers:
+    - name: crash-container
+      image: busybox
+      command: ["sh", "-c", "echo 'I am about to crash...'; sleep 5; exit 1"]

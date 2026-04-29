@@ -205,6 +205,12 @@ func (g *Gambit) buildContainerStatus(uid string, c *corev1.Container, restartCo
 		if storePhase == corev1.PodPending && previous.State.Running != nil {
 			cs.Ready = previous.Ready
 			cs.State = previous.State
+
+		} else if storePhase == corev1.PodPending && previous.State.Waiting != nil && previous.State.Waiting.Reason == "CrashLoopBackOff" {
+			// Preserve CrashLoopBackOff during retries to avoid status flip-flops
+			cs.Ready = false
+			cs.State = previous.State
+
 		} else {
 			cs.Ready = false
 			cs.State = corev1.ContainerState{

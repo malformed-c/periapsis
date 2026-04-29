@@ -46,6 +46,7 @@ func TestBuildPodStatusUnknownRunningPodNotReady(t *testing.T) {
 		},
 	}
 
+	g.store.RegisterPending(uid, pod, nil)
 	g.store.SetContainerMachineState(uid, "main", perigeos.StateUnknown, 0)
 	status := g.buildPodStatus(pod)
 
@@ -102,6 +103,9 @@ func TestBuildPodStatusUnknownPendingPodKeepsRunning(t *testing.T) {
 			}},
 		},
 	}
+
+	// Register the pod so SetContainerMachineState can write to the podState.
+	g.store.RegisterPending(uid, pod, nil)
 
 	// "main" returns Unknown (transient D-Bus miss), "sidecar" is still creating.
 	g.store.SetContainerMachineState(uid, "sidecar", perigeos.StateCreating, 0)

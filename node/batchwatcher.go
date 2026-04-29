@@ -157,8 +157,11 @@ func (bw *BatchWatcher) Poke() {
 // Called by CreatePod after the machine is started so that the store
 // knows the container was running even if the D-Bus "running" event arrives
 // after the unit exits (fast-exit containers).
+// Also writes StateCreating to machineStates so buildPodStatus shows
+// ContainerCreating rather than stale StateFailed between restart and first D-Bus event.
 func (bw *BatchWatcher) MarkRunning(uid, containerName string) {
 	bw.deps.Store.MarkContainerSeenRunning(uid, containerName)
+	bw.deps.Store.SetContainerMachineState(uid, containerName, perigeos.StateCreating, 0)
 }
 
 // ContainerState returns the last-known machine state for a container.

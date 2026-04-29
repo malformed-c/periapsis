@@ -496,7 +496,7 @@ func (g *Gambit) launchContainer(
 
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		// Immediately clean up the mount if systemd rejects the Run request
-		// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
+		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
 
 		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
 		if imErr != nil {
@@ -513,7 +513,7 @@ func (g *Gambit) launchContainer(
 	if isInit {
 		state, err := g.Runtime.WaitForMachineExit(ctx, uid, c.Name, initContainerTimeout)
 
-		// _ = g.ImageManager.Unmount(uid + "-" + c.Name) // Init containers ephemeral
+		_ = g.ImageManager.Unmount(uid + "-" + c.Name) // Init containers ephemeral
 
 		imErr := g.ImageManager.RemoveMStack(uid, c.Name)
 		if imErr != nil {
@@ -530,6 +530,10 @@ func (g *Gambit) launchContainer(
 		if state == perigeos.StateFailed {
 			exitInfo := g.Runtime.GetContainerExitInfo(ctx, uid, c.Name)
 			detail := formatExitInfo(exitInfo)
+
+			g.store.SetContainerMachineState(uid, c.Name, state, exitInfo.ExitCode)
+			g.batchWatcher.MarkRunning(uid, c.Name)
+
 			return fmt.Errorf("init container exited with error%s", detail)
 		}
 
@@ -554,7 +558,7 @@ func (g *Gambit) launchContainer(
 		if err := g.Runtime.MakeSharedMounts(ctx, uid, c.Name, bindMounts); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)
 
-			// _ = g.ImageManager.Unmount(uid + "-" + c.Name)
+			_ = g.ImageManager.Unmount(uid + "-" + c.Name)
 
 			imErr := g.ImageManager.RemoveMStack(uid, c.Name)
 			if imErr != nil {
@@ -640,7 +644,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	_ = g.Runtime.StopMachine(ctx, uid, containerName)
 	_ = g.Runtime.ResetUnit(ctx, uid, containerName)
 
-	// _ = g.ImageManager.Unmount(uid + "-" + containerName)
+	_ = g.ImageManager.Unmount(uid + "-" + containerName)
 
 	if err := g.ImageManager.RemoveMStack(uid, containerName); err != nil {
 		g.Logger.Error(err.Error(), "uid", uid, "container", containerName)

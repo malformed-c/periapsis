@@ -368,9 +368,16 @@ func (g *Gambit) NotifyNodeStatus(ctx context.Context, cb func(*corev1.Node)) {
 // than scattering writePodState across every call site.
 func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	// Create a snapshot of the pod right now
+	uid := string(pod.UID)
+	phase := g.store.PodPhase(uid)
+
+	if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
+		status := g.buildPodStatus(pod)
+		pod.Status = *status
+	}
+
 	podCopy := pod.DeepCopy()
 
-	uid := string(pod.UID)
 	var caller string
 	if _, file, line, ok := runtime.Caller(1); ok {
 		caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
@@ -391,7 +398,6 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 
 	// Persist state to disk. Terminal pods (Succeeded/Failed) are persisted
 	// so HydrateFromRuntime knows not to resurrect them.
-	uid = string(pod.UID)
 	podIP := g.store.PodIP(uid)
 	counts := g.store.RestartCounts(uid)
 	backoffs := g.store.RestartBackoffs(uid)

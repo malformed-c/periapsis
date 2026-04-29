@@ -512,13 +512,6 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 	changedPods := make(map[string]bool)
 
 	for _, e := range entries {
-		// Skip pods still being created (Pending) - no machine yet.
-		if e.phase == corev1.PodPending {
-			bw.logger.Debug("Coalescer: skipping Pending pod", "pod", e.pod.Name)
-
-			continue
-		}
-
 		// Skip pods being deleted - teardown is in progress, pushing
 		// Running/CrashLoopBackOff status would race with VK's terminal push.
 		if bw.deps.Store.IsDeleting(e.uid) {
@@ -556,7 +549,10 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		}
 
 		// Detect container state changes for the coalescer.
-		for _, c := range e.pod.Spec.Containers {
+		// For pending pods, we still want to resolve init container states
+		// so they show up in kubectl.
+		allContainers := append(e.pod.Spec.InitContainers, e.pod.Spec.Containers...)
+		for _, c := range allContainers {
 			key := e.uid + "/" + c.Name
 			cur := stateMap[key]
 			if prev, ok := bw.prevStateMap[key]; !ok || prev != cur {
@@ -600,12 +596,13 @@ func (bw *BatchWatcher) poll(ctx context.Context) {
 		// Re-read podPhases under lock - checkPod may have set a terminal
 		// phase during *this* poll cycle, after the entries snapshot was taken.
 		currentPhase := bw.deps.Store.PodPhase(e.uid)
-		if currentPhase == corev1.PodPending || currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
-			bw.logger.Debug("Coalescer: skipping status push (phase filter)",
+		if currentPhase == corev1.PodSucceeded || currentPhase == corev1.PodFailed {
+			bw.logger.Debug("Coalescer: skipping status push (terminal phase filter)",
 				"uid", e.uid, "pod", e.pod.Name, "storePhase", currentPhase)
 
 			continue
 		}
+
 		// Fetch the current pod under lock rather than using e.pod from the
 		// snapshot. The snapshot pointer was valid at poll-start but may be
 		// stale by the time the coalescer runs (PromoteRunning could have

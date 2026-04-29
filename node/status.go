@@ -25,27 +25,14 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	uid := string(targetPod.UID)
 
-	// Pod is queued, waiting for a createSem slot - no machine exists yet.
-	// Return Pending so VK doesn't interpret NotFound as a missing pod.
-	// Include PodIP/PodIPs if CNI already ran (PromoteRunning may have fired
-	// before the BatchWatcher had a chance to push a status update, leaving a
-	// window where the store has a valid IP but the phase is still Pending).
 	phase := g.store.PodPhase(uid)
-	if phase == corev1.PodPending {
-		ip := g.store.PodIP(uid)
-		status := &corev1.PodStatus{Phase: corev1.PodPending}
-		if ip != "" {
-			status.PodIP = ip
-			status.PodIPs = []corev1.PodIP{{IP: ip}}
-		}
-		return status, nil
-	}
 
 	// If the pod is in a terminal phase (set by BatchWatcher), return
 	// the stored status directly. The systemd unit may already be cleaned
 	// up (ResetUnit) so machineStates would be stale or absent.
 	if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 		statusCopy := targetPod.Status.DeepCopy()
+
 		return statusCopy, nil
 	}
 
@@ -55,6 +42,7 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 	// "Completed" / "Unknown" states.
 	if targetPod.Status.Phase == corev1.PodFailed {
 		statusCopy := targetPod.Status.DeepCopy()
+
 		return statusCopy, nil
 	}
 
@@ -64,11 +52,13 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 	if g.batchWatcher == nil {
 		// No BatchWatcher (test or early startup) - do a live D-Bus query and
 		// write results to the store so buildPodStatus can read them.
-		for _, c := range targetPod.Spec.Containers {
+		allContainers := append(targetPod.Spec.InitContainers, targetPod.Spec.Containers...)
+		for _, c := range allContainers {
 			state, err := g.Runtime.MachineStatus(ctx, uid, c.Name)
 			if err != nil {
 				state = perigeos.StateUnknown
 			}
+
 			g.store.SetContainerMachineState(uid, c.Name, state, 0)
 		}
 	}
@@ -81,14 +71,15 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 // container on every poll/event cycle; this function is the single consumer.
 func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 	uid := string(pod.UID)
-	previousStatusesByContainer := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
+	storePhase := g.store.PodPhase(uid)
+
+	previousStatusesByContainer := make(map[string]corev1.ContainerStatus)
+	for _, status := range pod.Status.InitContainerStatuses {
+		previousStatusesByContainer[status.Name] = status
+	}
 	for _, status := range pod.Status.ContainerStatuses {
 		previousStatusesByContainer[status.Name] = status
 	}
-
-	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
-	podPhase := corev1.PodRunning
-	allReady := true
 
 	podRestarts := g.store.RestartCounts(uid)
 
@@ -97,63 +88,173 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 		policy = corev1.RestartPolicyAlways
 	}
 
-	for _, c := range pod.Spec.Containers {
-		state, exitCode := g.store.ContainerMachineState(uid, c.Name)
-		g.Logger.Debug("buildPodStatus state lookup", "container", c.Name, "state", state)
+	// 1. Process Init Containers
+	initStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.InitContainers))
+	initAllSucceeded := true
 
-		restartCount := podRestarts[c.Name]
+	for _, ic := range pod.Spec.InitContainers {
+		cs, finished := g.buildContainerStatus(uid, &ic, podRestarts[ic.Name], policy, true, previousStatusesByContainer[ic.Name], storePhase)
+		initStatuses = append(initStatuses, cs)
 
-		cs := corev1.ContainerStatus{
-			Name:         c.Name,
-			Image:        c.Image,
-			Ready:        false,
-			RestartCount: restartCount,
+		if !finished {
+			initAllSucceeded = false
+
+			break
 		}
 
-		// TODO Refactor
-		switch state {
-		case perigeos.StateRunning:
-			cs.Ready = g.store.IsContainerReady(uid, c.Name)
-			startedAt := g.store.ContainerStartedAt(uid, c.Name)
-			cs.State = corev1.ContainerState{
-				Running: &corev1.ContainerStateRunning{StartedAt: startedAt},
-			}
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			initAllSucceeded = false
 
-		case perigeos.StateCreating:
-			podPhase = corev1.PodPending
+			break
+		}
+	}
+
+	// 2. Process App Containers
+	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
+	allReady := initAllSucceeded
+
+	if initAllSucceeded {
+		for _, c := range pod.Spec.Containers {
+			cs, _ := g.buildContainerStatus(uid, &c, podRestarts[c.Name], policy, false, previousStatusesByContainer[c.Name], storePhase)
+			containerStatuses = append(containerStatuses, cs)
+			if !cs.Ready {
+				allReady = false
+			}
+		}
+
+	} else {
+		// Init containers still running or failed.
+		// Fill in "Waiting" status for remaining init containers and all app containers.
+		for i := len(initStatuses); i < len(pod.Spec.InitContainers); i++ {
+			c := pod.Spec.InitContainers[i]
+			initStatuses = append(initStatuses, corev1.ContainerStatus{
+				Name:  c.Name,
+				Image: c.Image,
+				State: corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"},
+				},
+			})
+		}
+		for _, c := range pod.Spec.Containers {
+			containerStatuses = append(containerStatuses, corev1.ContainerStatus{
+				Name:  c.Name,
+				Image: c.Image,
+				State: corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"},
+				},
+			})
+		}
+
+		allReady = false
+	}
+
+	readyCondition := corev1.ConditionFalse
+	if allReady {
+		readyCondition = corev1.ConditionTrue
+	}
+
+	ip := g.store.PodIP(uid)
+	podIPs := []corev1.PodIP{}
+	if ip != "" {
+		podIPs = []corev1.PodIP{{IP: ip}}
+	}
+
+	return &corev1.PodStatus{
+		Phase:     storePhase,
+		HostIP:    resolveNodeIP(g.Config),
+		PodIP:     ip,
+		PodIPs:    podIPs,
+		StartTime: pod.Status.StartTime,
+		Conditions: []corev1.PodCondition{{
+			Type:   corev1.PodReady,
+			Status: readyCondition,
+		}},
+		InitContainerStatuses: initStatuses,
+		ContainerStatuses:     containerStatuses,
+	}
+
+}
+
+func (g *Gambit) buildContainerStatus(uid string, c *corev1.Container, restartCount int32, policy corev1.RestartPolicy, isInit bool, previous corev1.ContainerStatus, storePhase corev1.PodPhase) (corev1.ContainerStatus, bool) {
+	state, exitCode := g.store.ContainerMachineState(uid, c.Name)
+	cs := corev1.ContainerStatus{
+		Name:         c.Name,
+		Image:        c.Image,
+		Ready:        false,
+		RestartCount: restartCount,
+	}
+
+	finished := false
+
+	switch state {
+	case perigeos.StateRunning:
+		cs.Ready = g.store.IsContainerReady(uid, c.Name)
+		startedAt := g.store.ContainerStartedAt(uid, c.Name)
+		cs.State = corev1.ContainerState{
+			Running: &corev1.ContainerStateRunning{StartedAt: startedAt},
+		}
+
+	case perigeos.StateCreating:
+		cs.State = corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+		}
+
+	case perigeos.StateUnknown:
+		// Only keep the last known Running status if the pod is still in the
+		// process of being created (Pending). If the pod is already Running, a
+		// transition to Unknown should be treated as Not Ready.
+		if storePhase == corev1.PodPending && previous.State.Running != nil {
+			cs.Ready = previous.Ready
+			cs.State = previous.State
+		} else {
+			cs.Ready = false
 			cs.State = corev1.ContainerState{
 				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
 			}
+		}
 
-		case perigeos.StateUnknown:
-			// Only keep the last known Running status if the pod is still in the
-			// process of being created (Pending). If the pod is already Running, a
-			// transition to Unknown should be treated as Not Ready.
-			if podPhase == corev1.PodPending {
-				if previous, ok := previousStatusesByContainer[c.Name]; ok && previous.State.Running != nil {
-					cs.Ready = previous.Ready
-					cs.State = previous.State
-				}
-
-			} else {
-				// For all other cases, if we don't know the state, it's not ready.
-				cs.Ready = false
-				cs.State = corev1.ContainerState{
-					Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-				}
+	case perigeos.StateFailed:
+		if isInit || policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
+			cs.State = corev1.ContainerState{
+				Waiting: &corev1.ContainerStateWaiting{
+					Reason:  "CrashLoopBackOff",
+					Message: "Back-off restarting failed container",
+				},
 			}
+		} else {
+			startedAt := g.store.ContainerStartedAt(uid, c.Name)
+			cs.State = corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					ExitCode:   exitCode,
+					Reason:     "Error",
+					StartedAt:  startedAt,
+					FinishedAt: metav1.Now(),
+				},
+			}
+			finished = true
+		}
 
-		// Don't force podPhase = Pending here if the pod is already Running
-		case perigeos.StateFailed:
-			if policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
-				podPhase = corev1.PodRunning
+	case perigeos.StateExited:
+		if exitCode == 0 {
+			startedAt := g.store.ContainerStartedAt(uid, c.Name)
+			cs.State = corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					ExitCode:   exitCode,
+					Reason:     "Completed",
+					StartedAt:  startedAt,
+					FinishedAt: metav1.Now(),
+				},
+			}
+			finished = true
+		} else {
+			if isInit || policy == corev1.RestartPolicyAlways || policy == corev1.RestartPolicyOnFailure {
 				cs.State = corev1.ContainerState{
-					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+					Waiting: &corev1.ContainerStateWaiting{
+						Reason:  "CrashLoopBackOff",
+						Message: "Back-off restarting failed container",
+					},
 				}
-
 			} else {
-				// Don't set podPhase to Failed here - terminal phase is
-				// handled by checkPod/SetPhase.
 				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{
@@ -163,63 +264,12 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 						FinishedAt: metav1.Now(),
 					},
 				}
-			}
-
-		case perigeos.StateExited:
-			if policy == corev1.RestartPolicyAlways {
-				podPhase = corev1.PodRunning
-				cs.State = corev1.ContainerState{
-					Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-				}
-
-			} else {
-				// Don't set podPhase to Succeeded here - the terminal
-				// phase transition is handled by checkPod/SetPhase.
-				// Setting it per-container would override CrashLoopBackOff
-				// from other containers in multi-container pods.
-				startedAt := g.store.ContainerStartedAt(uid, c.Name)
-				cs.State = corev1.ContainerState{
-					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode:   exitCode,
-						Reason:     "Completed",
-						StartedAt:  startedAt,
-						FinishedAt: metav1.Now(),
-					},
-				}
+				finished = true
 			}
 		}
-
-		if !cs.Ready {
-			allReady = false
-		}
-
-		containerStatuses = append(containerStatuses, cs)
 	}
 
-	readyCondition := corev1.ConditionFalse
-	if allReady {
-		readyCondition = corev1.ConditionTrue
-	}
-
-	ip := g.store.PodIP(uid)
-
-	podIPs := []corev1.PodIP{}
-	if ip != "" {
-		podIPs = []corev1.PodIP{{IP: ip}}
-	}
-
-	return &corev1.PodStatus{
-		Phase:     podPhase,
-		HostIP:    resolveNodeIP(g.Config),
-		PodIP:     ip,
-		PodIPs:    podIPs,
-		StartTime: pod.Status.StartTime,
-		Conditions: []corev1.PodCondition{{
-			Type:   corev1.PodReady,
-			Status: readyCondition,
-		}},
-		ContainerStatuses: containerStatuses,
-	}
+	return cs, finished
 }
 
 func (g *Gambit) GetPods(_ context.Context) ([]*corev1.Pod, error) {

@@ -142,6 +142,8 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // syncPodSandboxAndContainers evaluates the current reality of the pod and pushes it forward.
 // It builds the network sandbox and injects the containers into systemd.
 func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Pod, pullCache map[string]pullCacheEntry) error {
+	defer g.notifyPodStatus(pod)
+
 	uid := string(pod.UID)
 
 	g.Logger.Debug("sync: enter", "uid", uid, "pod", pod.Name)
@@ -239,6 +241,8 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 		if err != nil {
 			g.Logger.Warn("sync: step3 init container failed", "uid", uid, "pod", pod.Name, "container", ic.Name, "err", err)
 			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "InitFailed", "Init container %s: %v", ic.Name, err)
+
+			g.store.IncrementRestart(uid, ic.Name)
 
 			return fmt.Errorf("init container %s failed: %w", ic.Name, err)
 		}
@@ -532,7 +536,6 @@ func (g *Gambit) launchContainer(
 			detail := formatExitInfo(exitInfo)
 
 			g.store.SetContainerMachineState(uid, c.Name, state, exitInfo.ExitCode)
-			g.batchWatcher.MarkRunning(uid, c.Name)
 
 			return fmt.Errorf("init container exited with error%s", detail)
 		}

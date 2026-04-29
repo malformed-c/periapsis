@@ -388,7 +388,7 @@ func (s *PodStore) PromoteRunning(uid string, pod *corev1.Pod, ip string) {
 		ps.mu.Unlock()
 		slog.Debug("PromoteRunning",
 			"pod", pod.Name, "uid", uid, "ip", ip,
-			"containers", len(pod.Spec.Containers),
+			"containers", len(pod.Spec.Containers)+len(pod.Spec.InitContainers),
 			"caller", callerSite())
 		s.triggerSnapshot()
 	}
@@ -551,10 +551,14 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 		return
 	}
 
-	rs := make(map[string]*containerRestartState, len(pod.Spec.Containers))
-	probes := make(map[string]*ContainerProbeState, len(pod.Spec.Containers))
+	allContainers := make([]corev1.Container, 0, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
+	allContainers = append(allContainers, pod.Spec.InitContainers...)
+	allContainers = append(allContainers, pod.Spec.Containers...)
 
-	for _, c := range pod.Spec.Containers {
+	rs := make(map[string]*containerRestartState, len(allContainers))
+	probes := make(map[string]*ContainerProbeState, len(allContainers))
+
+	for _, c := range allContainers {
 		rs[c.Name] = &containerRestartState{
 			backoff:     restartBackoffInit,
 			lastStarted: time.Now(),
@@ -573,10 +577,10 @@ func (s *PodStore) InitRestartState(pod *corev1.Pod) {
 
 	slog.Info("InitRestartState",
 		"pod", pod.Name, "uid", uid,
-		"containers", len(pod.Spec.Containers),
+		"containers", len(allContainers),
 		"caller", callerSite())
 
-	for _, c := range pod.Spec.Containers {
+	for _, c := range allContainers {
 		slog.Debug("InitRestartState: container",
 			"pod", pod.Name, "container", c.Name,
 			"hasReadinessProbe", c.ReadinessProbe != nil,

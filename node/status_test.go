@@ -47,6 +47,7 @@ func TestBuildPodStatusUnknownRunningPodNotReady(t *testing.T) {
 	}
 
 	g.store.RegisterPending(uid, pod, nil)
+	g.store.SetPhase(uid, corev1.PodRunning)
 	g.store.SetContainerMachineState(uid, "main", perigeos.StateUnknown, 0)
 	status := g.buildPodStatus(pod)
 
@@ -150,6 +151,8 @@ func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 	}
 
 	// No SetContainerMachineState call - store returns StateUnknown by default.
+	g.store.RegisterPending(uid, pod, nil)
+	g.store.SetPhase(uid, corev1.PodRunning)
 	status := g.buildPodStatus(pod)
 
 	// Phase stays Running - buildPodStatus doesn't demote to Pending for Unknown.
@@ -159,5 +162,52 @@ func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 	}
 	if status.ContainerStatuses[0].State.Waiting == nil || status.ContainerStatuses[0].State.Waiting.Reason != "ContainerCreating" {
 		t.Fatalf("expected ContainerCreating waiting state, got %#v", status.ContainerStatuses[0].State)
+	}
+}
+
+func TestBuildPodStatusInitFailure(t *testing.T) {
+	g := &Gambit{
+		Logger: slog.Default(),
+		store:  setupTestStore(),
+		node:   &PawnNode{startTime: time.Now()},
+	}
+	t.Cleanup(g.store.Close)
+
+	uid := "uid-init-fail"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       types.UID(uid),
+			Namespace: "default",
+			Name:      "init-fail-pod",
+		},
+		Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: "init-1", Image: "busybox"}},
+			Containers:     []corev1.Container{{Name: "main", Image: "nginx"}},
+		},
+	}
+
+	g.store.RegisterPending(uid, pod, nil)
+	// Simulate init failure
+	g.store.SetContainerMachineState(uid, "init-1", perigeos.StateFailed, 1)
+
+	status := g.buildPodStatus(pod)
+
+	if status.Phase != corev1.PodPending {
+		t.Fatalf("expected phase %q, got %q", corev1.PodPending, status.Phase)
+	}
+	if len(status.InitContainerStatuses) != 1 {
+		t.Fatalf("expected 1 init container status, got %d", len(status.InitContainerStatuses))
+	}
+	ics := status.InitContainerStatuses[0]
+	if ics.State.Waiting == nil || ics.State.Waiting.Reason != "CrashLoopBackOff" {
+		t.Fatalf("expected CrashLoopBackOff for failed init container, got %#v", ics.State)
+	}
+
+	if len(status.ContainerStatuses) != 1 {
+		t.Fatalf("expected 1 container status, got %d", len(status.ContainerStatuses))
+	}
+	cs := status.ContainerStatuses[0]
+	if cs.State.Waiting == nil || cs.State.Waiting.Reason != "PodInitializing" {
+		t.Fatalf("expected PodInitializing for app container during init failure, got %#v", cs.State)
 	}
 }

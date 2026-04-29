@@ -23,10 +23,11 @@ func TestBuildPodStatusUnknownRunningPodNotReady(t *testing.T) {
 	}
 	t.Cleanup(g.store.Close)
 
+	uid := "uid-1"
 	startedAt := metav1.Now()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			UID:       types.UID("uid-1"),
+			UID:       types.UID(uid),
 			Namespace: "default",
 			Name:      "security-test",
 		},
@@ -45,9 +46,8 @@ func TestBuildPodStatusUnknownRunningPodNotReady(t *testing.T) {
 		},
 	}
 
-	status := g.buildPodStatus(pod, func(_, _ string) perigeos.MachineState {
-		return perigeos.StateUnknown
-	})
+	g.store.SetContainerMachineState(uid, "main", perigeos.StateUnknown, 0)
+	status := g.buildPodStatus(pod)
 
 	// Pod phase stays Running - only checkPod/SetPhase can set terminal phases.
 	if status.Phase != corev1.PodRunning {
@@ -74,10 +74,11 @@ func TestBuildPodStatusUnknownPendingPodKeepsRunning(t *testing.T) {
 	}
 	t.Cleanup(g.store.Close)
 
+	uid := "uid-1b"
 	startedAt := metav1.Now()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			UID:       types.UID("uid-1b"),
+			UID:       types.UID(uid),
 			Namespace: "default",
 			Name:      "pending-test",
 		},
@@ -102,13 +103,10 @@ func TestBuildPodStatusUnknownPendingPodKeepsRunning(t *testing.T) {
 		},
 	}
 
-	status := g.buildPodStatus(pod, func(uid, containerName string) perigeos.MachineState {
-		// "main" returns Unknown (transient D-Bus miss), "sidecar" is still creating.
-		if containerName == "main" {
-			return perigeos.StateUnknown
-		}
-		return perigeos.StateCreating
-	})
+	// "main" returns Unknown (transient D-Bus miss), "sidecar" is still creating.
+	g.store.SetContainerMachineState(uid, "sidecar", perigeos.StateCreating, 0)
+	g.store.SetContainerMachineState(uid, "main", perigeos.StateUnknown, 0)
+	status := g.buildPodStatus(pod)
 
 	if status.Phase != corev1.PodPending {
 		t.Fatalf("expected phase %q, got %q", corev1.PodPending, status.Phase)
@@ -135,9 +133,10 @@ func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 	}
 	t.Cleanup(g.store.Close)
 
+	uid := "uid-2"
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			UID:       types.UID("uid-2"),
+			UID:       types.UID(uid),
 			Namespace: "default",
 			Name:      "security-test",
 		},
@@ -146,9 +145,8 @@ func TestBuildPodStatusUnknownContainerCreating(t *testing.T) {
 		},
 	}
 
-	status := g.buildPodStatus(pod, func(_, _ string) perigeos.MachineState {
-		return perigeos.StateUnknown
-	})
+	// No SetContainerMachineState call - store returns StateUnknown by default.
+	status := g.buildPodStatus(pod)
 
 	// Phase stays Running - buildPodStatus doesn't demote to Pending for Unknown.
 	// Upstream GetPodStatus handles the Pending case via store phase check.

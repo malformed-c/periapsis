@@ -43,7 +43,7 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 
 	// If the pod is in a terminal phase (set by BatchWatcher), return
 	// the stored status directly. The systemd unit may already be cleaned
-	// up (ResetUnit), so querying the stateCache would give stale results.
+	// up (ResetUnit) so machineStates would be stale or absent.
 	if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 		statusCopy := targetPod.Status.DeepCopy()
 		return statusCopy, nil
@@ -58,29 +58,28 @@ func (g *Gambit) GetPodStatus(ctx context.Context, namespace, name string) (*cor
 		return statusCopy, nil
 	}
 
-	// Use the BatchWatcher's cached stateMap if available, otherwise fall
-	// back to per-container D-Bus queries.
-	var stateLookup func(uid, containerName string) perigeos.MachineState
-	if g.batchWatcher != nil {
-		stateLookup = g.batchWatcher.ContainerState
-	} else {
-		stateLookup = func(uid, containerName string) perigeos.MachineState {
-			state, err := g.Runtime.MachineStatus(ctx, uid, containerName)
+	// Use the BatchWatcher's cached machine states in the store. If the
+	// watcher hasn't observed any containers yet (e.g. very first poll hasn't
+	// fired), the store returns StateUnknown, which renders as ContainerCreating.
+	if g.batchWatcher == nil {
+		// No BatchWatcher (test or early startup) - do a live D-Bus query and
+		// write results to the store so buildPodStatus can read them.
+		for _, c := range targetPod.Spec.Containers {
+			state, err := g.Runtime.MachineStatus(ctx, uid, c.Name)
 			if err != nil {
-				return perigeos.StateUnknown
+				state = perigeos.StateUnknown
 			}
-			return state
+			g.store.SetContainerMachineState(uid, c.Name, state, 0)
 		}
 	}
 
-	return g.buildPodStatus(targetPod, stateLookup), nil
+	return g.buildPodStatus(targetPod), nil
 }
 
-// buildPodStatus constructs a PodStatus from the pod spec and a state lookup
-// function. Used by both GetPodStatus (on-demand) and the BatchWatcher
-// coalescer (push on change). The stateLookup func returns the current
-// container state given (uid, containerName).
-func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, containerName string) perigeos.MachineState) *corev1.PodStatus {
+// buildPodStatus constructs a PodStatus from the pod spec and the container
+// machine states stored in PodStore. BatchWatcher writes the state for each
+// container on every poll/event cycle; this function is the single consumer.
+func (g *Gambit) buildPodStatus(pod *corev1.Pod) *corev1.PodStatus {
 	uid := string(pod.UID)
 	previousStatusesByContainer := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses))
 	for _, status := range pod.Status.ContainerStatuses {
@@ -99,7 +98,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 	}
 
 	for _, c := range pod.Spec.Containers {
-		state := stateLookup(uid, c.Name)
+		state, exitCode := g.store.ContainerMachineState(uid, c.Name)
 		g.Logger.Debug("buildPodStatus state lookup", "container", c.Name, "state", state)
 
 		restartCount := podRestarts[c.Name]
@@ -111,7 +110,6 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 			RestartCount: restartCount,
 		}
 
-		// TODO Refactor
 		switch state {
 		case perigeos.StateRunning:
 			cs.Ready = g.store.IsContainerReady(uid, c.Name)
@@ -159,7 +157,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode:   1,
+						ExitCode:   exitCode,
 						Reason:     "Error",
 						StartedAt:  startedAt,
 						FinishedAt: metav1.Now(),
@@ -182,7 +180,7 @@ func (g *Gambit) buildPodStatus(pod *corev1.Pod, stateLookup func(uid, container
 				startedAt := g.store.ContainerStartedAt(uid, c.Name)
 				cs.State = corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{
-						ExitCode:   0,
+						ExitCode:   exitCode,
 						Reason:     "Completed",
 						StartedAt:  startedAt,
 						FinishedAt: metav1.Now(),

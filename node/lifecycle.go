@@ -672,20 +672,20 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 	g.store.MarkRestarted(uid, containerName)
 	g.Logger.Info("Container restarted successfully", "pod", pod.Name, "container", containerName)
 
-	// Publish updated status
+	// Publish updated status. Query each container's live state and write to
+	// the store so buildPodStatus can read it without a D-Bus call per container.
 	restartedPod := g.store.GetPodCopy(uid)
 	if restartedPod != nil {
-		status := g.buildPodStatus(restartedPod, func(u, cn string) perigeos.MachineState {
-			state, err := g.Runtime.MachineStatus(ctx, u, cn)
+		for _, c := range restartedPod.Spec.Containers {
+			state, err := g.Runtime.MachineStatus(ctx, uid, c.Name)
 			if err != nil {
-				return perigeos.StateUnknown
+				state = perigeos.StateUnknown
 			}
-
-			return state
-		})
+			g.store.SetContainerMachineState(uid, c.Name, state, 0)
+		}
 
 		updated := restartedPod.DeepCopy()
-		status.DeepCopyInto(&updated.Status)
+		g.buildPodStatus(restartedPod).DeepCopyInto(&updated.Status)
 		g.notifyPodStatus(updated)
 	}
 }

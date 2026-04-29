@@ -130,9 +130,9 @@ func startBW(t *testing.T, store *PodStore, rt *stubRuntime) (*BatchWatcher, cha
 		NotifyStatus: func(p *corev1.Pod) {
 			notified <- p
 		},
-		BuildPodStatus: func(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus {
+		BuildPodStatus: func(pod *corev1.Pod) *corev1.PodStatus {
 			g := &Gambit{Logger: bwLogger(), store: store, node: &PawnNode{startTime: time.Now()}}
-			return g.buildPodStatus(pod, stateLookup)
+			return g.buildPodStatus(pod)
 		},
 		RestartContainer: func(_ context.Context, _ string, _ *corev1.Pod, _ string, _ int32, _ time.Duration) {},
 		ParseUnitName: func(unitName string) (string, string) {

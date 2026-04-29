@@ -449,9 +449,10 @@ func (g *Gambit) RestartContainerCB(ctx context.Context, uid string, pod *corev1
 	g.restartContainer(ctx, uid, pod, containerName, count, backoff)
 }
 
-// BuildPodStatusCB is the exported wrapper for buildPodStatus callback.
-func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod, stateLookup func(string, string) perigeos.MachineState) *corev1.PodStatus {
-	return g.buildPodStatus(pod, stateLookup)
+// BuildPodStatusCB is the exported wrapper for buildPodStatus, used as a
+// BatchWatcher callback. Reads machine states from the store directly.
+func (g *Gambit) BuildPodStatusCB(pod *corev1.Pod) *corev1.PodStatus {
+	return g.buildPodStatus(pod)
 }
 
 // --- Pod Lifecycle ---

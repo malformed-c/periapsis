@@ -29,6 +29,14 @@ type completedEntry struct {
 	deletedAt time.Time
 }
 
+// containerMachineState is the last-known OS-level state for a single
+// container. Written by BatchWatcher on every poll/event cycle; read by
+// buildPodStatus to derive corev1.ContainerState without a D-Bus call.
+type containerMachineState struct {
+	State    perigeos.MachineState
+	ExitCode int32
+}
+
 // podState acts as the localized "Actor" state for a single pod.
 // By giving each pod its own mutex, we eliminate global lock contention
 // for highly concurrent events like container probes or restarts across 3000+ pods.
@@ -48,6 +56,11 @@ type podState struct {
 	// least once. Owned here so that BatchWatcher doesn't need a parallel map
 	// with its own GC loop - cleanup is automatic when the pod is unregistered.
 	seenRunning map[string]bool
+
+	// machineStates holds the last-known MachineState and exit code per
+	// container, written by BatchWatcher on every D-Bus event and poll cycle.
+	// buildPodStatus reads from here instead of carrying a stateLookup callback.
+	machineStates map[string]containerMachineState // key: containerName
 }
 
 // PodStore is the single source of truth for node-level pod state.
@@ -167,58 +180,6 @@ func (s *PodStore) getPodState(uid string) *podState {
 	defer s.registryMu.RUnlock()
 
 	return s.pods[uid]
-}
-
-// 1. Move the synchronization logic to the PodState.
-// This keeps the SetContainerState method clean and focused.
-func (ps *podState) syncStatusToSpec() {
-	ps.syncSlice(ps.pod.Spec.Containers, &ps.pod.Status.ContainerStatuses)
-	ps.syncSlice(ps.pod.Spec.InitContainers, &ps.pod.Status.InitContainerStatuses)
-}
-
-// syncSlice ensures every container in the Spec has a corresponding entry in the Status.
-func (ps *podState) syncSlice(spec []corev1.Container, status *[]corev1.ContainerStatus) {
-	if len(spec) == 0 {
-		return
-	}
-
-	// Use a map for O(1) lookup to keep the complexity O(N)
-	existing := make(map[string]int, len(*status))
-	for i, s := range *status {
-		existing[s.Name] = i
-	}
-
-	needsSync := false
-	for _, c := range spec {
-		if _, ok := existing[c.Name]; !ok {
-			needsSync = true
-
-			break
-		}
-	}
-
-	if !needsSync {
-		return
-	}
-
-	// If we need to sync, we rebuild the status list to ensure
-	// it exactly matches the Spec order and content.
-	newStatuses := make([]corev1.ContainerStatus, len(spec))
-	for i, c := range spec {
-		if idx, ok := existing[c.Name]; ok {
-			// Keep existing data (State, Ready, etc.)
-			newStatuses[i] = (*status)[idx]
-
-		} else {
-			// Create new entry
-			newStatuses[i] = corev1.ContainerStatus{
-				Name:  c.Name,
-				Ready: false,
-			}
-		}
-	}
-
-	*status = newStatuses
 }
 
 // --- PodTracker interface ---
@@ -512,92 +473,35 @@ func (s *PodStore) SetPodStatus(uid string, status corev1.PodStatus) {
 	}
 }
 
-func (s *PodStore) SetContainerState(uid string, containerName string, state corev1.ContainerState, ready bool) {
-	ps := s.getPodState(uid)
-	if ps == nil {
-		return
-	}
-
-	changed := false
-
-	// Scope the lock strictly to the memory update
-	func() {
+// SetContainerMachineState records the OS-level state for a container as
+// observed by BatchWatcher (from ListManagedMachines or a D-Bus event).
+// buildPodStatus reads from here to build corev1.ContainerState without
+// requiring a D-Bus call per container.
+func (s *PodStore) SetContainerMachineState(uid, containerName string, state perigeos.MachineState, exitCode int32) {
+	if ps := s.getPodState(uid); ps != nil {
 		ps.mu.Lock()
-		defer ps.mu.Unlock()
-
-		// Enrich timestamps from restart state so callers don't need to.
-		if rs := ps.restarts[containerName]; rs != nil && !rs.lastStarted.IsZero() {
-			startedAt := metav1.NewTime(rs.lastStarted)
-			if r := state.Running; r != nil && r.StartedAt.IsZero() {
-				r.StartedAt = startedAt
-			}
-			if t := state.Terminated; t != nil {
-				if t.StartedAt.IsZero() {
-					t.StartedAt = startedAt
-				}
-				if t.FinishedAt.IsZero() {
-					t.FinishedAt = metav1.Now()
-				}
-			}
+		if ps.machineStates == nil {
+			ps.machineStates = make(map[string]containerMachineState)
 		}
-
-		// Step 1: Ensure Status is healthy/complete
-		ps.syncStatusToSpec()
-
-		// Step 2: Attempt to update
-		// We check both slices. We use a simple loop for performance.
-		updated := func(statuses []corev1.ContainerStatus) bool {
-			for i := range statuses {
-				if statuses[i].Name == containerName {
-					statuses[i].State = state
-					statuses[i].Ready = ready
-
-					return true
-				}
-			}
-
-			return false
-		}(ps.pod.Status.ContainerStatuses)
-
-		if !updated {
-			updated = func(statuses []corev1.ContainerStatus) bool {
-				for i := range statuses {
-					if statuses[i].Name == containerName {
-						statuses[i].State = state
-						statuses[i].Ready = ready
-
-						return true
-					}
-				}
-
-				return false
-			}(ps.pod.Status.InitContainerStatuses)
-		}
-
-		if updated {
-			changed = true
-
-		} else {
-			var names []string
-
-			for _, c := range ps.pod.Status.InitContainerStatuses {
-				names = append(names, c.Name)
-			}
-			for _, c := range ps.pod.Status.ContainerStatuses {
-				names = append(names, c.Name)
-			}
-
-			s.logger.Error("Container wasn't found", "name", containerName, "available", names)
-		}
-	}()
-
-	// Step 3: Trigger snapshot OUTSIDE the lock.
-	// If triggerSnapshot involves I/O or channel communication,
-	// holding the lock would freeze the entire PodStore for this UID.
-	if changed {
-		s.triggerSnapshot()
+		ps.machineStates[containerName] = containerMachineState{State: state, ExitCode: exitCode}
+		ps.mu.Unlock()
 	}
 }
+
+// ContainerMachineState returns the last-known OS-level state and exit code
+// for a container. Returns (StateUnknown, 0) if no record exists.
+func (s *PodStore) ContainerMachineState(uid, containerName string) (perigeos.MachineState, int32) {
+	if ps := s.getPodState(uid); ps != nil {
+		ps.mu.RLock()
+		ms, ok := ps.machineStates[containerName]
+		ps.mu.RUnlock()
+		if ok {
+			return ms.State, ms.ExitCode
+		}
+	}
+	return perigeos.StateUnknown, 0
+}
+
 
 func (s *PodStore) MarkFailed(uid string, pod *corev1.Pod, reason, message string) *corev1.Pod {
 	failedPod := pod.DeepCopy()

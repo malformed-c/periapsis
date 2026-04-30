@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/unit"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -1166,34 +1167,41 @@ func (im *ImageManager) Unmount(podUID string) error {
 // so it gets bind-mounted into the container at the given path.
 // Files are written as regular files; directories are created as subdirs.
 // No host tmpdir or symlinks needed - RemoveMStack cleans everything up.
-// MStackBindEntry describes a file, directory, or host path to inject into
-// a .mstack dir so systemd-nspawn bind-mounts it into the container.
+// MStackBindEntry describes content to inject into a container via the mstack.
 //
-// Exactly one of HostPath, Content, or IsDir must be set:
-//   - HostPath: creates a symlink in the mstack dir pointing to an existing
-//     host path. Used for volume mounts (emptyDir, hostPath, PVC).
-//   - Content: writes a regular file. Used for generated files like resolv.conf.
-//   - IsDir: creates an empty directory. Used for home dirs and emptyDir targets
-//     that don't exist on the host yet (rare; prefer HostPath with pre-created dir).
+// Two mutually exclusive modes:
+//
+//   - HostPath set: creates a bind@/robind@ symlink in the mstack dir pointing
+//     to an existing host directory. Used for volume mounts (emptyDir, configMap,
+//     secret, projected, hostPath). The host directory must exist before
+//     PrepareMStack is called. ReadOnly controls robind@ vs bind@.
+//
+//   - HostPath empty: writes Content or a directory into a sysconfig overlay
+//     layer (layer@{N+1} inside the mstack). Used for generated system files
+//     like resolv.conf, passwd, group, and home directories. The mstack format
+//     does not support single-file bind mounts; the overlay layer achieves the
+//     same result through overlayfs merging. ReadOnly is ignored (the layer
+//     is always read-only from the container's perspective).
 type MStackBindEntry struct {
 	// ContainerPath is the absolute destination inside the container.
 	ContainerPath string
 
-	// HostPath, when non-empty, creates a bind@ or robind@ symlink pointing
-	// to this host path. Mutually exclusive with Content and IsDir.
+	// HostPath, when non-empty, creates a bind@ or robind@ symlink.
 	HostPath string
 
-	// Content is the file content. Mutually exclusive with HostPath and IsDir.
+	// Content is written as a file in the sysconfig overlay layer.
+	// Mutually exclusive with IsDir.
 	Content []byte
 
-	// IsDir creates a directory bind entry instead of a file.
-	// Mutually exclusive with HostPath and Content.
+	// IsDir creates a directory in the sysconfig overlay layer.
+	// Mutually exclusive with Content.
 	IsDir bool
 
 	// DirMode sets the permission on a directory entry (0 = default 0755).
 	DirMode os.FileMode
 
-	// ReadOnly creates a robind@ entry; false creates a bind@ entry.
+	// ReadOnly creates a robind@ entry when HostPath is set.
+	// Ignored for sysconfig (Content/IsDir) entries.
 	ReadOnly bool
 }
 
@@ -1209,38 +1217,6 @@ type MStackBindEntry struct {
 //	/var/www          →  var-www
 //	/data-cache       →  data\x2dcache          (literal '-' encoded)
 //	/a-b/c-d          →  a\x2db-c\x2dd
-func escapeMStackPath(containerPath string) string {
-	p := strings.TrimPrefix(containerPath, "/")
-	var b strings.Builder
-	b.Grow(len(p))
-
-	inSlash := false
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		if c == '/' {
-			if !inSlash {
-				b.WriteByte('-')
-			}
-			inSlash = true
-			continue
-		}
-		inSlash = false
-
-		// Safe characters: ASCII alphanumeric and '.'
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' {
-			b.WriteByte(c)
-		} else {
-			fmt.Fprintf(&b, `\x%02x`, c)
-		}
-	}
-
-	return b.String()
-}
-
-// PrepareMStack creates a .mstack directory for a container.
-// It creates layer@N symlinks for image layers and robind@/bind@ symlinks
-// for bind-mounted files (resolv.conf, passwd, group, getent shim, home dirs).
-// Bind files are co-located in the mstack dir so RemoveMStack cleans everything up.
 // mstackDir returns the path to the .mstack directory for a container.
 func (im *ImageManager) mstackDir(podUID, cName string) string {
 	return filepath.Join(im.baseDir, "stacks", fmt.Sprintf("%s-%s.mstack", podUID, cName))
@@ -1250,13 +1226,10 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 	mstackDir := im.mstackDir(podUID, cName)
 
 	// Reuse an existing valid mstack (pod restart case).
-	// A mstack is valid if layer@0 exists - it means the full setup completed
-	// on a previous call. We only reset the rw/ writable layer so the container
-	// gets a clean rootfs writable area while keeping volume bind entries and
-	// layer symlinks intact.
+	// Valid = layer@0 exists, meaning full setup completed on a previous call.
+	// Only reset rw/ so the container gets a fresh writable area while volumes
+	// and layer symlinks are preserved.
 	if _, err := os.Lstat(filepath.Join(mstackDir, "layer@0")); err == nil {
-		// Clear the upper/work dirs so nspawn recreates them fresh.
-		// This prevents leftover container writes from bleeding into the restart.
 		rwDir := filepath.Join(mstackDir, "rw")
 		if err := os.RemoveAll(rwDir); err != nil {
 			return "", fmt.Errorf("mstack rw reset: %w", err)
@@ -1268,60 +1241,92 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 	if err := os.RemoveAll(mstackDir); err != nil {
 		return "", fmt.Errorf("failed to clean existing mstack: %w", err)
 	}
-
 	if err := os.MkdirAll(mstackDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create mstack dir: %w", err)
 	}
 
 	cleanup := func() { _ = os.RemoveAll(mstackDir) }
 
-	// Create the layer stack.
-	// systemd-nspawn sorts these numerically: layer@0 is the bottom-most.
+	// Image layers: layer@0 (bottom) … layer@N-1.
 	for i, layerPath := range layers {
 		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
 		if err := os.Symlink(layerPath, linkName); err != nil {
 			cleanup()
-
 			return "", fmt.Errorf("failed to link layer %d (%s): %w", i, layerPath, err)
 		}
 	}
 
-	// Write bind entries into the mstack dir.
-	// Three entry forms:
-	//   robind@<escaped> / bind@<escaped>  symlink  -> HostPath (volume mounts)
-	//   robind@<escaped> / bind@<escaped>  file     <- Content  (generated files)
-	//   robind@<escaped> / bind@<escaped>  dir               (home dirs, empty targets)
+	// Partition bind entries into two groups:
+	//
+	//   sysEntries (Content / IsDir) → written into a sysconfig overlay layer.
+	//   The mstack bind@ format only supports directory or DDI entries, not plain
+	//   files. Single generated files (resolv.conf, passwd, group, home dirs) are
+	//   written into layer@{len(layers)}/ so overlayfs merges them on top of the
+	//   image without requiring a bind mount.
+	//
+	//   hostEntries (HostPath set) → written as bind@/robind@ symlinks.
+	//   These are volume mounts (emptyDir, configMap, secret, hostPath) whose
+	//   host-side directories already exist. Symlinks are valid per the mstack
+	//   spec: "each entry may be a symbolic link pointing to a directory".
+	var sysEntries, hostEntries []MStackBindEntry
 	for _, b := range binds {
+		if b.HostPath != "" {
+			hostEntries = append(hostEntries, b)
+		} else {
+			sysEntries = append(sysEntries, b)
+		}
+	}
+
+	// Sysconfig overlay layer: layer@{len(layers)}.
+	if len(sysEntries) > 0 {
+		sysLayerDir := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", len(layers)))
+		if err := os.MkdirAll(sysLayerDir, 0755); err != nil {
+			cleanup()
+			return "", fmt.Errorf("failed to create sysconfig layer: %w", err)
+		}
+
+		for _, b := range sysEntries {
+			// Write at the correct path within the overlay layer.
+			// b.ContainerPath e.g. "/etc/resolv.conf" → sysLayerDir/etc/resolv.conf
+			rel := strings.TrimPrefix(b.ContainerPath, "/")
+			dest := filepath.Join(sysLayerDir, rel)
+
+			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+				cleanup()
+				return "", fmt.Errorf("failed to mkdir for %s: %w", b.ContainerPath, err)
+			}
+
+			if b.IsDir {
+				mode := b.DirMode
+				if mode == 0 {
+					mode = 0755
+				}
+				if err := os.MkdirAll(dest, mode); err != nil {
+					cleanup()
+					return "", fmt.Errorf("failed to create dir %s: %w", b.ContainerPath, err)
+				}
+			} else {
+				if err := os.WriteFile(dest, b.Content, 0644); err != nil {
+					cleanup()
+					return "", fmt.Errorf("failed to write %s: %w", b.ContainerPath, err)
+				}
+			}
+		}
+	}
+
+	// Volume bind mounts: bind@/robind@ symlinks pointing to host paths.
+	for _, b := range hostEntries {
 		prefix := "robind@"
 		if !b.ReadOnly {
 			prefix = "bind@"
 		}
 
-		escaped := escapeMStackPath(b.ContainerPath)
+		escaped := unit.UnitNamePathEscape(b.ContainerPath)
 		entryPath := filepath.Join(mstackDir, prefix+escaped)
 
-		switch {
-		case b.HostPath != "":
-			// Symlink to an existing host path - used for volume mounts.
-			if err := os.Symlink(b.HostPath, entryPath); err != nil {
-				cleanup()
-				return "", fmt.Errorf("failed to symlink host path %s -> %s: %w", entryPath, b.HostPath, err)
-			}
-
-		case b.IsDir:
-			if err := os.MkdirAll(entryPath, 0755); err != nil {
-				cleanup()
-				return "", fmt.Errorf("failed to create bind dir %s: %w", b.ContainerPath, err)
-			}
-			if b.DirMode != 0 {
-				_ = os.Chmod(entryPath, b.DirMode)
-			}
-
-		default:
-			if err := os.WriteFile(entryPath, b.Content, 0644); err != nil {
-				cleanup()
-				return "", fmt.Errorf("failed to write bind file %s: %w", b.ContainerPath, err)
-			}
+		if err := os.Symlink(b.HostPath, entryPath); err != nil {
+			cleanup()
+			return "", fmt.Errorf("failed to symlink %s -> %s: %w", b.ContainerPath, b.HostPath, err)
 		}
 	}
 

@@ -25,6 +25,7 @@ import (
 	"github.com/malformed-c/periapsis/log"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	apivalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -395,8 +396,7 @@ func getEnvironmentVariableValueWithValueFrom(ctx context.Context, env *corev1.E
 	}
 
 	if env.ValueFrom.ResourceFieldRef != nil {
-		// TODO Implement populating resource requests.
-		return nil, nil
+		return getEnvironmentVariableValueWithValueFromResourceFieldRef(env, pod, container)
 	}
 
 	log.G(ctx).WithField("env", env).Error("Unhandled environment variable with non-nil env.ValueFrom, do not know how to populate")
@@ -535,6 +535,136 @@ func getEnvironmentVariableValueWithValueFromSecretKeyRef(ctx context.Context, e
 
 	// Populate the environment variable and continue on to the next reference.
 	return new(string(keyValue)), nil
+}
+
+// Handle population from a resource field (Tidal downward API).
+func getEnvironmentVariableValueWithValueFromResourceFieldRef(env *corev1.EnvVar, pod *corev1.Pod, container *corev1.Container) (*string, error) {
+	vf := env.ValueFrom.ResourceFieldRef
+
+	// Resolve target container: empty or matching name → current container,
+	// otherwise search all containers and init containers.
+	target := container
+	if vf.ContainerName != "" && vf.ContainerName != container.Name {
+		target = nil
+		for i := range pod.Spec.Containers {
+			if pod.Spec.Containers[i].Name == vf.ContainerName {
+				target = &pod.Spec.Containers[i]
+				break
+			}
+		}
+		if target == nil {
+			for i := range pod.Spec.InitContainers {
+				if pod.Spec.InitContainers[i].Name == vf.ContainerName {
+					target = &pod.Spec.InitContainers[i]
+					break
+				}
+			}
+		}
+		if target == nil {
+			return nil, fmt.Errorf("resourceFieldRef: container %q not found in pod %s/%s", vf.ContainerName, pod.Namespace, pod.Name)
+		}
+	}
+
+	// Divisor defaults to 1 (raw bytes / millicores).
+	divisor := vf.Divisor
+	if divisor.IsZero() {
+		divisor = resource.MustParse("1")
+	}
+
+	q, err := extractContainerResourceQuantity(target, vf.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("resourceFieldRef %q: %w", vf.Resource, err)
+	}
+
+	val, err := convertQuantityToString(q, divisor, vf.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("resourceFieldRef %q: %w", vf.Resource, err)
+	}
+	return new(val), nil
+}
+
+// extractContainerResourceQuantity returns the resource.Quantity for the given
+// resource field path (e.g. "requests.memory", "limits.cpu").
+func extractContainerResourceQuantity(c *corev1.Container, resourceField string) (resource.Quantity, error) {
+	switch resourceField {
+	case "limits.cpu":
+		if c.Resources.Limits != nil {
+			return c.Resources.Limits[corev1.ResourceCPU], nil
+		}
+		return resource.Quantity{}, nil
+	case "limits.memory":
+		if c.Resources.Limits != nil {
+			return c.Resources.Limits[corev1.ResourceMemory], nil
+		}
+		return resource.Quantity{}, nil
+	case "limits.ephemeral-storage":
+		if c.Resources.Limits != nil {
+			return c.Resources.Limits[corev1.ResourceEphemeralStorage], nil
+		}
+		return resource.Quantity{}, nil
+	case "requests.cpu":
+		if c.Resources.Requests != nil {
+			return c.Resources.Requests[corev1.ResourceCPU], nil
+		}
+		return resource.Quantity{}, nil
+	case "requests.memory":
+		if c.Resources.Requests != nil {
+			return c.Resources.Requests[corev1.ResourceMemory], nil
+		}
+		return resource.Quantity{}, nil
+	case "requests.ephemeral-storage":
+		if c.Resources.Requests != nil {
+			return c.Resources.Requests[corev1.ResourceEphemeralStorage], nil
+		}
+		return resource.Quantity{}, nil
+	default:
+		// Extended / hugepages resources: "limits.<resource>" or "requests.<resource>"
+		if rest, ok := strings.CutPrefix(resourceField, "limits."); ok {
+			rn := corev1.ResourceName(rest)
+			if c.Resources.Limits != nil {
+				return c.Resources.Limits[rn], nil
+			}
+			return resource.Quantity{}, nil
+		}
+		if rest, ok := strings.CutPrefix(resourceField, "requests."); ok {
+			rn := corev1.ResourceName(rest)
+			if c.Resources.Requests != nil {
+				return c.Resources.Requests[rn], nil
+			}
+			return resource.Quantity{}, nil
+		}
+		return resource.Quantity{}, fmt.Errorf("unsupported resource field %q", resourceField)
+	}
+}
+
+// convertQuantityToString converts q to a decimal string divided by divisor.
+// CPU fields are treated as fractional cores; everything else as integer bytes.
+func convertQuantityToString(q, divisor resource.Quantity, resourceField string) (string, error) {
+	isCPU := resourceField == "limits.cpu" || resourceField == "requests.cpu"
+
+	if isCPU {
+		// Convert both to milli-cores for exact integer division.
+		qMilli := q.MilliValue()
+		dMilli := divisor.MilliValue()
+		if dMilli == 0 {
+			return "", fmt.Errorf("divisor is zero")
+		}
+		return fmt.Sprintf("%d", qMilli/dMilli), nil
+	}
+
+	// Memory / storage: integer bytes.
+	qBytes, ok := q.AsInt64()
+	if !ok {
+		return "", fmt.Errorf("quantity %s overflows int64", q.String())
+	}
+	dBytes, ok := divisor.AsInt64()
+	if !ok {
+		return "", fmt.Errorf("divisor %s overflows int64", divisor.String())
+	}
+	if dBytes == 0 {
+		return "", fmt.Errorf("divisor is zero")
+	}
+	return fmt.Sprintf("%d", qBytes/dBytes), nil
 }
 
 // Handle population from a field (downward API).

@@ -144,17 +144,17 @@ type PodControllerConfig struct {
 	ServiceInformer   corev1informers.ServiceInformer
 
 	// SyncPodsFromKubernetesRateLimiter defines the rate limit for the SyncPodsFromKubernetes queue
-	SyncPodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[any]
+	SyncPodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[string]
 	// SyncPodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	SyncPodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// DeletePodsFromKubernetesRateLimiter defines the rate limit for the DeletePodsFromKubernetesRateLimiter queue
-	DeletePodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[any]
+	DeletePodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[string]
 	// DeletePodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	DeletePodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// SyncPodStatusFromProviderRateLimiter defines the rate limit for the SyncPodStatusFromProviderRateLimiter queue
-	SyncPodStatusFromProviderRateLimiter workqueue.TypedRateLimiter[any]
+	SyncPodStatusFromProviderRateLimiter workqueue.TypedRateLimiter[string]
 	// SyncPodStatusFromProviderShouldRetryFunc allows for a custom retry policy for the SyncPodStatusFromProvider queue
 	SyncPodStatusFromProviderShouldRetryFunc ShouldRetryFunc
 
@@ -190,13 +190,13 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		return nil, errdefs.InvalidInput("missing provider")
 	}
 	if cfg.SyncPodsFromKubernetesRateLimiter == nil {
-		cfg.SyncPodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
+		cfg.SyncPodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
 	if cfg.DeletePodsFromKubernetesRateLimiter == nil {
-		cfg.DeletePodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
+		cfg.DeletePodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
 	if cfg.SyncPodStatusFromProviderRateLimiter == nil {
-		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultTypedControllerRateLimiter[any]()
+		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
 	pc := &PodController{
 		client:             cfg.PodClient,

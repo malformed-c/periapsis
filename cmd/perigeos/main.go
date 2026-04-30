@@ -551,10 +551,9 @@ func main() {
 
 			// High-throughput rate limiter: 500 items/sec burst 1000, with
 			// exponential backoff only on failures (1ms base, 30s max).
-			// TODO: Figure out what type it wants
 			fastLimiter := workqueue.NewTypedMaxOfRateLimiter(
-				&workqueue.TypedBucketRateLimiter[any]{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
-				workqueue.NewTypedItemExponentialFailureRateLimiter[any](1*time.Millisecond, 30*time.Second),
+				&workqueue.TypedBucketRateLimiter[string]{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
+				workqueue.NewTypedItemExponentialFailureRateLimiter[string](1*time.Millisecond, 30*time.Second),
 			)
 			podController, err := node.NewPodController(node.PodControllerConfig{
 				PodClient:                             kubeClient.CoreV1(),

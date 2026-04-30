@@ -1116,7 +1116,7 @@ func sanitizeLogForEvent(log string) string {
 	// Cap at 256 characters.
 	const maxLen = 256
 	if len(log) > maxLen {
-		log = log[:maxLen] + "…"
+		log = log[:maxLen] + "..."
 	}
 
 	return log

@@ -541,7 +541,7 @@ func getEnvironmentVariableValueWithValueFromSecretKeyRef(ctx context.Context, e
 func getEnvironmentVariableValueWithValueFromResourceFieldRef(env *corev1.EnvVar, pod *corev1.Pod, container *corev1.Container) (*string, error) {
 	vf := env.ValueFrom.ResourceFieldRef
 
-	// Resolve target container: empty or matching name → current container,
+	// Resolve target container: empty or matching name -> current container,
 	// otherwise search all containers and init containers.
 	target := container
 	if vf.ContainerName != "" && vf.ContainerName != container.Name {

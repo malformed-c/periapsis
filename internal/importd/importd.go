@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	importdDest      = "org.freedesktop.import1"
-	importdPath      = "/org/freedesktop/import1"
-	importdIface     = "org.freedesktop.import1.Manager"
-	transferIface    = "org.freedesktop.import1.Transfer"
-	machineClass     = "machine"
+	importdDest   = "org.freedesktop.import1"
+	importdPath   = "/org/freedesktop/import1"
+	importdIface  = "org.freedesktop.import1.Manager"
+	transferIface = "org.freedesktop.import1.Transfer"
+	machineClass  = "machine"
 
 	// flagForce bit 0: overwrite existing image with same local name.
 	flagForce uint64 = 1 << 0
@@ -57,12 +57,12 @@ func (c *Client) Close() error {
 
 // ImageInfo is returned by ListImages.
 type ImageInfo struct {
-	Class     string
-	LocalName string
-	Type      string
-	Path      string
-	ReadOnly  bool
-	CreatedAt time.Time
+	Class      string
+	LocalName  string
+	Type       string
+	Path       string
+	ReadOnly   bool
+	CreatedAt  time.Time
 	ModifiedAt time.Time
 }
 
@@ -192,9 +192,9 @@ func ImageMStackPath(localName string) string {
 //
 // Examples:
 //
-//	docker.io/library/nginx:latest → nginx-latest
-//	docker.io/library/busybox:uclibc → busybox-uclibc
-//	ghcr.io/org/myapp:v1.2.3 → myapp-v1.2.3
+//	docker.io/library/nginx:latest -> nginx-latest
+//	docker.io/library/busybox:uclibc -> busybox-uclibc
+//	ghcr.io/org/myapp:v1.2.3 -> myapp-v1.2.3
 func LocalName(ref string) string {
 	// Strip registry prefix (everything before the last /)
 	if i := strings.LastIndex(ref, "/"); i >= 0 {

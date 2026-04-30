@@ -1186,7 +1186,8 @@ type MStackBindEntry struct {
 	// ContainerPath is the absolute destination inside the container.
 	ContainerPath string
 
-	// HostPath, when non-empty, creates a bind@ or robind@ symlink.
+	// HostPath, when non-empty, creates a bind@ or robind@ symlink pointing
+	// to this host path.
 	HostPath string
 
 	// Content is written as a file in the sysconfig overlay layer.
@@ -1213,10 +1214,11 @@ type MStackBindEntry struct {
 //
 // Examples:
 //
-//	/etc/resolv.conf  →  etc-resolv.conf        ('.' is safe, '-' in name encoded)
-//	/var/www          →  var-www
-//	/data-cache       →  data\x2dcache          (literal '-' encoded)
-//	/a-b/c-d          →  a\x2db-c\x2dd
+//	/etc/resolv.conf  ->  etc-resolv.conf        ('.' is safe, '-' in name encoded)
+//	/var/www          ->  var-www
+//	/data-cache       ->  data\x2dcache          (literal '-' encoded)
+//	/a-b/c-d          ->  a\x2db-c\x2dd
+//
 // mstackDir returns the path to the .mstack directory for a container.
 func (im *ImageManager) mstackDir(podUID, cName string) string {
 	return filepath.Join(im.baseDir, "stacks", fmt.Sprintf("%s-%s.mstack", podUID, cName))
@@ -1247,7 +1249,7 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 
 	cleanup := func() { _ = os.RemoveAll(mstackDir) }
 
-	// Image layers: layer@0 (bottom) … layer@N-1.
+	// Image layers: layer@0 (bottom) ... layer@N-1.
 	for i, layerPath := range layers {
 		linkName := filepath.Join(mstackDir, fmt.Sprintf("layer@%d", i))
 		if err := os.Symlink(layerPath, linkName); err != nil {
@@ -1258,13 +1260,13 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 
 	// Partition bind entries into two groups:
 	//
-	//   sysEntries (Content / IsDir) → written into a sysconfig overlay layer.
+	//   sysEntries (Content / IsDir) -> written into a sysconfig overlay layer.
 	//   The mstack bind@ format only supports directory or DDI entries, not plain
 	//   files. Single generated files (resolv.conf, passwd, group, home dirs) are
 	//   written into layer@{len(layers)}/ so overlayfs merges them on top of the
 	//   image without requiring a bind mount.
 	//
-	//   hostEntries (HostPath set) → written as bind@/robind@ symlinks.
+	//   hostEntries (HostPath set) -> written as bind@/robind@ symlinks.
 	//   These are volume mounts (emptyDir, configMap, secret, hostPath) whose
 	//   host-side directories already exist. Symlinks are valid per the mstack
 	//   spec: "each entry may be a symbolic link pointing to a directory".
@@ -1287,7 +1289,7 @@ func (im *ImageManager) PrepareMStack(podUID, cName string, layers []string, bin
 
 		for _, b := range sysEntries {
 			// Write at the correct path within the overlay layer.
-			// b.ContainerPath e.g. "/etc/resolv.conf" → sysLayerDir/etc/resolv.conf
+			// b.ContainerPath e.g. "/etc/resolv.conf" -> sysLayerDir/etc/resolv.conf
 			rel := strings.TrimPrefix(b.ContainerPath, "/")
 			dest := filepath.Join(sysLayerDir, rel)
 

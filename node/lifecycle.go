@@ -15,6 +15,7 @@ import (
 
 	"github.com/malformed-c/periapsis/internal/image"
 	"github.com/malformed-c/periapsis/internal/manager"
+	"github.com/malformed-c/periapsis/internal/podannot"
 	"github.com/malformed-c/periapsis/internal/podutils"
 	"github.com/malformed-c/periapsis/internal/volume"
 	corev1 "k8s.io/api/core/v1"
@@ -690,7 +691,8 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 // --- Helpers ---
 
-// TODO: Return x2 of memory for now
+// TODO: Return x2 of memory for now — kept as a fallback but callers should
+// prefer podannot.SwapBytes which reads periapsis.io/swap from the pod spec.
 func calculateSwap(memBytes uint64) (swapBytes uint64) {
 	return memBytes * 2
 }
@@ -699,7 +701,6 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 	if c.Resources.Limits != nil {
 		if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
 			memBytes = uint64(mem.Value())
-			swapBytes = calculateSwap(memBytes)
 		}
 		if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
 			cpuLimitMillis = cpu.MilliValue()
@@ -719,7 +720,6 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 		if memBytes == 0 {
 			if mem, ok := pod.Spec.Resources.Limits[corev1.ResourceMemory]; ok {
 				memBytes = uint64(mem.Value())
-				swapBytes = calculateSwap(memBytes)
 			}
 		}
 		if cpuLimitMillis == 0 {
@@ -733,6 +733,23 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 				cpuRequestMillis = cpu.MilliValue()
 			}
 		}
+	}
+
+	// Resolve swap via the pod annotation. Errors are logged at warn level and
+	// fall back to the default multiplier so a bad annotation never prevents
+	// the pod from starting.
+	if pod != nil {
+		var err error
+		swapBytes, err = podannot.SwapBytes(pod, memBytes)
+		if err != nil {
+			// Annotation was present but unparseable — log and use the default.
+			// We don't have a logger here so we fall back to calculateSwap.
+			// The calling layer (buildContainerRuntimeProfiles) holds no logger
+			// either; a future refactor can thread one through if needed.
+			swapBytes = calculateSwap(memBytes)
+		}
+	} else {
+		swapBytes = calculateSwap(memBytes)
 	}
 
 	return

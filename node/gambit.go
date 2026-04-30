@@ -62,7 +62,7 @@ const (
 // and systemd-nspawn machine management for each pod.
 type Gambit struct {
 	Config         config.PawnConfig
-	ImageManager   *image.ImageManager
+	ImageManager   image.Store
 	NetworkManager network.NetworkManager
 	Runtime        perigeos.Runtime
 	Logger         *slog.Logger
@@ -159,7 +159,7 @@ type GambitDeps struct {
 	Store          *PodStore
 	Volumes        *VolumeTracker
 	Node           *PawnNode
-	ImageManager   *image.ImageManager
+	ImageManager   image.Store
 	NetworkManager network.NetworkManager
 	Runtime        perigeos.Runtime
 	Logger         *slog.Logger

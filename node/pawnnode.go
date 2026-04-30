@@ -40,7 +40,7 @@ const (
 type PawnNode struct {
 	cfg          config.PawnConfig
 	store        *PodStore
-	imageManager *image.ImageManager
+	imageManager image.Store
 	logger       *slog.Logger
 
 	shuttingDown atomic.Bool
@@ -52,7 +52,7 @@ type PawnNode struct {
 }
 
 // NewPawnNode creates a new PawnNode.
-func NewPawnNode(cfg config.PawnConfig, store *PodStore, im *image.ImageManager, logger *slog.Logger) *PawnNode {
+func NewPawnNode(cfg config.PawnConfig, store *PodStore, im image.Store, logger *slog.Logger) *PawnNode {
 	return &PawnNode{
 		cfg:          cfg,
 		store:        store,

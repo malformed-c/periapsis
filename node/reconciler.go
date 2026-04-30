@@ -48,7 +48,7 @@ type Reconciler struct {
 	tracker       PodTracker
 	runtime       perigeos.Runtime
 	network       network.NetworkManager
-	image         *image.ImageManager
+	image         image.Store
 	podLister     v1.PodNamespaceLister
 	logger        *slog.Logger
 	baseDir       string
@@ -61,7 +61,7 @@ func NewReconciler(
 	g *Gambit,
 	rt perigeos.Runtime,
 	nm network.NetworkManager,
-	im *image.ImageManager,
+	im image.Store,
 	podLister v1.PodNamespaceLister,
 	logger *slog.Logger,
 ) *Reconciler {

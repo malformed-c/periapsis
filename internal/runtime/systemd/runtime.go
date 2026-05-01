@@ -746,8 +746,7 @@ func (s *SystemdRuntime) StopMachine(ctx context.Context, podUID, containerName 
 	ch := make(chan string, 1)
 	_, err := s.conn.StopUnitContext(ctx, wrapperUnit, "replace", ch)
 	if err != nil {
-		if strings.Contains(err.Error(), "not loaded") {
-
+		if isUnitNotFound(err) {
 			return nil
 		}
 
@@ -1584,15 +1583,33 @@ func substituteEnvVars(s string, env map[string]string) string {
 
 // wrapperUnitName produces the systemd unit name for a specific container within a pod.
 // Format: perigeos-<pawn>-pod-<uid>-<container>.service
+// isUnitNotFound reports whether a systemd D-Bus error means the unit simply
+// doesn't exist. Both "not loaded" (unit was reset/never existed) and
+// "NoSuchUnit" (D-Bus error name) are treated as the same condition.
+func isUnitNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "not loaded") ||
+		strings.Contains(msg, "NoSuchUnit") ||
+		strings.Contains(msg, "no such unit")
+}
+
 func wrapperUnitName(pawnName, podUID, containerName string) string {
 	return fmt.Sprintf("perigeos-%s-pod-%s-%s.service", pawnName, podUID, containerName)
 }
 
 // ResetUnit cleans up a dead/failed transient unit by calling ResetFailedUnit.
 // This removes the unit from systemd's listing so it doesn't accumulate.
+// Idempotent: returns nil if the unit is already gone ("not loaded").
 func (s *SystemdRuntime) ResetUnit(ctx context.Context, podUID, containerName string) error {
 	serviceName := wrapperUnitName(s.pawnName, podUID, containerName)
-	return s.conn.ResetFailedUnitContext(ctx, serviceName)
+	err := s.conn.ResetFailedUnitContext(ctx, serviceName)
+	if err != nil && isUnitNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // CleanupStaleUnits resets all dead/failed transient units whose pod UID is

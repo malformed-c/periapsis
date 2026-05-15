@@ -7,7 +7,7 @@ require (
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containernetworking/cni v1.3.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.5
@@ -23,9 +23,9 @@ require (
 	go.opencensus.io v0.24.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.43.0
+	golang.org/x/sys v0.44.0
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.80.0
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 	gotest.tools v2.2.0+incompatible
 	k8s.io/api v0.35.3
@@ -82,7 +82,6 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20241108190413-2d47ceb2692f // indirect

@@ -217,12 +217,14 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 	if !shouldSkipPodStatusUpdate(pod) {
 		updated := pod.DeepCopy()
 		updated.Status.Phase = corev1.PodSucceeded
+
 		now := metav1.NewTime(time.Now())
 		for i, cs := range updated.Status.ContainerStatuses {
 			var startedAt metav1.Time
 			if cs.State.Running != nil {
 				startedAt = cs.State.Running.StartedAt
 			}
+
 			updated.Status.ContainerStatuses[i].State = corev1.ContainerState{
 				Terminated: &corev1.ContainerStateTerminated{
 					Reason:     statusTerminatedReason,
@@ -232,6 +234,7 @@ func (pc *PodController) deletePod(ctx context.Context, pod *corev1.Pod) error {
 				},
 			}
 		}
+
 		updated.Status.Reason = statusTerminatedReason
 		pc.enqueuePodStatusUpdate(ctx, updated)
 	}
@@ -508,11 +511,13 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 		span.SetStatus(err)
 		return err
 	}
+
 	if string(k8sPod.UID) != uid {
 		log.G(ctx).WithField("k8sPodUID", k8sPod.UID).WithField("uid", uid).Warn("Not deleting pod because remote pod has different UID")
 
 		return nil
 	}
+
 	if running(&k8sPod.Status) {
 		log.G(ctx).Error("Force deleting pod in running state")
 	}
@@ -521,6 +526,7 @@ func (pc *PodController) deletePodsFromKubernetesHandler(ctx context.Context, ke
 	// was in progress,
 	deleteOptions := metav1.NewDeleteOptions(0)
 	deleteOptions.Preconditions = metav1.NewUIDPreconditions(uid)
+
 	err = pc.client.Pods(namespace).Delete(ctx, name, *deleteOptions)
 	if errors.IsNotFound(err) {
 		log.G(ctx).Warnf("Not deleting pod because %v", err)

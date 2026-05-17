@@ -58,7 +58,7 @@ Perigeos runs at ~67MB RSS idle and adds negligible per-pod overhead - no contai
 ## How It Works
 
 Periapsis is a fork of `virtual-kubelet` that manages the full container lifecycle natively on the host:
-- image pull (with p2p layer sharing)
+- image pull (with P2P in-cluster layer sharing)
 - network setup (only Constellation CNI)
 - resource limits, exec, logging, and status reporting
 
@@ -124,7 +124,7 @@ Full results: [docs/show-off.md](docs/show-off.md)
 
 - **Pod Lifecycle:** Create, update, delete, restart policies, crash loop backoff.
 - **Advanced Pods:** Init containers, sidecars, and liveness/readiness/startup probes.
-- **OCI image pull** with layer caching and peer-to-peer layer sharing
+- **Distributed Image Distribution**: Bypasses registry bottlenecks via an in-cluster P2P layer-sharing protocol. Uses a Content Addressable Store (CAS) to verify blob integrity and reduces external bandwidth by seeding layers across Pawns and hosts.
 - **Storage:** ConfigMap, Secret, emptyDir, projected volumes, downward API (Tidal) and SeaweedFS CSI.
 - **Kubelet API:** `exec`, `attach`, `logs`, and `port-forward`.
 - **Resource limits** (CPU, memory, IO) via cgroups v2
@@ -142,7 +142,7 @@ Full results: [docs/show-off.md](docs/show-off.md)
 
 ### ⚠️ What is in Progress/Unsupported
 - **Dynamic Node Sizing**: Not implemented. Currently, Periapsis supports only **Static Pawn Provisioning**, where Pawn capacity and limits are manually defined in the daemon configuration by the operator.
-- **OOM Eviction** Not yet implemented
+- **OOM Eviction** Not yet implemented fully, only basic OOM.
 - **PersistentVolumeClaims:** Local-path and SeaweedFS work; others untested.
 - **SecurityContext**: unprivileged pods work; Partial coverage; not all fields map to `nspawn`
 - **Windows**: not supported, not planned
@@ -313,7 +313,7 @@ A Pawn is a virtual Kubernetes node that multiplexes a single physical server. W
 
 ## Related Projects
 
-- [Constellation](https://github.com/malformed-c/constellation) - eBPF/Cilium CNI fork
+- [Constellation](https://github.com/malformed-c/constellation) - Cilium/Data path CNI fork
 - [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - upstream fork base (Apache 2.0)
 
 ---

@@ -65,6 +65,7 @@ type PodController struct {
 
 	// podsInformer is an informer for Pod resources.
 	podsInformer corev1informers.PodInformer
+
 	// podsLister is able to list/get Pod resources from a shared informer's store.
 	podsLister corev1listers.PodLister
 
@@ -90,17 +91,20 @@ type PodController struct {
 	// ready is a channel which will be closed once the pod controller is fully up and running.
 	// this channel will never be closed if there is an error on startup.
 	ready chan struct{}
+
 	// done is closed when Run returns
 	// Once done is closed `err` may be set to a non-nil value
 	done chan struct{}
 
 	// podSyncWorkers is stored for backpressure detection.
 	podSyncWorkers int
+
 	// lastBackpressureLog rate-limits backpressure warnings.
 	// Access and update atomically to avoid data races between sync workers.
 	lastBackpressureLog atomic.Int64
 
 	mu sync.Mutex
+
 	// err is set if there is an error while while running the pod controller.
 	// Typically this would be errors that occur during startup.
 	// Once err is set, `Run` should return.
@@ -145,16 +149,19 @@ type PodControllerConfig struct {
 
 	// SyncPodsFromKubernetesRateLimiter defines the rate limit for the SyncPodsFromKubernetes queue
 	SyncPodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[string]
+
 	// SyncPodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	SyncPodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// DeletePodsFromKubernetesRateLimiter defines the rate limit for the DeletePodsFromKubernetesRateLimiter queue
 	DeletePodsFromKubernetesRateLimiter workqueue.TypedRateLimiter[string]
+
 	// DeletePodsFromKubernetesShouldRetryFunc allows for a custom retry policy for the SyncPodsFromKubernetes queue
 	DeletePodsFromKubernetesShouldRetryFunc ShouldRetryFunc
 
 	// SyncPodStatusFromProviderRateLimiter defines the rate limit for the SyncPodStatusFromProviderRateLimiter queue
 	SyncPodStatusFromProviderRateLimiter workqueue.TypedRateLimiter[string]
+
 	// SyncPodStatusFromProviderShouldRetryFunc allows for a custom retry policy for the SyncPodStatusFromProvider queue
 	SyncPodStatusFromProviderShouldRetryFunc ShouldRetryFunc
 
@@ -171,33 +178,43 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 	if cfg.PodClient == nil {
 		return nil, errdefs.InvalidInput("missing core client")
 	}
+
 	if cfg.EventRecorder == nil {
 		return nil, errdefs.InvalidInput("missing event recorder")
 	}
+
 	if cfg.PodInformer == nil {
 		return nil, errdefs.InvalidInput("missing pod informer")
 	}
+
 	if cfg.ConfigMapInformer == nil {
 		return nil, errdefs.InvalidInput("missing config map informer")
 	}
+
 	if cfg.SecretInformer == nil {
 		return nil, errdefs.InvalidInput("missing secret informer")
 	}
+
 	if cfg.ServiceInformer == nil {
 		return nil, errdefs.InvalidInput("missing service informer")
 	}
+
 	if cfg.Provider == nil {
 		return nil, errdefs.InvalidInput("missing provider")
 	}
+
 	if cfg.SyncPodsFromKubernetesRateLimiter == nil {
 		cfg.SyncPodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
+
 	if cfg.DeletePodsFromKubernetesRateLimiter == nil {
 		cfg.DeletePodsFromKubernetesRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
+
 	if cfg.SyncPodStatusFromProviderRateLimiter == nil {
 		cfg.SyncPodStatusFromProviderRateLimiter = workqueue.DefaultTypedControllerRateLimiter[string]()
 	}
+
 	pc := &PodController{
 		client:             cfg.PodClient,
 		podsInformer:       cfg.PodInformer,
@@ -219,10 +236,12 @@ func NewPodController(cfg PodControllerConfig) (*PodController, error) {
 		if splitErr != nil {
 			return
 		}
+
 		pod, getErr := pc.podsLister.Pods(namespace).Get(name)
 		if getErr != nil {
 			return
 		}
+
 		pc.recorder.Event(pod, corev1.EventTypeWarning, "SyncRetriesExhausted",
 			fmt.Sprintf("Gave up syncing pod after repeated failures: %v", err))
 	})
@@ -268,20 +287,24 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 		AddFunc: func(pod any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
+
 			ctx, span := trace.StartSpan(ctx, "AddFunc")
 			defer span.End()
 
 			if key, err := cache.MetaNamespaceKeyFunc(pod); err != nil {
 				log.G(ctx).Error(err)
+
 			} else {
 				ctx = span.WithField(ctx, "key", key)
 				pc.knownPods.Store(key, &knownPod{})
 				pc.syncPodsFromKubernetes.Enqueue(ctx, key)
 			}
 		},
+
 		UpdateFunc: func(oldObj, newObj any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
+
 			ctx, span := trace.StartSpan(ctx, "UpdateFunc")
 			defer span.End()
 
@@ -289,17 +312,21 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 			oldPod, ok := oldObj.(*corev1.Pod)
 			if !ok {
 				log.G(ctx).Error("UpdateFunc: oldObj is not a *corev1.Pod", "type", fmt.Sprintf("%T", oldObj))
+
 				return
 			}
+
 			newPod, ok := newObj.(*corev1.Pod)
 			if !ok {
 				log.G(ctx).Error("UpdateFunc: newObj is not a *corev1.Pod", "type", fmt.Sprintf("%T", newObj))
+
 				return
 			}
 
 			// At this point we know that something in .metadata or .spec has changed, so we must proceed to sync the pod.
 			if key, err := cache.MetaNamespaceKeyFunc(newPod); err != nil {
 				log.G(ctx).Error(err)
+
 			} else {
 				ctx = span.WithField(ctx, "key", key)
 				obj, ok := pc.knownPods.Load(key)
@@ -316,14 +343,17 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 						!cmp.Equal(newPod.Annotations, kPod.lastPodStatusReceivedFromProvider.Annotations) ||
 						!cmp.Equal(newPod.Labels, kPod.lastPodStatusReceivedFromProvider.Labels) ||
 						!cmp.Equal(newPod.Finalizers, kPod.lastPodStatusReceivedFromProvider.Finalizers)) {
+
 					// The last pod from the provider -> kube api server was skipped, but we see they no longer match.
 					// This means that the pod in API server was changed by someone else [this can be okay], but we skipped
 					// a status update on our side because we compared the status received from the provider to the status
 					// received from the k8s api server based on outdated information.
 					pc.syncPodStatusFromProvider.Enqueue(ctx, key)
+
 					// Reset this to avoid re-adding it continuously
 					kPod.lastPodStatusUpdateSkipped = false
 				}
+
 				kPod.Unlock()
 
 				if podShouldEnqueue(oldPod, newPod) {
@@ -331,22 +361,27 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				}
 			}
 		},
+
 		DeleteFunc: func(pod any) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
+
 			ctx, span := trace.StartSpan(ctx, "DeleteFunc")
 			defer span.End()
 
 			if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(pod); err != nil {
 				log.G(ctx).Error(err)
+
 			} else {
 				k8sPod, ok := pod.(*corev1.Pod)
 				if !ok {
 					return
 				}
+
 				ctx = span.WithField(ctx, "key", key)
 				pc.knownPods.Delete(key)
 				pc.syncPodsFromKubernetes.Enqueue(ctx, key)
+
 				// If this pod was in the deletion queue, forget about it
 				key = fmt.Sprintf("%v/%v", key, k8sPod.UID)
 				pc.deletePodsFromKubernetes.Forget(ctx, key)
@@ -361,8 +396,10 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 				if !ok {
 					return false
 				}
+
 				return pc.podEventFilterFunc(ctx, p)
 			},
+
 			Handler: eventHandler,
 		}
 	}
@@ -382,17 +419,22 @@ func (pc *PodController) Run(ctx context.Context, podSyncWorkers int) (retErr er
 	statusWorkers := max(2, podSyncWorkers/2)
 
 	log.G(ctx).Info("starting workers", "sync", podSyncWorkers, "delete", deleteWorkers, "status", statusWorkers)
+
 	group := &wait.Group{}
 	group.StartWithContext(ctx, func(ctx context.Context) {
 		pc.syncPodsFromKubernetes.Run(ctx, podSyncWorkers)
 	})
+
 	group.StartWithContext(ctx, func(ctx context.Context) {
 		pc.deletePodsFromKubernetes.Run(ctx, deleteWorkers)
 	})
+
 	group.StartWithContext(ctx, func(ctx context.Context) {
 		pc.syncPodStatusFromProvider.Run(ctx, statusWorkers)
 	})
+
 	defer group.Wait()
+
 	log.G(ctx).Info("started workers")
 	close(pc.ready)
 
@@ -503,6 +545,7 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 	if err != nil {
 		// Log the error as a warning, but do not requeue the key as it is invalid.
 		log.G(ctx).Warn(pkgerrors.Wrapf(err, "invalid resource key: %q", key))
+
 		return nil
 	}
 
@@ -514,6 +557,7 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 			// Hence, we add the key back to the work queue so we can retry processing it later.
 			err := pkgerrors.Wrapf(err, "failed to fetch pod with key %q from lister", key)
 			span.SetStatus(err)
+
 			return err
 		}
 
@@ -521,8 +565,10 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 		if err != nil && !errdefs.IsNotFound(err) {
 			err = pkgerrors.Wrapf(err, "failed to fetch pod with key %q from provider", key)
 			span.SetStatus(err)
+
 			return err
 		}
+
 		if errdefs.IsNotFound(err) || pod == nil {
 			return nil
 		}
@@ -531,12 +577,15 @@ func (pc *PodController) syncPodFromKubernetesHandler(ctx context.Context, key s
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
+
 		if err != nil {
 			err = pkgerrors.Wrapf(err, "failed to delete pod %q in the provider", loggablePodNameFromCoordinates(namespace, name))
 			span.SetStatus(err)
+
 			pc.recorder.Event(pod, corev1.EventTypeWarning, "FailedSync",
 				fmt.Sprintf("Failed to delete orphan pod from provider: %v", err))
 		}
+
 		return err
 
 	}
@@ -557,27 +606,34 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	// more context is here: https://github.com/malformed-c/periapsis/pull/760
 	if pod.DeletionTimestamp != nil && !running(&pod.Status) {
 		log.G(ctx).Debug("Force deleting pod from API Server as it is no longer running")
+
 		key = fmt.Sprintf("%v/%v", key, pod.UID)
 		pc.deletePodsFromKubernetes.EnqueueWithoutRateLimit(ctx, key)
+
 		return nil
 	}
+
 	obj, ok := pc.knownPods.Load(key)
 	if !ok {
 		// That means the pod was deleted while we were working
 		return nil
 	}
+
 	kPod := obj.(*knownPod)
 	kPod.Lock()
 	if kPod.lastPodUsed != nil && podsEffectivelyEqual(kPod.lastPodUsed, pod) {
 		kPod.Unlock()
+
 		return nil
 	}
+
 	kPod.Unlock()
 
 	defer func() {
 		if retErr == nil {
 			kPod.Lock()
 			defer kPod.Unlock()
+
 			kPod.lastPodUsed = pod
 		}
 	}()
@@ -586,11 +642,14 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	// If it does, guarantee it is deleted in the provider and Kubernetes.
 	if pod.DeletionTimestamp != nil {
 		log.G(ctx).Debug("Deleting pod in perigeos")
+
 		if err := pc.deletePod(ctx, pod); errdefs.IsNotFound(err) {
 			log.G(ctx).Debug("Pod not found in perigeos")
+
 		} else if err != nil {
 			err := pkgerrors.Wrapf(err, "failed to delete pod %q in the provider", loggablePodName(pod))
 			span.SetStatus(err)
+
 			return err
 		}
 
@@ -599,7 +658,9 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 		if pod.DeletionGracePeriodSeconds != nil {
 			gracePeriod = *pod.DeletionGracePeriodSeconds
 		}
+
 		pc.deletePodsFromKubernetes.EnqueueWithoutRateLimitWithDelay(ctx, key, time.Second*time.Duration(gracePeriod))
+
 		return nil
 	}
 
@@ -610,8 +671,10 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 		if existing, _ := pc.provider.GetPod(ctx, pod.Namespace, pod.Name); existing != nil {
 			log.G(ctx).Warnf("skipping sync of pod %q in %q phase", loggablePodName(pod), pod.Status.Phase)
+
 			return nil
 		}
+
 		log.G(ctx).Warnf("pod %q is in %q phase but provider has no record - driving creation (dropped event recovery)", loggablePodName(pod), pod.Status.Phase)
 	}
 
@@ -619,8 +682,10 @@ func (pc *PodController) syncPodInProvider(ctx context.Context, pod *corev1.Pod,
 	if err := pc.createOrUpdatePod(ctx, pod); err != nil {
 		err := pkgerrors.Wrapf(err, "failed to sync pod %q in the provider", loggablePodName(pod))
 		span.SetStatus(err)
+
 		return err
 	}
+
 	return nil
 }
 
@@ -635,6 +700,7 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 		err := pkgerrors.Wrap(err, "failed to fetch the list of pods from the provider")
 		span.SetStatus(err)
 		log.G(ctx).Error(err)
+
 		return
 	}
 
@@ -648,12 +714,15 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 			if errors.IsNotFound(err) {
 				// The current pod does not exist in Kubernetes, so we mark it for deletion.
 				ptd = append(ptd, pp)
+
 				continue
 			}
+
 			// For some reason we couldn't fetch the pod from the lister, so we propagate the error.
 			err := pkgerrors.Wrap(err, "failed to fetch pod from the lister")
 			span.SetStatus(err)
 			log.G(ctx).Error(err)
+
 			return
 		}
 	}
@@ -678,12 +747,15 @@ func (pc *PodController) deleteDanglingPods(ctx context.Context, threadiness int
 
 			// Add the pod's attributes to the current span.
 			ctx = addPodAttributes(ctx, span, pod)
+
 			// Actually delete the pod.
 			if err := pc.provider.DeletePod(ctx, pod.DeepCopy()); err != nil && !errdefs.IsNotFound(err) {
 				span.SetStatus(err)
 				log.G(ctx).Errorf("failed to delete pod %q in perigeos", loggablePodName(pod))
+
 				pc.recorder.Event(pod, corev1.EventTypeWarning, "FailedDeleteDangling",
 					fmt.Sprintf("Failed to delete dangling pod from provider: %v", err))
+
 			} else {
 				log.G(ctx).Infof("deleted leaked pod %q in perigeos", loggablePodName(pod))
 			}
@@ -702,6 +774,7 @@ func loggablePodName(pod *corev1.Pod) string {
 	if err != nil {
 		return "(unknown)"
 	}
+
 	return k
 }
 
@@ -716,9 +789,11 @@ func podsEffectivelyEqual(p1, p2 *corev1.Pod) bool {
 		if p.String() == "ObjectMeta.ResourceVersion" {
 			return true
 		}
+
 		if p.String() == "Status" {
 			return true
 		}
+
 		return false
 	}
 
@@ -732,7 +807,6 @@ func running(podStatus *corev1.PodStatus) bool {
 	statuses := podStatus.ContainerStatuses
 	for _, status := range statuses {
 		if status.State.Terminated == nil && status.State.Waiting == nil {
-
 			return true
 		}
 	}

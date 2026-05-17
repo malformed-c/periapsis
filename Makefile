@@ -7,6 +7,7 @@ SERVICE_DST := /etc/systemd/system/perigeos.service
 
 # Malformed systemd-nspawn
 LIB_DIR     := /usr/local/lib
+LD_CONF_DST := /etc/ld.so.conf.d/apsis.conf
 NSPAWN_URL  := https://github.com/malformed-c/systemd/releases/download/v260.1-3-apsis/systemd-nspawn
 LIB_URL     := https://github.com/malformed-c/systemd/releases/download/v260.1-3-apsis/libsystemd-shared-261.so
 NSPAWN_BIN  := systemd-nspawn
@@ -50,6 +51,9 @@ install:
 	install -m 0755 $(NSPAWN_BIN) $(INSTALL_DIR)/$(NSPAWN_BIN)
 	install -m 0644 $(NSPAWN_LIB) $(LIB_DIR)/$(NSPAWN_LIB)
 
+	# Add /usr/local/lib to the system linker path
+	echo "$(LIB_DIR)" > $(LD_CONF_DST)
+
 	mkdir -p $(CONFIG_DIR)
 	install -m 0644 $(SERVICE_SRC) $(SERVICE_DST)
 
@@ -67,6 +71,7 @@ uninstall:
 	systemctl disable perigeos 2>/dev/null || true
 	rm -f $(INSTALL_DIR)/$(PERIGEOS) $(INSTALL_DIR)/$(APSIS) $(INSTALL_DIR)/$(NSPAWN_BIN)
 	rm -f $(LIB_DIR)/$(NSPAWN_LIB)
+	rm -f $(LD_CONF_DST)
 	rm -f $(SERVICE_DST)
 	ldconfig
 	systemctl daemon-reload

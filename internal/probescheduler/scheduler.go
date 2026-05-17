@@ -117,8 +117,11 @@ func (s *ProbeScheduler) runProbeCycle(ctx context.Context) {
 
 				s.probeContainer(ctx, uid, pod, container, podIP)
 			}(e.UID, e.Pod, c, e.PodIP)
+
 		}
+
 	}
+
 	wg.Wait()
 }
 

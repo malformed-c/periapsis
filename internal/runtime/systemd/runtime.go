@@ -270,20 +270,22 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		execStart = append(execStart, "--capability=all")
 	}
 
-	// Userns shim: create a user namespace INSIDE the container after nspawn
+	// UserNS shim: create a user namespace INSIDE the container after nspawn
 	// has joined the CNI netns. This avoids the --private-users +
 	// --network-namespace-path incompatibility (the userns child can't
 	// setns() into an external netns without CAP_SYS_ADMIN in the init userns).
 	// Privileged containers skip userns - they need host-level capabilities.
-	useUserNS := cfg.RunAsUser != nil && !cfg.Privileged && usernsShimExists()
+	userNS := cfg.RunAsUser != nil && !cfg.Privileged
+	shimUserNS := userNS && usernsShimExists() && false
+
 	var usernsFIFODir string
-	if useUserNS {
+	if shimUserNS {
 		var err error
 		usernsFIFODir, err = setupUserNSFIFOs(podUID, containerName)
 
 		if err != nil {
 			s.logger.Error("Failed to setup userns FIFOs, falling back to --user=", "error", err)
-			useUserNS = false
+			shimUserNS = false
 
 		} else {
 			// Bind-mount the shim binary and FIFO directory into the container.
@@ -294,8 +296,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		}
 	}
 
-	if !useUserNS && cfg.RunAsUser != nil {
-		// Fallback: use nspawn's --user= (no userns isolation).
+	if userNS {
+		// Use nspawn's userns isolation
+		execStart = append(execStart, "--private-users=pick")
+		execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
+
+	} else if !shimUserNS && cfg.RunAsUser != nil {
+		// Fallback: use nspawn's --user= (no userns isolation)
+		s.logger.Error("UserNS isolation is requested, but no backends are available")
 		execStart = append(execStart, fmt.Sprintf("--user=%d", *cfg.RunAsUser))
 	}
 
@@ -371,7 +379,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		fullCmd = []string{"/bin/sleep", "infinity"}
 	}
 
-	if useUserNS {
+	if shimUserNS {
 		// Prepend the userns shim - it calls unshare(CLONE_NEWUSER), waits
 		// for perigeos to write uid_map/gid_map, adopts the target identity,
 		// then exec()s the real workload.
@@ -495,7 +503,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 			masterVal.(*os.File).Close()
 		}
 
-		if useUserNS {
+		if shimUserNS {
 			cleanupUserNSFIFOs(podUID, containerName)
 		}
 
@@ -520,7 +528,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	// Start the host-side userns handshake goroutine. This blocks on the
 	// ready FIFO until the shim has called unshare(CLONE_NEWUSER), then
 	// writes uid_map/gid_map and sends the target identity via gate FIFO.
-	if useUserNS {
+	if shimUserNS {
 		targetUID := *cfg.RunAsUser
 		targetGID := int64(0)
 		if cfg.RunAsGroup != nil {

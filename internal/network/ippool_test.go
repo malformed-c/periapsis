@@ -16,6 +16,7 @@ func TestIPPool_AllocateSequential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if ip1 != "10.88.0.2" {
 		t.Errorf("first allocation: got %s, want 10.88.0.2", ip1)
 	}
@@ -24,6 +25,7 @@ func TestIPPool_AllocateSequential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if ip2 != "10.88.0.3" {
 		t.Errorf("second allocation: got %s, want 10.88.0.3", ip2)
 	}
@@ -34,6 +36,7 @@ func TestIPPool_Gateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if gw := p.Gateway(); gw != "10.88.0.1" {
 		t.Errorf("gateway: got %s, want 10.88.0.1", gw)
 	}
@@ -54,16 +57,19 @@ func TestIPPool_Release_AllowsReallocation(t *testing.T) {
 
 	// Allocate enough IPs to wrap around and reclaim the released one.
 	found := false
-	for i := 0; i < 253; i++ {
+	for i := range 253 {
 		candidate, err := p.Allocate(fmt.Sprintf("pod-%d", i+10))
 		if err != nil {
 			t.Fatalf("unexpected exhaustion at i=%d: %v", i, err)
 		}
+
 		if candidate == ip {
 			found = true
+
 			break
 		}
 	}
+
 	if !found {
 		t.Errorf("released IP %s was never reallocated", ip)
 	}
@@ -76,15 +82,18 @@ func TestIPPool_NoDuplicates(t *testing.T) {
 	}
 
 	seen := make(map[string]struct{})
+
 	// /24 gives 253 usable IPs (.2 through .254)
 	for i := 0; i < 253; i++ {
 		ip, err := p.Allocate(fmt.Sprintf("pod-%d", i))
 		if err != nil {
 			t.Fatalf("allocation %d failed: %v", i, err)
 		}
+
 		if _, dup := seen[ip]; dup {
 			t.Fatalf("duplicate IP allocated: %s", ip)
 		}
+
 		seen[ip] = struct{}{}
 	}
 }
@@ -116,19 +125,19 @@ func TestIPPool_ConcurrentAllocate(t *testing.T) {
 	const n = 100
 	ips := make([]string, n)
 	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
-		go func() {
-			defer wg.Done()
+	for i := range n {
+		wg.Go(func() {
 			ip, err := p.Allocate(fmt.Sprintf("pod-%d", i))
 			if err != nil {
 				t.Errorf("goroutine %d: %v", i, err)
+
 				return
 			}
+
 			ips[i] = ip
-		}()
+		})
 	}
+
 	wg.Wait()
 
 	seen := make(map[string]struct{})
@@ -136,9 +145,11 @@ func TestIPPool_ConcurrentAllocate(t *testing.T) {
 		if ip == "" {
 			continue
 		}
+
 		if _, dup := seen[ip]; dup {
 			t.Errorf("concurrent duplicate IP: %s", ip)
 		}
+
 		seen[ip] = struct{}{}
 	}
 }
@@ -150,11 +161,13 @@ func TestVethName_MaxLength(t *testing.T) {
 		"12345678-1234-1234-1234-123456789abc",
 		"short",
 	}
+
 	for _, uid := range uids {
 		name := vethName(uid)
 		if len(name) > 15 {
 			t.Errorf("vethName(%q) = %q, length %d > 15", uid, name, len(name))
 		}
+
 		if len(name) == 0 {
 			t.Errorf("vethName(%q) returned empty string", uid)
 		}

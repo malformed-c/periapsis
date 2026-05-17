@@ -15,7 +15,7 @@ ExecStart=/usr/local/bin/perigeos \
     --control-socket /run/apsis/perigeos.sock
 
 Restart=on-failure
-RestartSec=5s
+RestartSec=60s
 WatchdogSec=120s
 
 OOMScoreAdjust=-999

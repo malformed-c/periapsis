@@ -104,22 +104,23 @@ func NewHorizon(deps HorizonConfig) *Horizon {
 func (h *Horizon) Run(ctx context.Context, workerCount uint8) {
 	var wg sync.WaitGroup
 
-	for i := uint8(0); i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workerCount {
+		wg.Go(func() {
 			for {
 				select {
 				case eff, ok := <-h.inbox:
 					if !ok {
 						return
 					}
+
 					h.executeEffect(ctx, eff)
+
 				case <-ctx.Done():
 					return
 				}
 			}
-		}()
+		})
+
 	}
 
 	<-ctx.Done()
@@ -155,9 +156,11 @@ func (h *Horizon) Send(eff types.Effect) bool {
 	select {
 	case h.inbox <- eff:
 		return true
+
 	default:
 		h.logger.Warn("horizon inbox full, dropping effect",
 			"type", fmt.Sprintf("%T", eff))
+
 		return false
 	}
 }
@@ -179,12 +182,16 @@ func (h *Horizon) executeEffect(ctx context.Context, eff types.Effect) {
 	switch e := eff.(type) {
 	case types.UpdateStatus:
 		h.handleUpdateStatus(ctx, e)
+
 	case types.RestartContainer:
 		h.handleRestartContainer(ctx, e)
+
 	case types.ResetUnit:
 		h.handleResetUnit(ctx, e)
+
 	case types.RecordEvent:
 		h.handleRecordEvent(e)
+
 	default:
 		h.logger.Warn("horizon: received non-k8s effect - should be handled by Syzygy",
 			"type", fmt.Sprintf("%T", eff))
@@ -230,7 +237,9 @@ func (h *Horizon) writePodStatus(ctx context.Context, uid, namespace, name strin
 			if k8serrors.IsNotFound(err) {
 				return nil // pod deleted
 			}
+
 			h.logger.Warn("horizon: GET pod failed", "pod", name, "err", err)
+
 			return err
 		}
 
@@ -238,6 +247,7 @@ func (h *Horizon) writePodStatus(ctx context.Context, uid, namespace, name strin
 		if string(current.UID) != uid {
 			h.logger.Debug("horizon: pod UID mismatch, dropping stale status",
 				"pod", name, "ourUID", uid, "k8sUID", current.UID)
+
 			return nil
 		}
 
@@ -248,22 +258,29 @@ func (h *Horizon) writePodStatus(ctx context.Context, uid, namespace, name strin
 		if err == nil {
 			return nil
 		}
+
 		if k8serrors.IsNotFound(err) {
 			return nil
 		}
+
 		if k8serrors.IsConflict(err) {
 			if attempt < maxRetries-1 {
 				h.logger.Debug("horizon: conflict on UpdateStatus, retrying",
 					"pod", name, "attempt", attempt+1)
+
 				continue
 			}
 			h.logger.Warn("horizon: conflict after max retries, dropping",
 				"pod", name, "attempts", maxRetries)
+
 			return nil
 		}
+
 		h.logger.Warn("horizon: UpdateStatus failed", "pod", name, "err", err)
+
 		return err
 	}
+
 	return nil
 }
 
@@ -278,6 +295,7 @@ func EventRecorderAdapter(recorder record.EventRecorder, getPod func(uid string)
 		if pod == nil {
 			return
 		}
+
 		recorder.Eventf(pod, eventType, reason, "%s", message)
 	}
 }

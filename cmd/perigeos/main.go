@@ -59,10 +59,13 @@ func perigeosRetryFunc(_ context.Context, key string, timesTried int, _ time.Tim
 	if errdefs.IsNotFound(err) {
 		return nil, fmt.Errorf("not retrying %q: %w", key, err)
 	}
+
 	if timesTried < 60 {
 		delay := time.Duration(min(timesTried*5, 30)) * time.Second
+
 		return &delay, nil
 	}
+
 	return nil, fmt.Errorf("maximum retries (%d) reached for %q: %w", timesTried, key, err)
 }
 
@@ -79,11 +82,13 @@ func main() {
 	// Subcommand dispatch - must happen before flag.Parse().
 	if len(os.Args) > 1 && os.Args[1] == "join" {
 		runJoin(logger)
+
 		return
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
 	vkLogger := vklogger.New(logger.WithGroup("vk"))
 	vklog.L = vkLogger
 	ctx = vklog.WithLogger(ctx, vkLogger)
@@ -100,15 +105,21 @@ func main() {
 	}()
 
 	perigeosConfigPath := flag.String("perigeosconfig", "", "Path to the perigeos TOML config (required)")
+
 	kubeConfigPath := flag.String("kubeconfig", "", "Path to kubeconfig")
+
 	baseDirFlag := flag.String("base-dir", "/var/lib/apsis/perigeos",
 		"Base directory for state. Use a local path (e.g. ./var/lib/apsis/perigeos) for dev.")
+
 	execStrategyFlag := flag.String("exec-strategy", "nsenter",
 		"RunInContainer strategy: nsenter (default) or machinectl")
+
 	controlSocketFlag := flag.String("control-socket", control.DefaultSocketPath,
 		"Path to the control Unix socket for apsis CLI")
+
 	controlTCPFlag := flag.String("control-tcp", "",
 		"TCP address for remote Varlink access with mTLS, e.g. :7443 (requires --server-ca)")
+
 	flag.Parse()
 
 	if *perigeosConfigPath == "" {
@@ -146,6 +157,7 @@ func main() {
 		logger.Error("Failed to load kubeconfig", "err", err)
 		os.Exit(1)
 	}
+
 	// 10 QPS and 20 Burst per pawn; the shared client handles all virtual nodes.
 	kubeConfig.QPS = float32(pawnCount) * 10
 	kubeConfig.Burst = pawnCount * 20
@@ -166,7 +178,8 @@ func main() {
 
 	serverVersion, err := kubeClient.Discovery().ServerVersion()
 	if err != nil {
-		klog.Fatalf("Failed to connect to Kubernetes API server: %v", err)
+		logger.Error("Failed to connect to Kubernetes API server", "err", err)
+		os.Exit(1)
 	}
 
 	klog.Infof("Connected to Kubernetes API server %s", serverVersion)
@@ -175,9 +188,12 @@ func main() {
 	switch *execStrategyFlag {
 	case "machinectl":
 		execStrategy = perigeos.ExecMachinectl
+
 		logger.Info("Using machinectl exec strategy")
+
 	default:
 		execStrategy = perigeos.ExecNsenter
+
 		logger.Info("Using nsenter exec strategy")
 	}
 
@@ -203,6 +219,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 	logger.Info("Global caches synced")
 
 	// --- Auto-detect cluster DNS ---
@@ -212,6 +229,7 @@ func main() {
 
 	} else {
 		clusterDNS = svc.Spec.ClusterIP
+
 		logger.Info("Auto-detected cluster DNS", "ip", clusterDNS)
 	}
 
@@ -229,6 +247,7 @@ func main() {
 		} else {
 			apiServerPort = "443"
 		}
+
 		logger.Info("API server address for pod injection", "host", apiServerHost, "port", apiServerPort)
 
 	} else {
@@ -253,6 +272,7 @@ func main() {
 
 			} else if len(cleaned) > 0 {
 				logger.Info("Cleaned stale pawn slices", "count", len(cleaned), "pawns", cleaned)
+
 				// Also clean disk directories for stale pawns.
 				for _, pawn := range cleaned {
 					pawnDir := fmt.Sprintf("%s/pawns/%s", *baseDirFlag, pawn)
@@ -261,6 +281,7 @@ func main() {
 					}
 				}
 			}
+
 			cleanupRT.Close()
 		}
 	}
@@ -314,6 +335,7 @@ func main() {
 			os.Exit(1)
 		}
 		sharedNM = cnm
+
 		logger.Info("Constellation CNI active")
 
 	} else {
@@ -337,6 +359,7 @@ func main() {
 						`"periapsis.io/primary":"true",` +
 						`"node-role.kubernetes.io/primary":""}}}`,
 				)
+
 				if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, hostName, k8stypes.StrategicMergePatchType, labelPatch, metav1.PatchOptions{}); err != nil {
 					logger.Warn("Could not label primary node", "node", hostName, "err", err)
 
@@ -375,6 +398,7 @@ func main() {
 		for i, p := range perigeosCfg.Pawns {
 			pawnNames[i] = p.Name
 		}
+
 		pw := plugin.NewPluginWatcher(kubeClient, pawnNames, logger.With("component", "plugin-watcher"))
 		wg.Go(func() {
 			if err := pw.Run(ctx); err != nil {
@@ -438,8 +462,10 @@ func main() {
 				IOReadBandwidthMax:  pawnCfg.IOReadBandwidthMax,
 				IOWriteBandwidthMax: pawnCfg.IOWriteBandwidthMax,
 			}
+
 			if err := rt.InitPawnSlice(ctx, sliceCfg); err != nil {
 				pawnLogger.Error("Failed to init pawn slice", "err", err)
+
 				return
 			}
 
@@ -447,6 +473,7 @@ func main() {
 			broadcaster.StartRecordingToSink(&v1.EventSinkImpl{
 				Interface: kubeClient.CoreV1().Events(corev1.NamespaceAll),
 			})
+
 			eventRecorder := broadcaster.NewRecorder(
 				clientgoscheme.Scheme,
 				corev1.EventSource{Host: pawnName, Component: "perigeos"},
@@ -476,6 +503,7 @@ func main() {
 				CMInformer:     cmInformer.Informer(),
 				SecretInformer: secretInformer.Informer(),
 			})
+
 			pawnNode.SetDeletePod(g.DeletePod)
 			controlSrv.RegisterGambit(g)
 
@@ -555,6 +583,7 @@ func main() {
 				&workqueue.TypedBucketRateLimiter[string]{Limiter: rate.NewLimiter(rate.Limit(500), 1000)},
 				workqueue.NewTypedItemExponentialFailureRateLimiter[string](1*time.Millisecond, 30*time.Second),
 			)
+
 			podController, err := node.NewPodController(node.PodControllerConfig{
 				PodClient:                             kubeClient.CoreV1(),
 				Provider:                              g,
@@ -573,15 +602,19 @@ func main() {
 
 				return
 			}
+
 			controlSrv.RegisterQueues(pawnName, podController)
 
 			localInformer.Start(ctx.Done())
+
 			pawnLogger.Info("Waiting for local informer caches to sync...")
+
 			for _, synced := range localInformer.WaitForCacheSync(ctx.Done()) {
 				if !synced {
 					pawnLogger.Error("Failed to sync local cache")
 				}
 			}
+
 			pawnLogger.Info("Local caches synced")
 
 			podLister := localInformer.Core().V1().Pods().Lister().Pods(corev1.NamespaceAll)
@@ -652,6 +685,7 @@ func main() {
 
 				return
 			}
+
 			pawnLogger.Info("Pawn API server listening", "port", pawnCfg.Port)
 
 			serversMu.Lock()
@@ -748,10 +782,10 @@ func main() {
 	for drainCtx.Err() == nil {
 		anyDeleting := false
 		gambitsMu.Lock()
-
 		for _, g := range allGambits {
 			if g.DeletionsInProgress() {
 				anyDeleting = true
+
 				break
 			}
 		}

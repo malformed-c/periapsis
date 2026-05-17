@@ -49,3 +49,6 @@ vendor/
 review.txt
 todo
 internal_install.sh
+nodes.csv
+graph
+edges.csv

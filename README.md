@@ -1,5 +1,5 @@
 # Periapsis
-A Kubernetes' Pawn
+### *Take your pods from the seas to the stars.*
 ---
 
 **High-density Kubernetes execution layer via `systemd-nspawn` machines.**
@@ -67,7 +67,7 @@ Periapsis is a fork of `virtual-kubelet` that manages the full container lifecyc
 - **Storage:** OCI images extracted into a Content Addressable Store (CAS) and shared via **OverlayFS** copy-on-write layers.
 - **Resources:** **cgroups v2** for strict CPU, memory, and IO enforcement.
 - **Networking:** **Constellation CNI** (Cilium fork) providing eBPF datapath and VXLAN cross-host routing.
-- **Security:** **User Namespace mapping** maps container root (UID 0) to an unprivileged high-number UID on the host, neutralizing container breakouts.
+- **Security:** **User Namespace isolation** maps container root (UID 0) to an unprivileged high-number UID on the host, neutralizing container breakouts.
 
 ### Multi-pawn architecture
 

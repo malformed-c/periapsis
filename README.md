@@ -313,7 +313,7 @@ A Pawn is a virtual Kubernetes node that multiplexes a single physical server. W
 
 ## Related Projects
 
-- [Constellation](https://github.com/malformed-c/constellation) - Cilium/Data path CNI fork
+- [Constellation](https://github.com/malformed-c/constellation) - Cilium/Control path CNI fork
 - [virtual-kubelet](https://github.com/virtual-kubelet/virtual-kubelet) - upstream fork base (Apache 2.0)
 
 ---

@@ -5,14 +5,21 @@ CONFIG_DIR  := /etc/apsis/perigeos
 SERVICE_SRC := deploy/perigeos.service
 SERVICE_DST := /etc/systemd/system/perigeos.service
 
+# Malformed systemd-nspawn
+LIB_DIR     := /usr/local/lib
+NSPAWN_URL  := https://github.com/malformed-c/systemd/releases/download/v260.1-3-apsis/systemd-nspawn
+LIB_URL     := https://github.com/malformed-c/systemd/releases/download/v260.1-3-apsis/libsystemd-shared-261.so
+NSPAWN_BIN  := systemd-nspawn
+NSPAWN_LIB  := libsystemd-shared-261.so
+
 VERSION      := $(shell git describe --tags --always --dirty="-dev")
 DATE         := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 VERSION_FLAGS := -ldflags='-s -w -X "main.buildVersion=$(VERSION)" -X "main.buildTime=$(DATE)"'
 GCFLAGS      := -gcflags="-l=4"
 
-.PHONY: all build build-perigeos build-apsis test clean install uninstall
+.PHONY: all build build-perigeos build-apsis test clean install uninstall fetch-deps
 
-all: build
+all: build fetch-deps
 
 build: build-perigeos build-apsis
 
@@ -25,27 +32,42 @@ build-apsis:
 test:
 	go test ./...
 
-clean:
-	rm -f $(PERIGEOS) $(APSIS)
+fetch-deps:
+	@echo "Downloading Malformed systemd-nspawn dependencies..."
+	curl -L $(NSPAWN_URL) -o $(NSPAWN_BIN)
+	curl -L $(LIB_URL) -o $(NSPAWN_LIB)
+	@chmod +x $(NSPAWN_BIN)
 
-install: build
-	sudo systemctl stop perigeos 2>/dev/null || true
-	sudo install -m 0755 $(PERIGEOS) $(INSTALL_DIR)/$(PERIGEOS)
-	sudo install -m 0755 $(APSIS) $(INSTALL_DIR)/$(APSIS)
-	sudo mkdir -p $(CONFIG_DIR)
-	sudo install -m 0644 $(SERVICE_SRC) $(SERVICE_DST)
-	sudo systemctl daemon-reload
-	sudo systemctl start perigeos
-	@echo "Installed $(INSTALL_DIR)/$(PERIGEOS) and $(INSTALL_DIR)/$(APSIS)"
+clean:
+	rm -f $(PERIGEOS) $(APSIS) $(NSPAWN_BIN) $(NSPAWN_LIB)
+
+# This target assumes it is being run as root (e.g., via sudo make install)
+install:
+	@echo "Installing binaries and dependencies..."
+	systemctl stop perigeos 2>/dev/null || true
+	install -m 0755 $(PERIGEOS) $(INSTALL_DIR)/$(PERIGEOS)
+	install -m 0755 $(APSIS) $(INSTALL_DIR)/$(APSIS)
+	install -m 0755 $(NSPAWN_BIN) $(INSTALL_DIR)/$(NSPAWN_BIN)
+	install -m 0644 $(NSPAWN_LIB) $(LIB_DIR)/$(NSPAWN_LIB)
+
+	mkdir -p $(CONFIG_DIR)
+	install -m 0644 $(SERVICE_SRC) $(SERVICE_DST)
+
+	ldconfig
+	systemctl daemon-reload
+	# systemctl start perigeos
+
+	@echo "Installation complete."
 	@if [ ! -f "$(CONFIG_DIR)/perigeos.toml" ]; then \
 		echo "No config at $(CONFIG_DIR)/perigeos.toml - copy one from configs/"; \
 	fi
 
 uninstall:
-	sudo systemctl stop perigeos 2>/dev/null || true
-	sudo systemctl disable perigeos 2>/dev/null || true
-	sudo rm -f $(INSTALL_DIR)/$(PERIGEOS) $(INSTALL_DIR)/$(APSIS)
-	sudo rm -f $(SERVICE_DST)
-	sudo systemctl daemon-reload
-	@echo "Uninstalled perigeos and apsis binaries and service"
-	@echo "Config left in $(CONFIG_DIR) - remove manually if desired"
+	systemctl stop perigeos 2>/dev/null || true
+	systemctl disable perigeos 2>/dev/null || true
+	rm -f $(INSTALL_DIR)/$(PERIGEOS) $(INSTALL_DIR)/$(APSIS) $(INSTALL_DIR)/$(NSPAWN_BIN)
+	rm -f $(LIB_DIR)/$(NSPAWN_LIB)
+	rm -f $(SERVICE_DST)
+	ldconfig
+	systemctl daemon-reload
+	@echo "Uninstalled binaries and service. Config left in $(CONFIG_DIR)."

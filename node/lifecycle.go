@@ -17,7 +17,6 @@ import (
 	"github.com/malformed-c/periapsis/internal/podutils"
 	"github.com/malformed-c/periapsis/internal/volume"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 )
@@ -106,7 +105,7 @@ func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 
 			g.Logger.Warn("Pod sandbox/init sync failed, backing off", "pod", pod.Name, "attempt", attempt, "err", err)
-			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "sandbox/init attempt %d failed: %v", attempt, err)
+			g.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "CreateFailed", "Sandbox/init attempt %d failed: %v", attempt, err)
 
 			if neverRestart {
 				g.Logger.Error("CreatePod failed (restartPolicy=Never)", "pod", pod.Name, "err", err)
@@ -386,7 +385,7 @@ func (g *Gambit) launchContainer(
 		// }
 	}
 
-	// 2. Mount Overlay — now uses nspawn --overlay= + --volatile=overlay.
+	// 2. Mount Overlay - now uses nspawn --overlay= + --volatile=overlay.
 	// LayerPaths are passed directly to PodConfig so nspawn constructs and
 	// owns the overlay. No host-side merged rootfs dir is created.
 	//
@@ -407,6 +406,7 @@ func (g *Gambit) launchContainer(
 	bindMounts, err := volResolver.Resolve(ctx, pod, c)
 	if err != nil {
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
 		return fmt.Errorf("volume resolution: %w", err)
 	}
 
@@ -976,6 +976,7 @@ func (g *Gambit) runLifecycleHook(ctx context.Context, pod *corev1.Pod, c *corev
 
 	case handler.Sleep != nil:
 		time.Sleep(time.Duration(handler.Sleep.Seconds) * time.Second)
+
 		return nil
 
 	default:
@@ -994,28 +995,4 @@ func (g *Gambit) runPreStopHooks(ctx context.Context, pod *corev1.Pod, uid strin
 			g.Logger.Warn("PreStop hook failed", "container", c.Name, "err", err)
 		}
 	}
-}
-
-func (g *Gambit) pushContainerCreatingStatus(pod *corev1.Pod, podIP string) {
-	updated := pod.DeepCopy()
-	updated.Status.Phase = corev1.PodPending
-	updated.Status.HostIP = resolveNodeIP(g.Config)
-	updated.Status.PodIP = podIP
-	now := metav1.NewTime(time.Now())
-	updated.Status.StartTime = &now
-	for _, c := range pod.Spec.Containers {
-		updated.Status.ContainerStatuses = append(updated.Status.ContainerStatuses, corev1.ContainerStatus{
-			Name:  c.Name,
-			Image: c.Image,
-			Ready: false,
-			State: corev1.ContainerState{
-				Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-			},
-		})
-	}
-	updated.Status.Conditions = []corev1.PodCondition{{
-		Type:   corev1.PodReady,
-		Status: corev1.ConditionFalse,
-	}}
-	g.notifyPodStatus(updated)
 }

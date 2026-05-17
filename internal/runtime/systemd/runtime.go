@@ -190,13 +190,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	for _, bm := range cfg.BindMounts {
 		if bm.ContainerPath == "/dev" {
 			consoleMode = "pipe"
+
 			break
 		}
 	}
 
 	// TODO: Can we rely on ENV?
 	execStart := []string{
-		"/usr/bin/systemd-nspawn",
+		"systemd-nspawn",
 		"--console=" + consoleMode,
 		"--keep-unit",
 		"--register=yes",
@@ -213,18 +214,26 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		"--resolv-conf=off",
 	}
 
+	rootFSPath := "" // Track the path to use as the positional argument
+
 	// Filesystem: use --overlay= when LayerPaths are provided (new path).
 	// Fall back to --directory= for existing deployments (old path).
 	if len(cfg.LayerPaths) > 0 {
 		// nspawn --overlay= format: lower1:lower2:...:target (always /)
-		// Layers are bottom→top in LayerPaths; nspawn expects the same order.
+		// Layers are bottom->top in LayerPaths; nspawn expects the same order.
 		parts := make([]string, 0, len(cfg.LayerPaths)+1)
 		parts = append(parts, cfg.LayerPaths...)
 		parts = append(parts, "/")
 		execStart = append(execStart, "--overlay="+strings.Join(parts, ":"))
+
 		// --volatile=overlay gives a tmpfs-backed upper layer managed by nspawn.
 		// No host-side upper/work dirs to create or clean up.
 		execStart = append(execStart, "--volatile=overlay")
+
+		// The base image is the first layer.
+		// This is needed to bypass the /var/lib/machines check and the /usr sanity check.
+		rootFSPath = cfg.LayerPaths[0]
+
 	} else {
 		execStart = append(execStart, "--directory="+cfg.RootFS)
 	}
@@ -239,7 +248,7 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 	}
 	if bindTmpDir != "" {
 		// Clean up the tmpdir once the container unit has stopped.
-		// Poll until ActiveState leaves "active"/"activating" — nspawn
+		// Poll until ActiveState leaves "active"/"activating" - nspawn
 		// will have torn down the --volatile=overlay by then.
 		go func() {
 			unitName := wrapperUnitName(cfg.PawnName, podUID, containerName)
@@ -249,18 +258,22 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 				select {
 				case <-ctx2.Done():
 					os.RemoveAll(bindTmpDir)
+
 					return
 				case <-time.After(2 * time.Second):
 				}
+
 				prop, err := s.conn.GetUnitPropertyContext(ctx2, unitName, "ActiveState")
 				if err != nil {
-					// Unit gone — safe to clean up.
+					// Unit gone - safe to clean up.
 					os.RemoveAll(bindTmpDir)
+
 					return
 				}
 				state, _ := prop.Value.Value().(string)
 				if state != "active" && state != "activating" && state != "deactivating" {
 					os.RemoveAll(bindTmpDir)
+
 					return
 				}
 			}
@@ -329,6 +342,14 @@ func (s *SystemdRuntime) RunMachine(ctx context.Context, podUID string, cfg runt
 		} else {
 			execStart = append(execStart, "--bind="+arg)
 		}
+	}
+
+	// If we are using the overlay system, we must provide the rootFSPath
+	// as a positional argument before the '--' to satisfy nspawn's
+	// requirement for an OS tree (the /usr check) and to avoid
+	// searching /var/lib/machines/.
+	if rootFSPath != "" {
+		execStart = append(execStart, rootFSPath)
 	}
 
 	execStart = append(execStart, "--")

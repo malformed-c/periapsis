@@ -54,7 +54,7 @@ int main(int argc, char *argv[]) {
     die("unshare(CLONE_NEWUSER)");
 
   /* Signal host: uid_map can be written now. */
-  int rfd = open(READY_FIFO, O_WRONLY);
+  int rfd = open(READY_FIFO, O_WRONLY|O_CLOEXEC);
   if (rfd < 0)
     die("open " READY_FIFO);
 
@@ -64,7 +64,7 @@ int main(int argc, char *argv[]) {
   close(rfd);
 
   /* Wait for host to send target identity via gate pipe. */
-  int gfd = open(GATE_FIFO, O_RDONLY);
+  int gfd = open(GATE_FIFO, O_RDONLY|O_CLOEXEC);
   if (gfd < 0)
     die("open " GATE_FIFO);
 

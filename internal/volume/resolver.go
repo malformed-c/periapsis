@@ -271,6 +271,7 @@ func (r *Resolver) resolvePVC(ctx context.Context, namespace, claimName string) 
 	}
 	if pvc.Status.Phase != corev1.ClaimBound {
 		err := fmt.Errorf("PVC %s/%s is not bound (phase: %s)", namespace, claimName, pvc.Status.Phase)
+
 		// Pending phase is transient - the provisioner is working on creating the PV
 		if pvc.Status.Phase == corev1.ClaimPending {
 			return "", errdefs.AsTransient(err)

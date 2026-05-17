@@ -118,6 +118,7 @@ type BindMount struct {
 	HostPath      string
 	ContainerPath string
 	ReadOnly      bool
+
 	// Propagation mirrors Kubernetes MountPropagationMode:
 	// "" / HostToContainer -> MS_SLAVE (default)
 	// Bidirectional        -> MS_SHARED
@@ -149,7 +150,7 @@ type PodConfig struct {
 	// Related: program.go RootDirectory should use RootDirectory= only for
 	// the DDI/erofs path; nspawn path should use --overlay= exclusively.
 	RootFS     string   // absolute path to the overlayfs merged dir
-	LayerPaths []string // ordered image layer paths (bottom→top); when set, nspawn uses --overlay= instead of --directory=
+	LayerPaths []string // ordered image layer paths (bottom->top); when set, nspawn uses --overlay= instead of --directory=
 
 	// Bind mounts: resolved from pod Volumes + container VolumeMounts.
 	BindMounts []BindMount
@@ -157,6 +158,7 @@ type PodConfig struct {
 	// Networking
 	NetNSPath   string // absolute path to /var/run/netns/<uid>
 	HostNetwork bool   // when true, join the host network namespace
+
 	// ClusterDNS is the cluster DNS server IP injected into resolv.conf via
 	// --bind-ro= rather than written into the overlay rootfs.
 	ClusterDNS string
@@ -164,6 +166,7 @@ type PodConfig struct {
 	// Security
 	Privileged bool // when true, grant all capabilities (--capability=all)
 	HostPID    bool // when true, skip nspawn isolation - run directly on host PID/cgroup namespace
+
 	// Effective run user/group for the container process. Container-level
 	// securityContext values override pod-level values.
 	RunAsUser  *int64
@@ -209,14 +212,17 @@ type PodMetadata struct {
 	NodeName      string
 	PodIP         string
 	ContainerName string
+
 	// StartedAt is the time the systemd unit entered the active state.
 	// Used by the Reconciler for the orphan grace period: a machine that
 	// started very recently may be mid-creation after a crash and should
 	// not be culled until the grace period has elapsed.
 	StartedAt time.Time
+
 	// State is the current lifecycle state of the machine, populated by
 	// ListManagedMachines so callers can avoid per-unit D-Bus queries.
 	State MachineState
+
 	// ExitCode is the process exit code from systemd's ExecMainStatus.
 	// Only meaningful when State is StateExited or StateFailed.
 	ExitCode int32
@@ -243,5 +249,6 @@ type LogReadCloser struct {
 func (l *LogReadCloser) Close() error {
 	err := l.ReadCloser.Close()
 	_ = l.Cmd.Wait() // killing journalctl -f is expected; ignore exit error
+
 	return err
 }

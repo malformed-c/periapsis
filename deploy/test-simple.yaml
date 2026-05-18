@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: simple-pod
+
+spec:
+  containers:
+    - name: simple
+      image: busybox
+      command: ["sh", "-c", "echo 'I am the main app!'; sleep 3600"]

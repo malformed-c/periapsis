@@ -544,6 +544,13 @@ func (g *Gambit) launchContainer(
 			return fmt.Errorf("init container exited with error%s", detail)
 		}
 
+		// Persist successful exit so BuildPodStatus sees initAllSucceeded=true.
+		// Without this, the store retains StateRunning/StateCreating from the
+		// D-Bus transition, and buildContainerStatus returns finished=false,
+		// leaving app containers stuck in PodInitializing indefinitely.
+		exitInfo := g.Runtime.GetContainerExitInfo(ctx, uid, c.Name)
+		g.store.SetContainerMachineState(uid, c.Name, perigeos.StateExited, exitInfo.ExitCode)
+
 	} else {
 		if err := g.waitForContainer(ctx, uid, c.Name, isInit, machineStartTimeout); err != nil {
 			_ = g.Runtime.StopMachine(context.Background(), uid, c.Name)

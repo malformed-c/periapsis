@@ -317,13 +317,39 @@ func (pc *PodController) updatePodStatus(ctx context.Context, podFromKubernetes 
 	// We need to do this because the other parts of the pod can be updated elsewhere. Since we're only updating
 	// the pod status, and we should be the sole writers of the pod status, set the current ResourceVersion to
 	// satisfy optimistic concurrency requirements.
+	//
+	// On conflict, the informer cache may be stale. Re-fetch the latest ResourceVersion from the API
+	// and retry once so transient conflicts (e.g. scheduler annotations landing mid-update) don't
+	// surface as Warning events.
 	podFromProvider.ResourceVersion = podFromKubernetes.ResourceVersion
-	if _, err := pc.client.Pods(podFromKubernetes.Namespace).UpdateStatus(ctx, podFromProvider, metav1.UpdateOptions{}); err != nil && !errors.IsNotFound(err) {
-		span.SetStatus(err)
-		pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
-			fmt.Sprintf("Failed to update pod status: %v", err))
+	if _, err := pc.client.Pods(podFromKubernetes.Namespace).UpdateStatus(ctx, podFromProvider, metav1.UpdateOptions{}); err != nil {
+		if !errors.IsConflict(err) {
+			if !errors.IsNotFound(err) {
+				span.SetStatus(err)
+				pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
+					fmt.Sprintf("Failed to update pod status: %v", err))
 
-		return pkgerrors.Wrap(err, "error while updating pod status in Kubernetes")
+				return pkgerrors.Wrap(err, "error while updating pod status in Kubernetes")
+			}
+		} else {
+			// Conflict: re-fetch current ResourceVersion and retry once.
+			fresh, fetchErr := pc.client.Pods(podFromKubernetes.Namespace).Get(ctx, podFromKubernetes.Name, metav1.GetOptions{})
+			if fetchErr != nil {
+				if !errors.IsNotFound(fetchErr) {
+					span.SetStatus(fetchErr)
+					return pkgerrors.Wrap(fetchErr, "error re-fetching pod after conflict")
+				}
+			} else {
+				podFromProvider.ResourceVersion = fresh.ResourceVersion
+				if _, retryErr := pc.client.Pods(podFromKubernetes.Namespace).UpdateStatus(ctx, podFromProvider, metav1.UpdateOptions{}); retryErr != nil && !errors.IsNotFound(retryErr) {
+					span.SetStatus(retryErr)
+					pc.recorder.Event(podFromKubernetes, corev1.EventTypeWarning, podEventStatusUpdateFailed,
+						fmt.Sprintf("Failed to update pod status: %v", retryErr))
+
+					return pkgerrors.Wrap(retryErr, "error while updating pod status in Kubernetes (retry)")
+				}
+			}
+		}
 	}
 
 	var caller string

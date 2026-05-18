@@ -705,9 +705,9 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	allContainers = append(allContainers, pod.Spec.InitContainers...)
 	allContainers = append(allContainers, pod.Spec.Containers...)
 
-	policy := pod.Spec.RestartPolicy
-	if policy == "" {
-		policy = corev1.RestartPolicyAlways
+	podPolicy := pod.Spec.RestartPolicy
+	if podPolicy == "" {
+		podPolicy = corev1.RestartPolicyAlways
 	}
 
 	allExited := true
@@ -715,6 +715,22 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 	anyRestarting := false // true only when maybeRestart is called this cycle
 
 	for _, c := range allContainers {
+		// Effective restart policy for this container.
+		// Standard init containers (no restartPolicy field, or Never) must
+		// never be restarted after a successful exit — their job is done.
+		// Only sidecar init containers (restartPolicy: Always) follow the
+		// pod-level policy. App containers always use the pod-level policy.
+		policy := podPolicy
+		if isInitContainer(pod, c.Name) {
+			if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+				// Sidecar init container — treat like an app container.
+				policy = podPolicy
+			} else {
+				// Standard init container — Never restart after success;
+				// only restart on failure if pod policy is OnFailure/Always.
+				policy = corev1.RestartPolicyOnFailure
+			}
+		}
 		key := uid + "/" + c.Name
 		state, exists := stateMap[key]
 		if !exists {

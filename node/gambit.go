@@ -401,12 +401,27 @@ func (g *Gambit) notifyPodStatus(pod *corev1.Pod) {
 	podIP := g.store.PodIP(uid)
 	counts := g.store.RestartCounts(uid)
 	backoffs := g.store.RestartBackoffs(uid)
+
+	// Collect per-container machine states so HydrateFromRuntime can
+	// reconstruct init container completion without querying systemd.
+	// Transient units are collected after successful exit, so the only
+	// way to know an init container finished is from this persisted map.
+	machineStates := make(map[string]PersistedContainerState)
+	allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
+		state, exitCode := g.store.ContainerMachineState(uid, c.Name)
+		if state != perigeos.StateUnknown {
+			machineStates[c.Name] = PersistedContainerState{State: state, ExitCode: exitCode}
+		}
+	}
+
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-		Pod:      pod,
-		PodIP:    podIP,
-		Phase:    pod.Status.Phase,
-		Restarts: counts,
-		Backoffs: backoffs,
+		Pod:           pod,
+		PodIP:         podIP,
+		Phase:         pod.Status.Phase,
+		Restarts:      counts,
+		Backoffs:      backoffs,
+		MachineStates: machineStates,
 	}); err != nil {
 		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
 	}
@@ -428,12 +443,24 @@ func (g *Gambit) PersistPodState(pod *corev1.Pod) {
 	podIP := g.store.PodIP(uid)
 	counts := g.store.RestartCounts(uid)
 	backoffs := g.store.RestartBackoffs(uid)
+
+	// Collect per-container machine states for disk persistence.
+	machineStates := make(map[string]PersistedContainerState)
+	allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
+		state, exitCode := g.store.ContainerMachineState(uid, c.Name)
+		if state != perigeos.StateUnknown {
+			machineStates[c.Name] = PersistedContainerState{State: state, ExitCode: exitCode}
+		}
+	}
+
 	if err := writePodState(g.Config.BaseDir, g.Config.Name, &PersistedPodState{
-		Pod:      pod,
-		PodIP:    podIP,
-		Phase:    g.store.PodPhase(uid),
-		Restarts: counts,
-		Backoffs: backoffs,
+		Pod:           pod,
+		PodIP:         podIP,
+		Phase:         g.store.PodPhase(uid),
+		Restarts:      counts,
+		Backoffs:      backoffs,
+		MachineStates: machineStates,
 	}); err != nil {
 		g.Logger.Warn("Failed to persist pod state", "pod", pod.Name, "err", err)
 	}

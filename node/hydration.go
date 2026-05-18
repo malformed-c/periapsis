@@ -50,17 +50,32 @@ func (g *Gambit) HydrateFromRuntime(ctx context.Context) error {
 	// Bulk register all disk-restored pods in a single lock.
 	g.store.RegisterHydratedBatch(entries)
 
-	// Initialize probe states for disk-restored pods (must happen outside the lock).
+	// Initialize probe states and restore per-container machine states for
+	// disk-restored pods. MachineStates must be restored BEFORE the
+	// BatchWatcher's first poll so that buildPodStatus sees init container
+	// completion (StateExited) rather than StateUnknown (which renders as
+	// Init:ContainerCreating). Without this, pods with init containers show
+	// incorrect status after perigeos restarts because systemd has already
+	// collected the init container's transient unit.
 	for _, state := range states {
 		if state.Phase == corev1.PodSucceeded || state.Phase == corev1.PodFailed {
 			continue
+		}
+
+		uid := string(state.Pod.UID)
+
+		// Restore machine states from disk so buildPodStatus can determine
+		// init container completion without querying systemd.
+		if len(state.MachineStates) > 0 {
+			for cname, ms := range state.MachineStates {
+				g.store.SetContainerMachineState(uid, cname, ms.State, ms.ExitCode)
+			}
 		}
 
 		g.store.InitRestartState(state.Pod)
 
 		// InitRestartState resets restarts - re-apply the persisted counts
 		// and backoff durations.
-		uid := string(state.Pod.UID)
 		if len(state.Restarts) > 0 {
 			for cname, count := range state.Restarts {
 				g.store.PatchRestartCount(uid, cname, count)

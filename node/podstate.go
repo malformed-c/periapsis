@@ -9,8 +9,18 @@ import (
 	"os"
 	"path/filepath"
 
+	perigeos "github.com/malformed-c/periapsis/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
 )
+
+// PersistedContainerState is the on-disk representation of a single
+// container's machine state and exit code. Used to reconstruct init
+// container completion status after perigeos restarts, where the
+// systemd transient unit has already been collected.
+type PersistedContainerState struct {
+	State    perigeos.MachineState `json:"state"`
+	ExitCode int32                 `json:"exitCode,omitempty"`
+}
 
 // PersistedPodState is the on-disk representation of a running pod.
 // Written atomically to <baseDir>/pawns/<pawn>/pods/<uid>/pod-state.json.
@@ -34,6 +44,15 @@ type PersistedPodState struct {
 	// perigeos restarts. Without this, a container that had accumulated
 	// a 5-minute backoff resets to 10 seconds after restart.
 	Backoffs map[string]float64 `json:"backoffs,omitempty"`
+
+	// MachineStates holds the last-known OS-level state for each container.
+	// Persisted so that HydrateFromRuntime can reconstruct init container
+	// completion status without querying systemd (whose transient units
+	// are collected after successful exit). Without this field, a perigeos
+	// restart causes pods with init containers to show Init:ContainerCreating
+	// because machineStates is empty and the init container unit no longer
+	// exists in systemd.
+	MachineStates map[string]PersistedContainerState `json:"machineStates,omitempty"`
 }
 
 const podStateFile = "pod-state.json"

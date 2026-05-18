@@ -1024,8 +1024,16 @@ func (g *Gambit) waitForContainer(ctx context.Context, uid, containerName string
 					break
 				}
 
-				// App container exited before it could be considered "Running"
-				return fmt.Errorf("app container %s exited prematurely", containerName)
+				// App container exited before it could be considered "Running".
+				// Capture exit info now - ResetUnit erases the unit after we return.
+				exitInfo := g.Runtime.GetContainerExitInfo(ctx, uid, containerName)
+				detail := formatExitInfo(exitInfo)
+
+				g.Logger.Warn("waitForContainer: container exited prematurely",
+					"uid", uid, "container", containerName,
+					"exitCode", exitInfo.ExitCode, "result", exitInfo.Result)
+
+				return fmt.Errorf("app container %s/%s failed on startup (exit %d, exit-code)%s", uid, containerName, exitInfo.ExitCode, detail)
 
 			case perigeos.StateFailed:
 				// Container failed on startup. Gather diagnostic details

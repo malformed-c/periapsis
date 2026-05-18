@@ -18,7 +18,7 @@
 //   - "Nx"              N× the container's memory limit  (e.g. "3x")
 //   - resource.Quantity explicit byte limit              (e.g. "512Mi")
 //
-// The multiplier form is intentionally simple — swap is almost always
+// The multiplier form is intentionally simple - swap is almost always
 // expressed relative to RAM. An explicit quantity is available for workloads
 // that need a fixed ceiling regardless of the memory limit.
 package podannot

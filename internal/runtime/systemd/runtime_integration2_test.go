@@ -144,7 +144,7 @@ func TestSystemd_GetContainerExitInfo_Success(t *testing.T) {
 	podUID := "uid-exitinfo-ok"
 	container := "main"
 
-	// exit 0 — unit ends in inactive/dead, not failed.
+	// exit 0 - unit ends in inactive/dead, not failed.
 	spawnExitUnit(t, pawn, podUID, container, 0)
 	waitForState(t, rt, podUID, container, runtime.StateExited, 3*time.Second)
 
@@ -230,7 +230,7 @@ func TestSystemd_SliceActive_Lifecycle(t *testing.T) {
 
 	// Before InitPawnSlice the slice should not exist.
 	if rt.SliceActive(context.Background()) {
-		t.Log("slice already active before InitPawnSlice (leftover from previous run — acceptable)")
+		t.Log("slice already active before InitPawnSlice (leftover from previous run - acceptable)")
 	}
 
 	cfg := runtime.PawnSliceConfig{

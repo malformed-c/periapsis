@@ -698,7 +698,7 @@ func (g *Gambit) restartContainer(ctx context.Context, uid string, pod *corev1.P
 
 // --- Helpers ---
 
-// TODO: Return x2 of memory for now — kept as a fallback but callers should
+// TODO: Return x2 of memory for now - kept as a fallback but callers should
 // prefer podannot.SwapBytes which reads periapsis.io/swap from the pod spec.
 func calculateSwap(memBytes uint64) (swapBytes uint64) {
 	return memBytes * 2
@@ -749,7 +749,7 @@ func extractResourceLimits(pod *corev1.Pod, c *corev1.Container) (memBytes, swap
 		var err error
 		swapBytes, err = podannot.SwapBytes(pod, memBytes)
 		if err != nil {
-			// Annotation was present but unparseable — log and use the default.
+			// Annotation was present but unparseable - log and use the default.
 			// We don't have a logger here so we fall back to calculateSwap.
 			// The calling layer (buildContainerRuntimeProfiles) holds no logger
 			// either; a future refactor can thread one through if needed.

@@ -59,7 +59,7 @@ install:
 
 	ldconfig
 	systemctl daemon-reload
-	# systemctl start perigeos
+	systemctl start perigeos
 
 	@echo "Installation complete."
 	@if [ ! -f "$(CONFIG_DIR)/perigeos.toml" ]; then \

@@ -5,11 +5,13 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -40,6 +42,10 @@ type containerRuntimeProfile struct {
 
 func (g *Gambit) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	g.Logger.Info("CreatePod", "pawn", g.Config.Name, "namespace", pod.Namespace, "pod", pod.Name)
+
+	if err := g.batchWatcher.WaitUntilHydrated(ctx); err != nil {
+		return err
+	}
 
 	if len(pod.Spec.Containers) == 0 {
 		return nil
@@ -222,7 +228,16 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 
 		state := g.batchWatcher.ContainerState(uid, ic.Name)
 
-		// K8s 1.29+ Native Sidecar Support (Init containers that stay running)
+		//If the pod is already marked as Running in the store,
+		// and the container is Unknown, it is highly likely the init container
+		// has already finished and the unit was collected. Skip it.
+		if g.store.PodPhase(uid) == corev1.PodRunning && state == perigeos.StateUnknown {
+			g.Logger.Debug("sync: skipping init container during recovery", "container", ic.Name)
+
+			continue
+		}
+
+		// K8s Sidecar Support (Init containers that stay running)
 		isSidecar := ic.RestartPolicy != nil && *ic.RestartPolicy == corev1.ContainerRestartPolicyAlways
 
 		if isSidecar && state == perigeos.StateRunning {
@@ -309,52 +324,92 @@ func (g *Gambit) syncPodSandboxAndContainers(ctx context.Context, pod *corev1.Po
 	return nil
 }
 
+var podNameRe = regexp.MustCompile(`perigeos-[\w-]+?-pod-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}-(?P<name>[\w-]+)`)
+
+func extractContName(unitName string) (string, error) {
+	match := podNameRe.FindStringSubmatch(unitName)
+
+	if len(match) > 0 {
+		nameIndex := podNameRe.SubexpIndex("name")
+		return match[nameIndex], nil
+	}
+
+	return "", errors.New("unit name does not match expected pod pattern")
+}
+
 // teardownPodIdempotent replaces the Saga compensations. It looks at the actual state
-// of the node and violently scrubs any trace of the pod. It is safe to call repeatedly.
+// of the node and scrubs any trace of the pod. It is safe to call repeatedly.
 func (g *Gambit) teardownPodIdempotent(ctx context.Context, uid string, pod *corev1.Pod) {
-	g.Logger.Info("Executing idempotent teardown for pod", "pod", pod.Name)
+	g.Logger.Info("Executing teardown for pod", "pod", pod.Name)
 	g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing", "Stopping pod %s", pod.Name)
 
-	allContainers := append(pod.Spec.Containers, pod.Spec.InitContainers...)
+	units, err := g.Runtime.ListManagedMachinesForPod(ctx, uid)
+	if err != nil {
+		g.Logger.Error("teardown: failed to list units for pod", "uid", uid, "err", err)
+
+		return
+	}
 
 	// 1. Systemd & Filesystem Scrubber
-	for _, c := range allContainers {
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing", "Stopping container %s", c.Name)
+	for _, unitStatus := range units {
+		cName, err := extractContName(unitStatus.Name)
+		if err != nil {
+			g.Logger.Error("teardown: failed to parse unit name", "uid", uid, "unit", unitStatus.Name, "err", err)
+
+			continue
+		}
+
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killing", "Stopping container %s", cName)
 
 		// Stop unit (blocks until DBus confirms)
-		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
+		if err := g.Runtime.StopMachine(ctx, uid, cName); err != nil {
+			g.Logger.Warn("teardown: StopMachine failed", "container", cName, "err", err)
+		}
 
 		// Clear failed fragment files from systemd
-		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
+		if err := g.Runtime.ResetUnit(ctx, uid, cName); err != nil {
+			g.Logger.Warn("teardown: ResetUnit failed", "container", cName, "err", err)
+		}
 
 		// Filesystem cleanup - try mstack first, fall back to legacy Unmount.
 		// RemoveMStack is a no-op if the mstack dir doesn't exist (legacy path).
 		// Unmount is a no-op if the overlay isn't mounted (mstack path).
-		overlayName := uid + "-" + c.Name
-		if err := g.ImageManager.RemoveMStack(uid, c.Name); err != nil {
-			g.Logger.Warn("teardown: RemoveMStack failed", "uid", uid, "container", c.Name, "err", err)
+		overlayName := uid + "-" + cName
+		if err := g.ImageManager.RemoveMStack(uid, cName); err != nil {
+			g.Logger.Warn("teardown: RemoveMStack failed", "uid", uid, "container", cName, "err", err)
 		}
 
-		_ = g.ImageManager.Unmount(overlayName)
+		if err := g.ImageManager.Unmount(overlayName); err != nil {
+			g.Logger.Warn("teardown: Unmount failed", "container", cName, "err", err)
+		}
 
 		overlayDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", overlayName)
 		if err := os.RemoveAll(overlayDir); err != nil {
-			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", c.Name, "err", err)
+			g.Logger.Warn("teardown: failed to remove overlay dir", "uid", uid, "container", cName, "err", err)
 		}
 
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", c.Name)
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Killed", "Stopped container %s", cName)
 	}
 
 	// 2. Network Scrubber
 	if !pod.Spec.HostNetwork {
-		_ = g.NetworkManager.Teardown(ctx, uid, pod.Namespace, pod.Name)
-		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkTeardown", "CNI network released for pod %s", pod.Name)
+		if err := g.NetworkManager.Teardown(ctx, uid, pod.Namespace, pod.Name); err != nil {
+			g.Logger.Warn("teardown: Network teardown failed", "uid", uid, "err", err)
+
+		} else {
+			g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "NetworkTeardown", "CNI network released for pod %s", pod.Name)
+		}
 	}
 
 	// 3. Workspace Scrubber
 	volResolver := volume.NewResolver(g.Config.BaseDir, g.Config.Name, uid, g.hostNodeName, nil, nil, g.kubeClient)
-	_ = volResolver.CleanupCSI(ctx, pod)
-	_ = volResolver.Cleanup()
+	if err := volResolver.CleanupCSI(ctx, pod); err != nil {
+		g.Logger.Warn("teardown: CleanupCSI failed", "uid", uid, "err", err)
+	}
+
+	if err := volResolver.Cleanup(); err != nil {
+		g.Logger.Warn("teardown: Volume cleanup failed", "uid", uid, "err", err)
+	}
 
 	podDir := filepath.Join(g.Config.BaseDir, "pawns", g.Config.Name, "pods", uid)
 	if err := os.RemoveAll(podDir); err != nil {
@@ -508,14 +563,17 @@ func (g *Gambit) launchContainer(
 
 	if err := g.Runtime.RunMachine(ctx, uid, cfg); err != nil {
 		_ = g.ImageManager.Unmount(uid + "-" + c.Name)
+
 		// Only invalidate the mstack on structural errors (EBADMSG from nspawn's
 		// mstack parser). Other failures (e.g. container exits immediately) leave
 		// the mstack intact so the next restart reuses it.
 		if isMStackError(err) {
 			g.Logger.Warn("RunMachine: mstack structural error, invalidating for rebuild",
 				"uid", uid, "container", c.Name, "err", err)
+
 			_ = g.ImageManager.InvalidateMStack(uid, c.Name)
 		}
+
 		_ = g.Runtime.StopMachine(ctx, uid, c.Name)
 		_ = g.Runtime.ResetUnit(ctx, uid, c.Name)
 
@@ -548,6 +606,8 @@ func (g *Gambit) launchContainer(
 		// Without this, the store retains StateRunning/StateCreating from the
 		// D-Bus transition, and buildContainerStatus returns finished=false,
 		// leaving app containers stuck in PodInitializing indefinitely.
+		g.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Completed",
+			"Init container %s exited successfully", c.Name)
 		exitInfo := g.Runtime.GetContainerExitInfo(ctx, uid, c.Name)
 		g.store.SetContainerMachineState(uid, c.Name, perigeos.StateExited, exitInfo.ExitCode)
 

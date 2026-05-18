@@ -157,16 +157,14 @@ func (s *PodStore) runSnapshotAggregator() {
 		snaps := make([]PodSnapshot, 0, len(s.pods))
 		for uid, ps := range s.pods {
 			ps.mu.RLock()
-			if !ps.hydrated {
-				snaps = append(snaps, PodSnapshot{
-					Name:       ps.pod.Name,
-					Namespace:  ps.pod.Namespace,
-					UID:        uid,
-					IP:         ps.ip,
-					Phase:      ps.phase,
-					Containers: len(ps.pod.Spec.Containers),
-				})
-			}
+			snaps = append(snaps, PodSnapshot{
+				Name:       ps.pod.Name,
+				Namespace:  ps.pod.Namespace,
+				UID:        uid,
+				IP:         ps.ip,
+				Phase:      ps.phase,
+				Containers: len(ps.pod.Spec.Containers),
+			})
 			ps.mu.RUnlock()
 		}
 		s.registryMu.RUnlock()
@@ -329,6 +327,16 @@ func (s *PodStore) RegisterPending(uid string, pod *corev1.Pod, handle *creation
 	s.registryMu.Lock()
 	if ps, ok := s.pods[uid]; ok {
 		ps.mu.Lock()
+		// If the pod is already running, do NOT reset it to Pending.
+		// Just update the pod spec and handle, and let the lifecycle loop
+		// realize it's already running via AlreadyRunning().
+		if ps.phase == corev1.PodRunning || ps.phase == corev1.PodSucceeded {
+			ps.mu.Unlock()
+			s.registryMu.Unlock()
+
+			return
+		}
+
 		if ps.pod != nil {
 			pod.Status = ps.pod.Status
 		}
@@ -374,6 +382,11 @@ func (s *PodStore) AlreadyRunning(uid string, pod *corev1.Pod) (exists bool, was
 
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+
+	// If it's already marked as Running in the store, it's definitely "already running"
+	if ps.phase == corev1.PodRunning {
+		return true, false
+	}
 
 	wasStub = len(ps.pod.Spec.Containers) == 0
 	if wasStub {

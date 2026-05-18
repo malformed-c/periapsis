@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/malformed-c/periapsis/node/api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -39,6 +40,8 @@ type Runtime interface {
 	// ListManagedMachines returns all active machines managed by this runtime,
 	// including full metadata recovered from embedded unit properties.
 	ListManagedMachines(ctx context.Context) ([]PodMetadata, error)
+
+	ListManagedMachinesForPod(ctx context.Context, uid string) ([]dbus.UnitStatus, error)
 
 	// GetLogStream retrieves the journald log stream for a container within a pod.
 	GetLogStream(ctx context.Context, podUID, containerName string, opts api.ContainerLogOpts) (io.ReadCloser, error)

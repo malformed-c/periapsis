@@ -882,6 +882,17 @@ func (s *SystemdRuntime) ListManagedMachines(ctx context.Context) ([]runtime.Pod
 	return machines, nil
 }
 
+func (s *SystemdRuntime) ListManagedMachinesForPod(ctx context.Context, uid string) ([]dbus.UnitStatus, error) {
+	pattern := fmt.Sprintf("perigeos-%s-pod-%s-*.service", s.pawnName, uid)
+
+	units, err := s.conn.ListUnitsByPatternsContext(ctx, nil, []string{pattern})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list units: %w", err)
+	}
+
+	return units, nil
+}
+
 // readUnitEnv reads the Environment property of a unit and returns it as a
 // key=value map. Only PERIGEOS_META_* entries are guaranteed to be present.
 func (s *SystemdRuntime) readUnitEnv(ctx context.Context, unitName string) map[string]string {

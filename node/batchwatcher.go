@@ -63,6 +63,8 @@ type BatchWatcher struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
+	hydrated chan struct{}
+
 	// pokeCh receives non-blocking sends when a pod lifecycle event
 	// (creation, deletion) occurs. This triggers an immediate poll so
 	// fast-exit containers are detected without waiting for the ticker.
@@ -123,6 +125,7 @@ func StartBatchWatcher(deps BatchWatcherDeps) *BatchWatcher {
 		logger:       deps.Logger.With("component", "batchwatcher"),
 		cancel:       cancel,
 		done:         make(chan struct{}),
+		hydrated:     make(chan struct{}),
 		pokeCh:       make(chan struct{}, 1),
 		prevStateMap: make(map[string]perigeos.MachineState),
 		prevReady:    make(map[string]bool),
@@ -193,6 +196,9 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 	// On startup, clean up stale units left by a previous crash/restart.
 	bw.cleanupStaleUnits(ctx)
 
+	bw.poll(ctx)       // Run an immediate poll on startup
+	close(bw.hydrated) // Signal that we now know the state of the node
+
 	ticker := time.NewTicker(containerWatchPoll)
 	defer ticker.Stop()
 
@@ -213,6 +219,16 @@ func (bw *BatchWatcher) run(ctx context.Context) {
 		case <-bw.pokeCh:
 			bw.poll(ctx)
 		}
+	}
+}
+
+func (bw *BatchWatcher) WaitUntilHydrated(ctx context.Context) error {
+	select {
+	case <-bw.hydrated:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -336,24 +352,6 @@ func (bw *BatchWatcher) handleUnitEvent(ctx context.Context, ev perigeos.UnitEve
 			"uid", uid, "container", containerName, "state", state)
 
 		return // no change, skip poll trigger
-	}
-
-	// TODO: Remove
-	// Emit container lifecycle events on state transitions.
-	// The D-Bus path is the fast reactive path - events fire within
-	// milliseconds of the actual systemd state change. The poll path
-	// (below in checkPod) covers failures and exits that the D-Bus
-	// path may miss (e.g. "dead" substate is intentionally ignored).
-	if state == perigeos.StateRunning {
-		if pod != nil {
-			reason := "Started"
-			if isInit {
-				reason = "InitStarted"
-			}
-
-			bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, reason,
-				"Container %s started", containerName)
-		}
 	}
 
 	// Trigger a full poll on state transitions that affect pod status.
@@ -725,12 +723,14 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
 				// Sidecar init container - treat like an app container.
 				policy = podPolicy
+
 			} else {
 				// Standard init container - Never restart after success;
 				// only restart on failure if pod policy is OnFailure/Always.
 				policy = corev1.RestartPolicyOnFailure
 			}
 		}
+
 		key := uid + "/" + c.Name
 		state, exists := stateMap[key]
 		if !exists {
@@ -822,19 +822,22 @@ func (bw *BatchWatcher) checkPod(ctx context.Context, uid string, pod *corev1.Po
 			}
 
 		case perigeos.StateExited:
-			// Emit completion/failure event only on state transition.
-			// D-Bus "dead" substate is intentionally ignored (see
-			// handleUnitEvent comment), so this poll path is the
-			// canonical detection point for container exits.
-			if prev, ok := bw.prevStateMap[key]; !ok || prev != perigeos.StateExited {
-				exitCode := exitCodeMap[key]
-				if exitCode == 0 {
-					bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Completed",
-						"Container %s exited with code %d", c.Name, exitCode)
+			// Init containers are handled in lifecycle.
+			if !isInitContainer(pod, c.Name) {
+				// Emit completion/failure event only on state transition.
+				// D-Bus "dead" substate is intentionally ignored (see
+				// handleUnitEvent comment), so this poll path is the
+				// canonical detection point for container exits.
+				if prev, ok := bw.prevStateMap[key]; !ok || prev != perigeos.StateExited {
+					exitCode := exitCodeMap[key]
+					if exitCode == 0 {
+						bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeNormal, "Completed",
+							"Container %s exited with code %d", c.Name, exitCode)
 
-				} else {
-					bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Failed",
-						"Container %s exited with error (code %d)", c.Name, exitCode)
+					} else {
+						bw.deps.EventRecorder.Eventf(pod, corev1.EventTypeWarning, "Failed",
+							"Container %s exited with error (code %d)", c.Name, exitCode)
+					}
 				}
 			}
 
